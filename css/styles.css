@@ -1,0 +1,237 @@
+* {
+    -webkit-box-sizing: border-box;
+    -moz-box-sizing: border-box;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Lato', sans-serif;
+}
+
+a {
+    text-decoration: none;
+    color: rgb(61, 146, 201);
+}
+a:hover,
+a:focus {
+    text-decoration: underline;
+}
+
+h3 {
+    font-weight: 100;
+}
+
+.grid-container {
+    margin-top: 3em;
+}
+
+.headshot {
+    max-height: 256px;
+    border-radius: 12px;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Raleway', sans-serif;
+}
+
+h1 {
+    font-weight: bolder;
+    text-align: center;
+    font-size: 2em;
+    width: 100%;
+    margin-top: 0.2em;
+    margin-bottom: -0.2em;
+}
+
+h2 {
+    font-size: 1.4em;
+    background: #ccc;
+    border-radius: 2px;
+    padding: 0.1em 0.5em;
+    margin: 0 auto;
+}
+
+h3 {
+    font-size: 1em;
+    background: #eee;
+    border-radius: 2px;
+    padding: 0.1em 0.5em;
+    margin: 0 auto;
+}
+
+.time {
+    color: slategray;
+    font-style: italic;
+    line-height: inherit;
+    font-size: 0.8em;
+}
+
+section {
+    padding: 1em 0;
+}
+
+section > .grid-x:not(:last-child) {
+    margin-bottom: 1em;
+}
+
+.column-profile > .links {
+    margin-top: 0.2em;
+    font-size: 1.5em;
+}
+
+.column-profile > .links > a {
+    color: lightslategray;
+}
+
+.column-profile > .links > a:hover {
+    color: mediumseagreen;
+}
+
+.column-profile {
+    text-align: center;
+}
+
+.logo {
+    width: 3em;
+}
+
+.email {
+    font-family: monospace;
+}
+
+.emoji {
+    position: relative;
+    list-style: none;
+    margin: 0 auto;
+    padding-left: 2em;
+    z-index: 2;
+    /*column-count*/: 2;
+}
+
+.emoji > li {
+    padding: 0 1.75em;
+    padding-bottom: 1em;
+    text-indent: -1.75em;
+    page-break-inside: avoid;
+    break-inside: avoid-column;
+}
+
+.emoji > li:last-child {
+    padding-bottom: 0;
+}
+
+.emoji > li::before {
+    display: inline-block;
+    text-align: center;
+    width: 1.75em;
+    transform-origin: top left;
+    transform: scale(1.5);
+}
+
+.emoji > li:nth-child(n+1)::before {
+    content: "\1F468\1F3FD\200D\1F393 "; /* man_student_medium_skin_tone */
+}
+
+.emoji > li:nth-child(n+2)::before {
+    content: "\1F52C "; /* microscope */
+}
+
+.emoji > li:nth-child(n+3)::before {
+    content: "\1F468\1F3FD\200D\1F3EB "; /* man_teacher_medium_skin_tone */
+}
+
+.emoji > li:nth-child(n+4)::before {
+    content: "\1F39B\FE0F "; /* control_knobs */
+}
+
+.emoji > li:nth-child(n+5)::before {
+    content: "\1F3A5 "; /* movie_camera */
+}
+
+footer {
+    text-align: center;
+    font-size: .8em;
+}
+
+
+
+.list-journals {
+  list-style: none;
+  margin-left: 2.9rem;
+  counter-reset: jrncounter calc(1 + var(--num-journals));
+}
+
+.list-journals li {
+  text-indent: -3rem;
+  counter-increment: jrncounter -1;
+}
+
+.list-journals li::before {
+  content: '[J' counter(jrncounter, decimal-leading-zero) '] ';
+  font-family: monospace;
+  padding-right:
+}
+
+.list-conferences {
+  list-style: none;
+  margin-left: 2.9rem;
+  counter-reset: cnfcounter calc(1 + var(--num-pubs-conf));
+}
+
+.list-conferences li {
+  text-indent: -3rem;
+  counter-increment: cnfcounter -1;
+}
+
+.list-conferences li::before {
+  content: '[C' counter(cnfcounter, decimal-leading-zero) '] ';
+  font-family: monospace;
+  padding-right:
+}
+
+.list-preprints {
+  list-style: none;
+  margin-left: 2.9rem;
+  counter-reset: ppcounter calc(1 + var(--num-preprints));
+}
+
+.list-preprints li {
+  text-indent: -3rem;
+  counter-increment: ppcounter -1;
+}
+
+.list-preprints li::before {
+  content: '[P' counter(ppcounter, decimal-leading-zero) '] ';
+  font-family: monospace;
+  padding-right:
+}
+
+.list-workshops {
+  list-style: none;
+  margin-left: 2.9rem;
+  counter-reset: wkcounter calc(1 + var(--num-workshops));
+}
+
+.list-workshops li {
+  text-indent: -3rem;
+  counter-increment: wkcounter -1;
+}
+
+.list-workshops li::before {
+  content: '[W' counter(wkcounter, decimal-leading-zero) '] ';
+  font-family: monospace;
+  padding-right:
+}
+
+@media screen and (max-width: 39.9375em) {
+    .emoji {
+        margin-bottom: 2em;
+        column-count: 1;
+    }
+    .column-content {
+        padding-top: 2em;
+    }
+    .logo {
+        width: 2em;
+    }
+}
