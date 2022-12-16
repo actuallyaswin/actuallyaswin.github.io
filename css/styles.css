@@ -235,3 +235,19 @@ footer {
         width: 2em;
     }
 }
+
+@media print {
+  .column-profile {
+    width: 90% !important;
+    margin: 0 auto !important;
+  }
+
+  .column-content {
+    width: 90% !important;
+    margin: 0 auto !important;
+  }
+
+  .links > a {
+    display: block;
+  }
+}
