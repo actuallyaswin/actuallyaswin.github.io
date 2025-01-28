@@ -129,22 +129,26 @@ section > .grid-x:not(:last-child) {
 }
 
 .emoji > li:nth-child(n+1)::before {
-    content: "\1F468\1F3FD\200D\1F393 "; /* man_student_medium_skin_tone */
+    content: "\F8FF "; /* man_student_medium_skin_tone */
 }
 
 .emoji > li:nth-child(n+2)::before {
-    content: "\1F52C "; /* microscope */
+    content: "\1F468\1F3FD\200D\1F393 "; /* man_student_medium_skin_tone */
 }
 
 .emoji > li:nth-child(n+3)::before {
-    content: "\1F468\1F3FD\200D\1F3EB "; /* man_teacher_medium_skin_tone */
+    content: "\1F52C "; /* microscope */
 }
 
 .emoji > li:nth-child(n+4)::before {
-    content: "\1F39B\FE0F "; /* control_knobs */
+    content: "\1F468\1F3FD\200D\1F3EB "; /* man_teacher_medium_skin_tone */
 }
 
 .emoji > li:nth-child(n+5)::before {
+    content: "\1F39B\FE0F "; /* control_knobs */
+}
+
+.emoji > li:nth-child(n+6)::before {
     content: "\1F3A5 "; /* movie_camera */
 }
 
