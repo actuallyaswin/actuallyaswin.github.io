@@ -22,7 +22,7 @@ A lightweight, static web application for browsing Last.fm listening history. Ru
 ├── release.js                   # Release page logic (10 KB)
 ├── theme.js                     # Theme management (2 KB)
 ├── styles.css                   # Global styles with themes (13 KB)
-├── logo.svg                     # Site logo (aswin.db/music)
+├── logo.svg                     # Site logo (kept but not used)
 └── README.md                    # Documentation
 
 Database: Hosted on GitHub Releases (not in repo)
@@ -30,6 +30,8 @@ Database: Hosted on GitHub Releases (not in repo)
 ```
 
 **Total**: ~2,450 lines of code across 11 files
+
+**Note**: Logo is now plain text (`aswin.db/music`) styled with CSS instead of SVG
 
 ## Database Hosting
 
@@ -402,8 +404,8 @@ Stats text adapts to active sort:
 ```css
 --primary: #4f46e5        /* Darker indigo */
 --accent: #db2777         /* Deep pink */
---bg: #ffffff            /* White */
---bg-secondary: #f8fafc  /* Slate 50 */
+--bg: #fafbfc            /* Soft off-white */
+--bg-secondary: #f1f3f5  /* Light gray */
 --text: #0f172a          /* Dark slate */
 --text-secondary: #475569 /* Slate 600 */
 --border: #e2e8f0         /* Slate 200 */
@@ -444,6 +446,36 @@ Charts automatically update colors when theme changes:
 - Reads colors from CSS variables dynamically
 - Re-renders chart with new colors
 - No hardcoded colors in JavaScript
+
+### Logo System
+
+**Plain Text Logo** (replaced SVG):
+- Text: `aswin.db/music`
+- Font: `ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace`
+- Theme-aware colors using CSS variables
+
+**Color Scheme:**
+- `.logo-main` ("aswin.db"): `var(--text-secondary)`
+  - Dark mode: `#94a3b8` (medium-light slate)
+  - Light mode: `#475569` (medium-dark slate)
+- `.logo-slash` ("/"): `var(--text-tertiary)`
+  - Dark mode: `#64748b` (lighter slate)
+  - Light mode: `#64748b` (same gray)
+- `.logo-accent` ("music"): `#00A3FF` (constant blue in both themes)
+
+**Sizes:**
+- `.site-logo`: 28px (homepage), 24px (mobile)
+- `.site-logo-small`: 20px (subpages), 18px (mobile)
+
+**Behavior:**
+- Homepage: Non-clickable `<div>` (already at home)
+- Subpages: Clickable `<a>` link to homepage with hover effect (70% opacity)
+
+**Advantages over SVG:**
+- No loading delays
+- Automatically inherits theme colors via CSS variables
+- Simpler to maintain
+- Better accessibility
 
 ## Styling Architecture
 
@@ -678,15 +710,39 @@ Year Page
   ├─> Top Artists → Artist Page → Release Page
   ├─> Top Albums → Release Page
   ├─> Year Selector / Arrows → Other Year Pages
-  └─> Back to Homepage
+  ├─> Logo (aswin.db/music) → Homepage
+  └─> "← Home" Button → Homepage
 
 Artist Page
   ├─> Top Releases → Release Page
-  └─> Back to Homepage
+  ├─> Logo (aswin.db/music) → Homepage
+  └─> "← Back" Button → Previous Page (via history.back())
 
 Release Page
-  └─> Back to Artist / Homepage
+  ├─> Artist Name Link → Artist Page
+  ├─> Logo (aswin.db/music) → Homepage
+  └─> "← Back" Button → Previous Page (via history.back())
 ```
+
+**Back Button Behavior:**
+- **Year Page**: "← Home" with direct link to `index.html` (clear destination)
+- **Artist/Release Pages**: "← Back" with `history.back()` (can be reached from multiple places)
+- All pages: Logo is clickable on subpages, takes you home
+
+### Page Titles
+
+**Format**: `aswin.db/music - {context}` (or just `aswin.db/music` for homepage)
+
+**Implementation:**
+- **index.html**: `aswin.db/music` (static)
+- **year.html**: `aswin.db/music - {year}` (e.g., "aswin.db/music - 2015")
+- **artist.html**: `aswin.db/music - {artist_name}` (e.g., "aswin.db/music - Kendrick Lamar")
+- **release.html**: `aswin.db/music - {release_name}` (e.g., "aswin.db/music - good kid, m.A.A.d city")
+
+**Dynamic Updates:**
+- JavaScript updates `document.title` after loading data
+- Consistent format across all pages
+- Better SEO and bookmarking experience
 
 ### Interactive Controls
 
@@ -747,8 +803,8 @@ Release Page
 **Location**: `/Users/aswin/github/lfm-to-parquet/`
 
 **Key Files:**
-- `lastfm_importer.py` - Main importer script (1,018 lines)
-- `config.yaml` - Configuration
+- `lastfm_importer.py` - Main importer script (1,237 lines, updated with overrides support)
+- `config.yaml` - Configuration (includes overrides section)
 - `demo_queries.py` - Example SQL queries
 
 **Modes:**
@@ -760,10 +816,46 @@ Release Page
 - Incremental mode (load existing, add new)
 - MusicBrainz integration (release types, dates) - optional
 - **Spotify integration** (high-quality images + track durations)
+- **Manual overrides support** (applies changes from music_editor)
 - **Artist deduplication** (consolidates duplicate entries)
 - Track name cleaning ("Original Mix", "Remaster")
 - Artist role parsing (featured, collaboration)
 - Dual output: Parquet + SQLite
+
+### Music Editor (Private Tool)
+
+**Location**: `/Users/aswin/github/actuallyaswin.github.io/music_editor/`
+**Access**: Local only (`http://127.0.0.1:8080/music_editor/`)
+**Status**: Not deployed to GitHub Pages
+
+**Purpose**: Manual curation of listening history data. Allows editing artist images, album art, release metadata, track names, and hiding items from public view.
+
+**Architecture**:
+- Two-database system: raw data + overrides
+- Overrides applied during import process
+- Hidden items completely removed from final database
+
+**Features**:
+- Browse & search (artists, releases, tracks)
+- Edit forms with image URL helpers (Spotify, Last.FM, Apple Music)
+- Hide functionality (remove from public browser)
+- Edit history tracking with timestamps and notes
+- Review overrides dashboard with stats
+- Export overrides to JSON backup
+
+**Workflow**:
+1. Copy raw database to music_editor/
+2. Make manual edits in browser UI
+3. Save changes (auto-downloads overrides.sqlite)
+4. Re-run importer to apply overrides
+5. Deploy merged database to music app
+
+**Integration**: Importer reads overrides database and:
+- Updates images, metadata, track names
+- Deletes hidden items and associated listens
+- Produces final listening_history.sqlite for deployment
+
+See `/music_editor/context.md` for full documentation.
 
 ### Spotify Integration
 
@@ -1032,7 +1124,7 @@ All colors defined as CSS variables in `:root` and `:root[data-theme="light"]`. 
 
 None currently. Project is in good shape:
 - ✅ All hardcoded colors refactored to CSS variables
-- ✅ Theme system fully implemented
+- ✅ Theme system fully implemented with soft light mode background
 - ✅ Responsive design complete
 - ✅ Duration-based sorting implemented
 - ✅ Charts optimized (height, labels)
@@ -1044,12 +1136,56 @@ None currently. Project is in good shape:
 - ✅ Artist deduplication in parser (consolidates duplicates)
 - ✅ Artist photos display on artist detail pages
 - ✅ Year page with full feature parity (sorting, views, album filter)
+- ✅ Plain text logo with CSS theming (replaced SVG)
+- ✅ Consistent navigation patterns (back buttons, logo links)
+- ✅ Standardized page titles across all pages
 - ✅ Code is clean and maintainable
+- ✅ Music editor for manual curation (private tool, not deployed)
+- ✅ Override system integrated with importer (hidden items support)
 
 ## Last Updated
 2025-01-11
 
 ## Recent Updates (2025-01-11)
+
+### UI Polish & Consistency
+
+**Logo System Redesign:**
+- Replaced SVG logo with plain text: `aswin.db/music`
+- Uses monospace font stack for consistency
+- Theme-aware colors via CSS variables:
+  - "aswin.db" → `var(--text-secondary)` (adapts to theme)
+  - "/" → `var(--text-tertiary)` (subtle gray)
+  - "music" → `#00A3FF` (constant blue accent)
+- Clickable on all subpages (takes you home)
+- Hover effect on subpages (70% opacity transition)
+- No loading delays, simpler maintenance
+
+**Navigation Standardization:**
+- **Year page**: "← Home" button (direct link to index.html)
+- **Artist/Release pages**: "← Back" button (uses history.back())
+- Logo clickable on all non-home pages
+- Consistent user experience across all pages
+
+**Title Standardization:**
+- All pages use format: `aswin.db/music - {context}`
+- Homepage: `aswin.db/music` (static)
+- Year page: `aswin.db/music - 2015` (dynamic)
+- Artist page: `aswin.db/music - Kendrick Lamar` (dynamic)
+- Release page: `aswin.db/music - good kid, m.A.A.d city` (dynamic)
+- Better SEO and bookmarking experience
+
+**Light Mode Refinement:**
+- Changed background from harsh white (`#ffffff`) to soft off-white (`#fafbfc`)
+- Updated secondary background to `#f1f3f5` for better contrast hierarchy
+- More comfortable on the eyes, similar to GitHub/Notion
+- Logo text properly visible in light mode
+
+**Impact:**
+- More polished, professional appearance
+- Better theme support across light/dark modes
+- Consistent navigation patterns throughout the site
+- Improved accessibility and user experience
 
 ### Year Page Implementation
 
@@ -1091,6 +1227,43 @@ None currently. Project is in good shape:
 - Compare different years' top artists/albums
 - Discover albums released in specific years
 - Consistent UI/UX across all pages
+
+### Music Editor Implementation
+
+**Created private curation tool** (`/music_editor/`, not deployed):
+- Local-only web application for manual data cleanup
+- Two-database architecture: raw data + overrides
+- Integrated with importer pipeline
+
+**Features** (All 3 phases completed):
+- **Browse & Search**: Find artists, releases, tracks with override indicators
+- **Edit Forms**: Modify images, metadata, track names with notes
+- **Image Helpers**: Fetch from Spotify, Last.FM, or enter custom URLs
+- **Hide Functionality**: Mark items to remove from public browser
+- **Edit History**: Full audit trail with timestamps and notes
+- **Review Dashboard**: Statistics and bulk operations
+- **Export**: JSON backup of all overrides
+
+**Integration with Importer**:
+- Updated `lastfm_importer.py` (124 lines added)
+- Updated `config.yaml` with `overrides` section
+- Overrides applied after database creation:
+  - Update images, metadata, track names
+  - Delete hidden items and associated listens
+  - Final database deployed without hidden content
+
+**Workflow**:
+1. Edit data in music_editor (local browser)
+2. Save creates `listening_history_overrides.sqlite`
+3. Re-run importer with overrides enabled
+4. Deploy merged database to music app
+5. Hidden items never visible in public UI
+
+**Impact:**
+- Full control over data quality and presentation
+- Clean up artist duplicates, incorrect metadata
+- Remove unwanted content from listening history
+- Professional presentation with curated images
 
 ## Recent Updates (2025-01-10)
 

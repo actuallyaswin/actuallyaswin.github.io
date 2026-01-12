@@ -1,2 +1,13 @@
 .DS_Store
+
+# Development documentation (context files)
+**/context.md
+
+# Music database files
 music/listening_history.sqlite
+music/listening_history_overrides.sqlite
+
+# Music editor (private tool, not deployed)
+music_editor/listening_history.sqlite
+music_editor/listening_history_overrides.sqlite
+music_editor/config.json

@@ -1,4 +1,5 @@
 let db = null;
+let overridesDb = null;
 let currentYear = null;
 let MIN_YEAR = 2011;
 let MAX_YEAR = 2025;
@@ -20,6 +21,8 @@ async function init() {
 
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
+
+        overridesDb = await loadOverridesDatabase(SQL, db);
 
         console.log('Database loaded successfully');
 
@@ -115,7 +118,7 @@ function loadTopArtists(limit = 20) {
         SELECT
             a.artist_mbid,
             a.artist_name,
-            a.profile_image_url,
+            COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
             COUNT(DISTINCT l.track_mbid) as unique_tracks,
             COUNT(l.timestamp) as total_listens,
             CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes
@@ -123,7 +126,9 @@ function loadTopArtists(limit = 20) {
         JOIN tracks t ON l.track_mbid = t.track_mbid
         LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
+        LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
         WHERE l.year = ${currentYear}
+        AND (ao.hidden IS NULL OR ao.hidden = 0)
         GROUP BY a.artist_mbid
         HAVING total_listens > 0
         ORDER BY ${orderClause}
@@ -233,7 +238,7 @@ function loadTopAlbums(limit = 20) {
     let whereClause;
 
     if (albumFilterMode === 'released') {
-        whereClause = `r.release_year = ${currentYear}`;
+        whereClause = `COALESCE(ro.release_year, r.release_year) = ${currentYear}`;
     } else {
         whereClause = `l.year = ${currentYear}`;
     }
@@ -248,9 +253,9 @@ function loadTopAlbums(limit = 20) {
         SELECT
             r.release_mbid,
             r.release_name,
-            r.release_year,
-            r.release_type_primary,
-            r.album_art_url,
+            COALESCE(ro.release_year, r.release_year) as release_year,
+            COALESCE(ro.release_type_primary, r.release_type_primary) as release_type_primary,
+            COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
             a.artist_name,
             a.artist_mbid,
             COUNT(DISTINCT l.track_mbid) as tracks_listened,
@@ -259,9 +264,13 @@ function loadTopAlbums(limit = 20) {
         FROM listens l
         JOIN tracks t ON l.track_mbid = t.track_mbid
         JOIN releases r ON t.release_mbid = r.release_mbid
+        LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
+        LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
         WHERE ${whereClause}
+        AND (ro.hidden IS NULL OR ro.hidden = 0)
+        AND (ao.hidden IS NULL OR ao.hidden = 0)
         GROUP BY r.release_mbid
         HAVING total_listens > 0
         ORDER BY ${orderClause}

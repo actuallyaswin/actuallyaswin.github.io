@@ -6,20 +6,27 @@ const DB_CONFIG = {
     // GitHub repository info
     repo: 'actuallyaswin/actuallyaswin.github.io',
 
-    // Database filename
+    // Database filenames
     filename: 'listening_history.sqlite',
+    overridesFilename: 'listening_history_overrides.sqlite',
 
-    // Local path (for testing)
+    // Local paths (for testing)
     get localPath() {
         return this.filename;
     },
+    get overridesLocalPath() {
+        return this.overridesFilename;
+    },
 
-    // CDN URL (for production)
+    // CDN URLs (for production)
     get cdnUrl() {
         return `https://github.com/${this.repo}/releases/download/music-db-${this.version}/${this.filename}`;
     },
+    get overridesCdnUrl() {
+        return `https://github.com/${this.repo}/releases/download/music-db-${this.version}/${this.overridesFilename}`;
+    },
 
-    // Fetch database with local fallback
+    // Fetch main database with local fallback
     async fetchDatabase() {
         // Try local file first (for development)
         try {
@@ -39,5 +46,33 @@ const DB_CONFIG = {
             throw new Error(`Failed to load database: ${cdnResponse.statusText}`);
         }
         return await cdnResponse.arrayBuffer();
+    },
+
+    // Fetch overrides database (optional, may not exist)
+    async fetchOverridesDatabase() {
+        // Try local file first (for development)
+        try {
+            const localResponse = await fetch(this.overridesLocalPath);
+            if (localResponse.ok) {
+                console.log('Loading overrides database from local file');
+                return await localResponse.arrayBuffer();
+            }
+        } catch (e) {
+            // Local fetch failed, will try CDN
+        }
+
+        // Try CDN
+        try {
+            console.log('Loading overrides database from CDN');
+            const cdnResponse = await fetch(this.overridesCdnUrl);
+            if (cdnResponse.ok) {
+                return await cdnResponse.arrayBuffer();
+            }
+        } catch (e) {
+            // Overrides don't exist, that's ok
+        }
+
+        console.log('No overrides database found (this is OK)');
+        return null;
     }
 };

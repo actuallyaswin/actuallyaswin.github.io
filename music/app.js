@@ -1,4 +1,5 @@
 let db = null;
+let overridesDb = null;
 let sortState = {
     artists: 'listens',
     albums: 'listens'
@@ -16,6 +17,8 @@ async function init() {
 
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
+
+        overridesDb = await loadOverridesDatabase(SQL, db);
 
         console.log('Database loaded successfully');
 
@@ -69,14 +72,16 @@ function loadTopArtists(limit = 20) {
         SELECT
             a.artist_mbid,
             a.artist_name,
-            a.profile_image_url,
+            COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
             COUNT(DISTINCT l.track_mbid) as unique_tracks,
             COUNT(l.timestamp) as total_listens,
             CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes
         FROM artists a
+        LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
         LEFT JOIN track_artists ta ON a.artist_mbid = ta.artist_mbid AND ta.role = 'main'
         LEFT JOIN tracks t ON ta.track_mbid = t.track_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
+        WHERE (ao.hidden IS NULL OR ao.hidden = 0)
         GROUP BY a.artist_mbid
         HAVING total_listens > 0
         ORDER BY ${orderClause}
@@ -117,13 +122,7 @@ function createArtistImageCard(mbid, name, imageUrl, uniqueTracks, totalListens,
     card.className = 'image-card';
     card.href = `artist.html?id=${encodeURIComponent(mbid)}`;
 
-    // Fallback image if none provided
-    const imgSrc = imageUrl || 'data:image/svg+xml,' + encodeURIComponent(`
-        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-            <rect width="200" height="200" fill="#1e293b"/>
-            <text x="100" y="115" text-anchor="middle" font-size="80" fill="#475569">♪</text>
-        </svg>
-    `);
+    const imgSrc = imageUrl || getFallbackImageUrl();
 
     card.innerHTML = `
         <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
@@ -216,9 +215,11 @@ function performSearch(query) {
             a.artist_name,
             COUNT(l.timestamp) as total_listens
         FROM artists a
+        LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
         LEFT JOIN track_artists ta ON a.artist_mbid = ta.artist_mbid AND ta.role = 'main'
         LEFT JOIN listens l ON ta.track_mbid = l.track_mbid
         WHERE a.artist_name LIKE '%${query.replace(/'/g, "''")}%'
+        AND (ao.hidden IS NULL OR ao.hidden = 0)
         GROUP BY a.artist_mbid
         ORDER BY total_listens DESC
         LIMIT 10
@@ -257,7 +258,7 @@ function loadTopAlbums(limit = 20) {
     if (sortBy === 'minutes') {
         orderClause = 'total_minutes DESC';
     } else if (sortBy === 'date') {
-        orderClause = 'r.release_year DESC, total_listens DESC';
+        orderClause = 'release_year DESC, total_listens DESC';
     } else {
         orderClause = 'total_listens DESC';
     }
@@ -266,19 +267,23 @@ function loadTopAlbums(limit = 20) {
         SELECT
             r.release_mbid,
             r.release_name,
-            r.release_year,
-            r.release_type_primary,
-            r.album_art_url,
+            COALESCE(ro.release_year, r.release_year) as release_year,
+            COALESCE(ro.release_type_primary, r.release_type_primary) as release_type_primary,
+            COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
             a.artist_name,
             a.artist_mbid,
             COUNT(DISTINCT t.track_mbid) as tracks_listened,
             COUNT(l.timestamp) as total_listens,
             CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes
         FROM releases r
+        LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         JOIN tracks t ON r.release_mbid = t.release_mbid
         JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         JOIN artists a ON ta.artist_mbid = a.artist_mbid
+        LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
+        WHERE (ro.hidden IS NULL OR ro.hidden = 0)
+        AND (ao.hidden IS NULL OR ao.hidden = 0)
         GROUP BY r.release_mbid, a.artist_mbid
         HAVING total_listens > 0
         ORDER BY ${orderClause}
@@ -319,13 +324,7 @@ function createAlbumImageCard(releaseMbid, releaseName, releaseYear, releaseType
     card.className = 'image-card';
     card.href = `release.html?id=${encodeURIComponent(releaseMbid)}`;
 
-    // Fallback image if none provided
-    const imgSrc = albumArtUrl || 'data:image/svg+xml,' + encodeURIComponent(`
-        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-            <rect width="200" height="200" fill="#1e293b"/>
-            <text x="100" y="115" text-anchor="middle" font-size="80" fill="#475569">♪</text>
-        </svg>
-    `);
+    const imgSrc = albumArtUrl || getFallbackImageUrl();
 
     card.innerHTML = `
         <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
@@ -445,16 +444,6 @@ function setupSortControls() {
             loadTopAlbums();
         });
     });
-}
-
-function formatNumber(num) {
-    return num.toLocaleString();
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 init();

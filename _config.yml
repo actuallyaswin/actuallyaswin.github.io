@@ -1,0 +1,9 @@
+# GitHub Pages Configuration
+# This file tells Jekyll which files/folders to exclude from the built site
+
+# Exclude these paths from being built/served on GitHub Pages
+# music_editor/ is a private local-only tool and should not be publicly accessible
+exclude:
+  - music_editor/
+  - README.md
+  - .gitignore

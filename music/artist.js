@@ -1,4 +1,5 @@
 let db = null;
+let overridesDb = null;
 let artistId = null;
 let currentChart = null;
 let chartData = {
@@ -16,7 +17,6 @@ let sortState = {
 
 async function init() {
     try {
-        // Get artist ID from URL
         const urlParams = new URLSearchParams(window.location.search);
         artistId = urlParams.get('id');
 
@@ -25,18 +25,17 @@ async function init() {
             return;
         }
 
-        // Load SQL.js WASM
         const SQL = await initSqlJs({
             locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
         });
 
-        // Load database from GitHub Releases CDN
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
 
+        overridesDb = await loadOverridesDatabase(SQL, db);
+
         console.log('Database loaded successfully');
 
-        // Load artist data
         loadArtistInfo();
         loadTopTracks();
         loadReleases();
@@ -53,11 +52,12 @@ function loadArtistInfo() {
     const result = db.exec(`
         SELECT
             a.artist_name,
-            a.profile_image_url,
+            COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
             COUNT(DISTINCT l.track_mbid) as unique_tracks,
             COUNT(l.timestamp) as total_plays,
             COUNT(DISTINCT t.release_mbid) as total_releases
         FROM artists a
+        LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
         LEFT JOIN track_artists ta ON a.artist_mbid = ta.artist_mbid AND ta.role = 'main'
         LEFT JOIN tracks t ON ta.track_mbid = t.track_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
@@ -98,15 +98,17 @@ function loadTopTracks() {
 
     const result = db.exec(`
         SELECT
-            t.track_name,
+            COALESCE(tro.track_name, t.track_name) as track_name,
             t.track_mbid,
             t.duration_ms,
             COUNT(l.timestamp) as play_count,
             CAST(COUNT(l.timestamp) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes
         FROM tracks t
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         JOIN listens l ON t.track_mbid = l.track_mbid
         WHERE ta.artist_mbid = '${artistId.replace(/'/g, "''")}'
+        AND (tro.hidden IS NULL OR tro.hidden = 0)
         GROUP BY t.track_mbid
         ORDER BY ${orderClause}
         LIMIT 20
@@ -145,25 +147,27 @@ function loadReleases() {
     if (sortBy === 'minutes') {
         orderClause = 'total_minutes DESC';
     } else if (sortBy === 'date') {
-        orderClause = 'r.release_year DESC, total_listens DESC';
+        orderClause = 'release_year DESC, total_listens DESC';
     } else {
-        orderClause = 'total_listens DESC, r.release_year DESC';
+        orderClause = 'total_listens DESC, release_year DESC';
     }
 
     const result = db.exec(`
         SELECT
             r.release_mbid,
             r.release_name,
-            r.release_year,
-            r.release_type_primary,
+            COALESCE(ro.release_year, r.release_year) as release_year,
+            COALESCE(ro.release_type_primary, r.release_type_primary) as release_type_primary,
             COUNT(DISTINCT t.track_mbid) as tracks_listened,
             COUNT(l.timestamp) as total_listens,
             CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes
         FROM releases r
+        LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         JOIN tracks t ON r.release_mbid = t.release_mbid
         JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
         WHERE ta.artist_mbid = '${artistId.replace(/'/g, "''")}'
+        AND (ro.hidden IS NULL OR ro.hidden = 0)
         GROUP BY r.release_mbid
         ORDER BY ${orderClause}
         LIMIT 15

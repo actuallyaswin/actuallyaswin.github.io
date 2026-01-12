@@ -1,4 +1,5 @@
 let db = null;
+let overridesDb = null;
 let releaseId = null;
 let currentChart = null;
 let chartData = {
@@ -12,7 +13,6 @@ let chartState = {
 
 async function init() {
     try {
-        // Get release ID from URL
         const urlParams = new URLSearchParams(window.location.search);
         releaseId = urlParams.get('id');
 
@@ -21,18 +21,17 @@ async function init() {
             return;
         }
 
-        // Load SQL.js WASM
         const SQL = await initSqlJs({
             locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
         });
 
-        // Load database from GitHub Releases CDN
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
 
+        overridesDb = await loadOverridesDatabase(SQL, db);
+
         console.log('Database loaded successfully');
 
-        // Load release data
         loadReleaseInfo();
         loadTracks();
         loadListeningHistory();
@@ -47,12 +46,13 @@ function loadReleaseInfo() {
     const result = db.exec(`
         SELECT
             r.release_name,
-            r.release_year,
-            r.release_type_primary,
-            r.album_art_url,
+            COALESCE(ro.release_year, r.release_year) as release_year,
+            COALESCE(ro.release_type_primary, r.release_type_primary) as release_type_primary,
+            COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
             COUNT(DISTINCT t.track_mbid) as tracks_listened,
             COUNT(l.timestamp) as total_plays
         FROM releases r
+        LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         JOIN tracks t ON r.release_mbid = t.release_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
         WHERE r.release_mbid = '${releaseId.replace(/'/g, "''")}'
@@ -108,17 +108,19 @@ function loadReleaseInfo() {
 function loadTracks() {
     const result = db.exec(`
         SELECT
-            t.track_name,
+            COALESCE(tro.track_name, t.track_name) as track_name,
             t.track_mbid,
             GROUP_CONCAT(DISTINCT a.artist_name) as artists,
             COUNT(l.timestamp) as play_count
         FROM tracks t
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid
         LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
         WHERE t.release_mbid = '${releaseId.replace(/'/g, "''")}'
+        AND (tro.hidden IS NULL OR tro.hidden = 0)
         GROUP BY t.track_mbid
-        ORDER BY play_count DESC, t.track_name
+        ORDER BY play_count DESC, track_name
     `)[0];
 
     const container = document.getElementById('trackList');
