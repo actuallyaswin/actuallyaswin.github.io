@@ -24,6 +24,7 @@ async function loadOverridesDatabase(SQL, mainDb) {
         album_art_url TEXT,
         album_art_source TEXT,
         album_art_crop TEXT,
+        release_date TEXT,
         release_year INTEGER,
         release_type_primary TEXT,
         release_type_secondary TEXT,
