@@ -95,10 +95,10 @@ function loadReleaseInfo() {
         artistLink.style.color = getCSSColor('--primary');
         artistLink.style.textDecoration = 'none';
         document.getElementById('releaseArtist').appendChild(artistLink);
-        document.title = `${name || 'Release'} - ${artistName} - Music Browser`;
+        document.title = `aswin.db/music - ${name || 'Release'}`;
     } else {
         document.getElementById('releaseArtist').textContent = 'Unknown Artist';
-        document.title = `${name || 'Release'} - Music Browser`;
+        document.title = `aswin.db/music - ${name || 'Release'}`;
     }
 
     document.getElementById('totalPlays').textContent = formatNumber(totalPlays || 0);

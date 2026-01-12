@@ -51,7 +51,7 @@ async function init() {
         setupSortControls();
         setupAlbumFilter();
 
-        document.title = `Music of ${currentYear} - Music Browser`;
+        document.title = `aswin.db/music - ${currentYear}`;
 
         lucide.createIcons();
     } catch (error) {

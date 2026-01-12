@@ -76,7 +76,7 @@ function loadArtistInfo() {
     document.getElementById('totalPlays').textContent = formatNumber(totalPlays);
     document.getElementById('uniqueTracks').textContent = formatNumber(uniqueTracks);
     document.getElementById('totalReleases').textContent = formatNumber(totalReleases);
-    document.title = `${name} - Music Browser`;
+    document.title = `aswin.db/music - ${name}`;
 
     // Update artist photo
     const photoContainer = document.getElementById('artistPhoto');
