@@ -49,11 +49,12 @@ function loadReleaseInfo() {
             COALESCE(ro.release_year, r.release_year) as release_year,
             COALESCE(ro.release_type_primary, r.release_type_primary) as release_type_primary,
             COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
-            COUNT(DISTINCT t.track_mbid) as tracks_listened,
-            COUNT(l.timestamp) as total_plays
+            COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN t.track_mbid END) as tracks_listened,
+            COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_plays
         FROM releases r
         LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         JOIN tracks t ON r.release_mbid = t.release_mbid
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
         WHERE r.release_mbid = '${releaseId.replace(/'/g, "''")}'
         GROUP BY r.release_mbid
@@ -154,7 +155,9 @@ function loadListeningHistory() {
             COUNT(*) as listen_count
         FROM listens l
         JOIN tracks t ON l.track_mbid = t.track_mbid
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         WHERE t.release_mbid = '${releaseId.replace(/'/g, "''")}'
+        AND (tro.hidden IS NULL OR tro.hidden = 0)
         GROUP BY l.year, l.month
         ORDER BY l.year, l.month
     `)[0];
@@ -166,7 +169,9 @@ function loadListeningHistory() {
             COUNT(*) as listen_count
         FROM listens l
         JOIN tracks t ON l.track_mbid = t.track_mbid
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         WHERE t.release_mbid = '${releaseId.replace(/'/g, "''")}'
+        AND (tro.hidden IS NULL OR tro.hidden = 0)
         GROUP BY l.year
         ORDER BY l.year
     `)[0];
@@ -180,18 +185,48 @@ function loadListeningHistory() {
     // Process monthly data
     if (monthlyResult && monthlyResult.values.length > 0) {
         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        chartData.monthly = {
-            labels: monthlyResult.values.map(([year, month]) => `${monthNames[month - 1]} ${year}`),
-            data: monthlyResult.values.map(([, , count]) => count)
-        };
+
+        const years = monthlyResult.values.map(([year]) => year);
+        const minYear = Math.min(...years);
+        const maxYear = Math.max(...years);
+
+        const dataMap = new Map();
+        monthlyResult.values.forEach(([year, month, count]) => {
+            dataMap.set(`${year}-${month}`, count);
+        });
+
+        const labels = [];
+        const data = [];
+        for (let year = minYear; year <= maxYear; year++) {
+            for (let month = 1; month <= 12; month++) {
+                const key = `${year}-${month}`;
+                labels.push(`${monthNames[month - 1]} ${year}`);
+                data.push(dataMap.get(key) || 0);
+            }
+        }
+
+        chartData.monthly = { labels, data };
     }
 
     // Process yearly data
     if (yearlyResult && yearlyResult.values.length > 0) {
-        chartData.yearly = {
-            labels: yearlyResult.values.map(([year]) => year.toString()),
-            data: yearlyResult.values.map(([, count]) => count)
-        };
+        const years = yearlyResult.values.map(([year]) => year);
+        const minYear = Math.min(...years);
+        const maxYear = Math.max(...years);
+
+        const dataMap = new Map();
+        yearlyResult.values.forEach(([year, count]) => {
+            dataMap.set(year, count);
+        });
+
+        const labels = [];
+        const data = [];
+        for (let year = minYear; year <= maxYear; year++) {
+            labels.push(year.toString());
+            data.push(dataMap.get(year) || 0);
+        }
+
+        chartData.yearly = { labels, data };
     }
 
     // Render initial chart

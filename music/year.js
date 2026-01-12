@@ -85,12 +85,17 @@ function populateYearSelector() {
 function loadYearStats() {
     const result = db.exec(`
         SELECT
-            COUNT(DISTINCT ta.artist_mbid) as artist_count,
-            COUNT(DISTINCT t.release_mbid) as album_count,
-            COUNT(l.timestamp) as total_listens
+            COUNT(DISTINCT CASE WHEN (ao.hidden IS NULL OR ao.hidden = 0) THEN ta.artist_mbid END) as artist_count,
+            COUNT(DISTINCT CASE WHEN (ro.hidden IS NULL OR ro.hidden = 0) THEN t.release_mbid END) as album_count,
+            COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_listens
         FROM listens l
         JOIN tracks t ON l.track_mbid = t.track_mbid
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
+        LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
+        LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
+        LEFT JOIN releases r ON t.release_mbid = r.release_mbid
+        LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         WHERE l.year = ${currentYear}
     `)[0];
 
@@ -119,11 +124,12 @@ function loadTopArtists(limit = 20) {
             a.artist_mbid,
             a.artist_name,
             COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
-            COUNT(DISTINCT l.track_mbid) as unique_tracks,
-            COUNT(l.timestamp) as total_listens,
-            CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes
+            COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.track_mbid END) as unique_tracks,
+            COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_listens,
+            CAST(SUM(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
         FROM listens l
         JOIN tracks t ON l.track_mbid = t.track_mbid
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
         LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
@@ -258,11 +264,12 @@ function loadTopAlbums(limit = 20) {
             COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
             a.artist_name,
             a.artist_mbid,
-            COUNT(DISTINCT l.track_mbid) as tracks_listened,
-            COUNT(l.timestamp) as total_listens,
-            CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes
+            COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.track_mbid END) as tracks_listened,
+            COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_listens,
+            CAST(SUM(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
         FROM listens l
         JOIN tracks t ON l.track_mbid = t.track_mbid
+        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         JOIN releases r ON t.release_mbid = r.release_mbid
         LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
