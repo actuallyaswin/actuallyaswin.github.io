@@ -1,7 +1,7 @@
 // Database configuration
 const DB_CONFIG = {
     // Database version - update this when you create a new release
-    version: 'v1.0',
+    version: 'v1.1',
 
     // GitHub repository info
     repo: 'actuallyaswin/actuallyaswin.github.io',

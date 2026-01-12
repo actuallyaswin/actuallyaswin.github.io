@@ -9,9 +9,38 @@ async function loadOverridesDatabase(SQL, mainDb) {
     }
 
     mainDb.run("ATTACH DATABASE ':memory:' AS overrides");
-    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.artist_overrides (artist_mbid TEXT PRIMARY KEY, profile_image_url TEXT, hidden INTEGER DEFAULT 0)`);
-    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.release_overrides (release_mbid TEXT PRIMARY KEY, album_art_url TEXT, release_year INTEGER, release_type_primary TEXT, hidden INTEGER DEFAULT 0)`);
-    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.track_overrides (track_mbid TEXT PRIMARY KEY, track_name TEXT, hidden INTEGER DEFAULT 0)`);
+    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.artist_overrides (
+        artist_mbid TEXT PRIMARY KEY,
+        profile_image_url TEXT,
+        profile_image_source TEXT,
+        profile_image_crop INTEGER DEFAULT 0,
+        spotify_artist_id TEXT,
+        hidden INTEGER DEFAULT 0,
+        updated_at INTEGER,
+        notes TEXT
+    )`);
+    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.release_overrides (
+        release_mbid TEXT PRIMARY KEY,
+        album_art_url TEXT,
+        album_art_source TEXT,
+        album_art_crop INTEGER DEFAULT 0,
+        release_year INTEGER,
+        release_type_primary TEXT,
+        release_type_secondary TEXT,
+        genre TEXT,
+        spotify_album_id TEXT,
+        hidden INTEGER DEFAULT 0,
+        updated_at INTEGER,
+        notes TEXT
+    )`);
+    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.track_overrides (
+        track_mbid TEXT PRIMARY KEY,
+        track_name TEXT,
+        spotify_track_id TEXT,
+        hidden INTEGER DEFAULT 0,
+        updated_at INTEGER,
+        notes TEXT
+    )`);
 
     if (overridesDb) {
         const tables = ['artist_overrides', 'release_overrides', 'track_overrides'];
