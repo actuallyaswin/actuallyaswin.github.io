@@ -30,6 +30,14 @@ jobs:
       - name: Checkout LFS objects
         run: git lfs pull
 
+      - name: Verify LFS files
+        run: |
+          echo "Checking LFS file sizes..."
+          ls -lh music/*.sqlite
+          echo "Checking if files are binary (not pointers)..."
+          file music/*.sqlite
+          head -c 50 music/listening_history.sqlite
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
