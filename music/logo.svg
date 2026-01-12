@@ -1,0 +1,53 @@
+<svg width="240" height="60" viewBox="0 0 240 60" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    /* Inherit CSS variables from parent document */
+    .db-icon {
+      stroke: var(--text-secondary, #94a3b8);
+      fill: none;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .main-text {
+      fill: var(--text-secondary, #94a3b8);
+      font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .slash-text {
+      fill: var(--text-tertiary, #64748b);
+      font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .accent-text {
+      fill: #00A3FF;
+      font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .accent-bars {
+      fill: #00A3FF;
+    }
+  </style>
+
+  <!-- Database icon -->
+  <g class="db-icon">
+    <ellipse cx="30" cy="18" rx="18" ry="7" />
+    <path d="M12 18v18c0 3.9 8 7 18 7s18-3.1 18-7V18" />
+    <path d="M12 27c0 3.9 8 7 18 7s18-3.1 18-7" />
+  </g>
+  <text x="30" y="32" font-family="monospace" font-size="10" font-weight="bold" text-anchor="middle" class="accent-text" stroke="none">db</text>
+
+  <!-- Audio bars -->
+  <rect x="60" y="25" width="4" height="12" rx="1" class="accent-bars" />
+  <rect x="68" y="18" width="4" height="26" rx="1" class="accent-bars" />
+  <rect x="76" y="22" width="4" height="18" rx="1" class="accent-bars" />
+
+  <!-- Text: aswin.db/music -->
+  <text x="90" y="36">
+    <tspan class="main-text">aswin.db</tspan>
+    <tspan class="slash-text">/</tspan>
+    <tspan class="accent-text">music</tspan>
+  </text>
+</svg>

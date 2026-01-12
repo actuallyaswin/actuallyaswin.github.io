@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music by Year - Music Browser</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="theme.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="site-header">
+            <a href="index.html" class="site-logo-small">
+                <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
+            </a>
+            <a href="index.html" class="back-button">← Home</a>
+        </div>
+
+        <header>
+            <div class="year-navigation">
+                <button id="prevYear" class="year-nav-arrow" aria-label="Previous year">←</button>
+                <h1 id="pageTitle">
+                    <select id="yearSelect" class="year-select-hero">
+                        <!-- Populated by JS -->
+                    </select>
+                </h1>
+                <button id="nextYear" class="year-nav-arrow" aria-label="Next year">→</button>
+            </div>
+            <p class="subtitle" id="yearSummary">Loading...</p>
+        </header>
+
+        <div class="two-section-layout">
+            <section class="main-content">
+                <div class="section-header">
+                    <h2>Top Artists</h2>
+                    <div class="controls-group">
+                        <div class="sort-controls">
+                            <button class="sort-btn active" data-sort-artists="listens" title="Sort by listens">🎧</button>
+                            <button class="sort-btn" data-sort-artists="minutes" title="Sort by minutes">⏱️</button>
+                        </div>
+                        <span class="control-separator">|</span>
+                        <button class="view-toggle active" id="artistsViewEye" onclick="toggleView('artists', 'stats')" title="Toggle stats overlay">
+                            <i data-lucide="eye"></i>
+                        </button>
+                        <button class="view-toggle" id="artistsViewList" onclick="toggleView('artists', 'list')" title="Toggle list view">
+                            <i data-lucide="list"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="topArtists" class="image-grid">
+                    <div class="loading">Loading artists...</div>
+                </div>
+            </section>
+
+            <section class="main-content">
+                <div class="section-header">
+                    <h2>Top Albums</h2>
+                    <div class="controls-group">
+                        <div class="sort-controls">
+                            <button class="sort-btn active" data-sort-albums="listens" title="Sort by listens">🎧</button>
+                            <button class="sort-btn" data-sort-albums="minutes" title="Sort by minutes">⏱️</button>
+                        </div>
+                        <span class="control-separator">|</span>
+                        <button class="view-toggle" id="albumFilterToggle" title="Filter to albums released this year">
+                            <i data-lucide="filter"></i>
+                        </button>
+                        <button class="view-toggle active" id="albumsViewEye" onclick="toggleView('albums', 'stats')" title="Toggle stats overlay">
+                            <i data-lucide="eye"></i>
+                        </button>
+                        <button class="view-toggle" id="albumsViewList" onclick="toggleView('albums', 'list')" title="Toggle list view">
+                            <i data-lucide="list"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="topAlbums" class="image-grid">
+                    <div class="loading">Loading albums...</div>
+                </div>
+            </section>
+        </div>
+
+        <footer>
+            <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
+        </footer>
+
+        <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
+            ☀️
+        </button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <script src="config.js"></script>
+    <script src="year.js"></script>
+</body>
+</html>
