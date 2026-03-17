@@ -22,6 +22,19 @@ async function init() {
 
         console.log('Database loaded successfully');
 
+        // Calculate year range from database
+        const yearRange = db.exec(`
+            SELECT MIN(year) as min_year, MAX(year) as max_year
+            FROM listens
+            WHERE year IS NOT NULL
+        `)[0];
+
+        if (yearRange && yearRange.values.length > 0 && yearRange.values[0][0] !== null) {
+            const minYear = yearRange.values[0][0];
+            const maxYear = yearRange.values[0][1];
+            document.getElementById('yearRange').textContent = `${minYear} – ${maxYear}`;
+        }
+
         loadStats();
         loadTopArtists();
         loadTopAlbums();
@@ -283,17 +296,31 @@ function loadTopAlbums(limit = 20) {
             COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
             a.artist_name,
             a.artist_mbid,
-            COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN t.track_mbid END) as tracks_listened,
-            COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_listens,
-            CAST(SUM(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+            (SELECT COUNT(DISTINCT t2.track_mbid)
+             FROM tracks t2
+             LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
+             LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
+             WHERE t2.release_mbid = r.release_mbid
+             AND (tro2.hidden IS NULL OR tro2.hidden = 0)
+             AND l2.timestamp IS NOT NULL) as tracks_listened,
+            (SELECT COUNT(l2.timestamp)
+             FROM tracks t2
+             LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
+             LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
+             WHERE t2.release_mbid = r.release_mbid
+             AND (tro2.hidden IS NULL OR tro2.hidden = 0)) as total_listens,
+            (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) / 60000.0 AS INTEGER)
+             FROM tracks t2
+             LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
+             LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
+             WHERE t2.release_mbid = r.release_mbid
+             AND (tro2.hidden IS NULL OR tro2.hidden = 0)) as total_minutes
         FROM releases r
         LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         JOIN tracks t ON r.release_mbid = t.release_mbid
-        LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         JOIN artists a ON ta.artist_mbid = a.artist_mbid
         LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-        LEFT JOIN listens l ON t.track_mbid = l.track_mbid
         WHERE (ro.hidden IS NULL OR ro.hidden = 0)
         AND (ao.hidden IS NULL OR ao.hidden = 0)
         GROUP BY r.release_mbid, a.artist_mbid
