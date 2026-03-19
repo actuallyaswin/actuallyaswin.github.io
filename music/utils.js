@@ -75,6 +75,7 @@ function formatNumber(num) {
 }
 
 function escapeHtml(text) {
+    if (!text) return '';
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
@@ -87,4 +88,54 @@ function getFallbackImageUrl() {
             <text x="100" y="115" text-anchor="middle" font-size="80" fill="#475569">♪</text>
         </svg>
     `);
+}
+
+const COLLAGE_SIZES = { 10: 3, 20: 4, 50: 7, 100: 10 };
+
+function updateCountLabels(viewMode) {
+    document.querySelectorAll('[data-count]').forEach(btn => {
+        const count = parseInt(btn.dataset.count);
+        if (viewMode === 'collage') {
+            const n = COLLAGE_SIZES[count];
+            btn.textContent = `${n}×${n}`;
+        } else {
+            btn.textContent = count;
+        }
+    });
+}
+
+function setupToggleGroup(selector, onChange) {
+    document.querySelectorAll(selector).forEach(btn => {
+        btn.addEventListener('click', e => {
+            document.querySelectorAll(selector).forEach(b => b.classList.remove('active'));
+            e.currentTarget.classList.add('active');
+            onChange(e.currentTarget);
+        });
+    });
+}
+
+function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes, rounded = false }) {
+    const card = document.createElement('a');
+    card.className = 'wide-card';
+    card.href = href;
+
+    const imgSrc = imageUrl || getFallbackImageUrl();
+    card.innerHTML = `
+        <div class="wide-card-thumb${rounded ? ' rounded' : ''}" style="background-image: url('${imgSrc}')"></div>
+        <div class="wide-card-info">
+            <div class="wide-card-name">${escapeHtml(name)}</div>
+            ${meta ? `<div class="wide-card-meta">${meta}</div>` : ''}
+        </div>
+        <div class="wide-card-stats">
+            <span class="stat-item">
+                <i data-lucide="headphones" style="width: 14px; height: 14px;"></i>
+                ${formatNumber(totalListens)}
+            </span>
+            <span class="stat-item">
+                <i data-lucide="clock" style="width: 14px; height: 14px;"></i>
+                ${formatNumber(totalMinutes)} min
+            </span>
+        </div>
+    `;
+    return card;
 }

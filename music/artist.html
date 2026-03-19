@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>aswin.db/music</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
     <script src="theme.js"></script>
 </head>
 <body>
@@ -69,9 +70,9 @@
                 <div class="section-header">
                     <h2>Top Releases</h2>
                     <div class="sort-controls">
-                        <button class="sort-btn active" data-sort-releases="listens" title="Sort by listens">🎧</button>
-                        <button class="sort-btn" data-sort-releases="minutes" title="Sort by minutes">⏱️</button>
-                        <button class="sort-btn" data-sort-releases="date" title="Sort by release date">📅</button>
+                        <button class="sort-btn active" data-sort-releases="listens" title="Sort by listens"><i data-lucide="headphones"></i></button>
+                        <button class="sort-btn" data-sort-releases="minutes" title="Sort by minutes"><i data-lucide="clock"></i></button>
+                        <button class="sort-btn" data-sort-releases="date" title="Sort by release date"><i data-lucide="calendar"></i></button>
                     </div>
                 </div>
                 <div id="releases">
@@ -84,13 +85,13 @@
                 <div class="section-header">
                     <h2>Top Tracks</h2>
                     <div class="sort-controls">
-                        <button class="sort-btn active" data-sort-tracks="listens" title="Sort by listens">🎧</button>
-                        <button class="sort-btn" data-sort-tracks="minutes" title="Sort by minutes">⏱️</button>
+                        <button class="sort-btn active" data-sort-tracks="listens" title="Sort by listens"><i data-lucide="headphones"></i></button>
+                        <button class="sort-btn" data-sort-tracks="minutes" title="Sort by minutes"><i data-lucide="clock"></i></button>
                     </div>
                 </div>
-                <ul class="track-list" id="topTracks">
-                    <li class="loading">Loading tracks...</li>
-                </ul>
+                <div class="track-two-col" id="topTracks">
+                    <div class="loading">Loading tracks...</div>
+                </div>
             </section>
         </div>
 
@@ -99,7 +100,7 @@
         </footer>
 
         <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
-            ☀️
+            <i data-lucide="sun"></i>
         </button>
     </div>
 

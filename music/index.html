@@ -25,75 +25,41 @@
                 <div class="stat-value">-</div>
                 <div class="stat-label">Total Listens</div>
             </div>
-            <div class="stat-card">
+            <a href="top-artists.html" class="stat-card">
                 <div class="stat-value">-</div>
                 <div class="stat-label">Artists</div>
-            </div>
-            <div class="stat-card">
+            </a>
+            <a href="top-albums.html" class="stat-card">
                 <div class="stat-value">-</div>
                 <div class="stat-label">Releases</div>
-            </div>
-            <div class="stat-card">
+            </a>
+            <a href="top-tracks.html" class="stat-card">
                 <div class="stat-value">-</div>
                 <div class="stat-label">Tracks</div>
-            </div>
+            </a>
         </div>
 
         <div class="search-section">
-            <input
-                type="text"
-                id="searchInput"
-                placeholder="Search for an artist..."
-                autocomplete="off"
-            >
-            <div id="searchResults" class="search-results"></div>
-        </div>
-
-        <div class="two-section-layout">
-            <section class="main-content">
-                <div class="section-header">
-                    <h2>Top Artists</h2>
-                    <div class="controls-group">
-                        <div class="sort-controls">
-                            <button class="sort-btn active" data-sort-artists="listens" title="Sort by listens">🎧</button>
-                            <button class="sort-btn" data-sort-artists="minutes" title="Sort by minutes">⏱️</button>
-                        </div>
-                        <span class="control-separator">|</span>
-                        <button class="view-toggle active" id="artistsViewEye" onclick="toggleView('artists', 'stats')" title="Toggle stats overlay">
-                            <i data-lucide="eye"></i>
-                        </button>
-                        <button class="view-toggle" id="artistsViewList" onclick="toggleView('artists', 'list')" title="Toggle list view">
-                            <i data-lucide="list"></i>
-                        </button>
-                    </div>
-                </div>
-                <div id="topArtists" class="image-grid">
-                    <div class="loading">Loading database...</div>
-                </div>
-            </section>
-
-            <section class="main-content">
-                <div class="section-header">
-                    <h2>Top Albums</h2>
-                    <div class="controls-group">
-                        <div class="sort-controls">
-                            <button class="sort-btn active" data-sort-albums="listens" title="Sort by listens">🎧</button>
-                            <button class="sort-btn" data-sort-albums="minutes" title="Sort by minutes">⏱️</button>
-                            <button class="sort-btn" data-sort-albums="date" title="Sort by release date">📅</button>
-                        </div>
-                        <span class="control-separator">|</span>
-                        <button class="view-toggle active" id="albumsViewEye" onclick="toggleView('albums', 'stats')" title="Toggle stats overlay">
-                            <i data-lucide="eye"></i>
-                        </button>
-                        <button class="view-toggle" id="albumsViewList" onclick="toggleView('albums', 'list')" title="Toggle list view">
-                            <i data-lucide="list"></i>
-                        </button>
-                    </div>
-                </div>
-                <div id="topAlbums" class="image-grid">
-                    <div class="loading">Loading albums...</div>
-                </div>
-            </section>
+            <div class="search-col">
+                <input
+                    type="text"
+                    id="searchInput"
+                    class="search-input"
+                    placeholder="Search artists..."
+                    autocomplete="off"
+                >
+                <div id="searchResults" class="search-results"></div>
+            </div>
+            <div class="search-col">
+                <input
+                    type="text"
+                    id="releaseSearchInput"
+                    class="search-input"
+                    placeholder="Search releases..."
+                    autocomplete="off"
+                >
+                <div id="releaseSearchResults" class="search-results"></div>
+            </div>
         </div>
 
         <footer>
@@ -101,7 +67,7 @@
         </footer>
 
         <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
-            ☀️
+            <i data-lucide="sun"></i>
         </button>
     </div>
 

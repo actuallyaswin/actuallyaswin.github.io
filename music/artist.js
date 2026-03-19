@@ -1,5 +1,4 @@
 let db = null;
-let overridesDb = null;
 let artistId = null;
 let currentChart = null;
 let chartData = {
@@ -32,7 +31,7 @@ async function init() {
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
 
-        overridesDb = await loadOverridesDatabase(SQL, db);
+        await loadOverridesDatabase(SQL, db);
 
         console.log('Database loaded successfully');
 
@@ -42,6 +41,7 @@ async function init() {
         loadListeningHistory();
         setupChartControls();
         setupSortControls();
+        lucide.createIcons();
     } catch (error) {
         console.error('Error loading database:', error);
         document.getElementById('artistName').textContent = 'Error loading data';
@@ -89,13 +89,7 @@ function loadArtistInfo() {
 
 function loadTopTracks() {
     const sortBy = sortState.tracks;
-    let orderClause;
-
-    if (sortBy === 'minutes') {
-        orderClause = 'total_minutes DESC';
-    } else {
-        orderClause = 'play_count DESC';
-    }
+    const orderClause = sortBy === 'minutes' ? 'total_minutes DESC' : 'play_count DESC';
 
     const result = db.exec(`
         SELECT
@@ -103,11 +97,15 @@ function loadTopTracks() {
             t.track_mbid,
             t.duration_ms,
             COUNT(l.timestamp) as play_count,
-            CAST(COUNT(l.timestamp) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes
+            CAST(COUNT(l.timestamp) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes,
+            COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
+            r.release_mbid
         FROM tracks t
         LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
         JOIN listens l ON t.track_mbid = l.track_mbid
+        LEFT JOIN releases r ON t.release_mbid = r.release_mbid
+        LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         WHERE ta.artist_mbid = '${artistId.replace(/'/g, "''")}'
         AND (tro.hidden IS NULL OR tro.hidden = 0)
         GROUP BY t.track_mbid
@@ -119,26 +117,31 @@ function loadTopTracks() {
     container.innerHTML = '';
 
     if (!result || result.values.length === 0) {
-        container.innerHTML = '<li class="loading">No tracks found</li>';
+        container.innerHTML = '<div class="loading">No tracks found</div>';
         return;
     }
 
-    result.values.forEach(([trackName, trackMbid, durationMs, playCount, totalMinutes]) => {
-        const li = document.createElement('li');
-        li.className = 'track-item';
-
-        const statsText = sortBy === 'minutes'
-            ? `${formatNumber(totalMinutes)} min · ${formatNumber(playCount)} plays`
-            : `${formatNumber(playCount)} plays · ${formatNumber(totalMinutes)} min`;
-
-        li.innerHTML = `
-            <div class="track-info">
-                <div class="track-name">${escapeHtml(trackName)}</div>
+    result.values.forEach(([trackName, trackMbid, durationMs, playCount, totalMinutes, albumArtUrl, releaseMbid]) => {
+        const card = document.createElement('a');
+        card.className = 'track-row';
+        card.href = releaseMbid ? `release.html?id=${encodeURIComponent(releaseMbid)}` : '#';
+        const imgSrc = albumArtUrl || getFallbackImageUrl();
+        card.innerHTML = `
+            <div class="track-row-thumb" style="background-image: url('${imgSrc}')"></div>
+            <div class="track-row-info">
+                <div class="track-row-name">${escapeHtml(trackName)}</div>
             </div>
-            <div class="track-plays">${statsText}</div>
+            <div class="track-row-stats">
+                <span class="stat-item">
+                    <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
+                    ${formatNumber(playCount)}
+                </span>
+            </div>
         `;
-        container.appendChild(li);
+        container.appendChild(card);
     });
+
+    lucide.createIcons();
 }
 
 function loadReleases() {
@@ -301,24 +304,14 @@ function loadListeningHistory() {
 }
 
 function setupChartControls() {
-    // Granularity buttons
-    document.querySelectorAll('[data-granularity]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('[data-granularity]').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            chartState.granularity = e.target.dataset.granularity;
-            renderChart();
-        });
+    setupToggleGroup('[data-granularity]', btn => {
+        chartState.granularity = btn.dataset.granularity;
+        renderChart();
     });
 
-    // Type buttons
-    document.querySelectorAll('[data-type]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('[data-type]').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            chartState.type = e.target.dataset.type;
-            renderChart();
-        });
+    setupToggleGroup('[data-type]', btn => {
+        chartState.type = btn.dataset.type;
+        renderChart();
     });
 
     // Listen for theme changes to update chart colors
@@ -339,24 +332,14 @@ function setupChartControls() {
 }
 
 function setupSortControls() {
-    // Track sort buttons
-    document.querySelectorAll('[data-sort-tracks]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('[data-sort-tracks]').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            sortState.tracks = e.target.dataset.sortTracks;
-            loadTopTracks();
-        });
+    setupToggleGroup('[data-sort-tracks]', btn => {
+        sortState.tracks = btn.dataset.sortTracks;
+        loadTopTracks();
     });
 
-    // Release sort buttons
-    document.querySelectorAll('[data-sort-releases]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('[data-sort-releases]').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            sortState.releases = e.target.dataset.sortReleases;
-            loadReleases();
-        });
+    setupToggleGroup('[data-sort-releases]', btn => {
+        sortState.releases = btn.dataset.sortReleases;
+        loadReleases();
     });
 }
 
@@ -456,17 +439,6 @@ function renderChart() {
             }
         }
     });
-}
-
-function formatNumber(num) {
-    return num.toLocaleString();
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 init();

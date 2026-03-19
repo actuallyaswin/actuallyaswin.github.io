@@ -30,61 +30,60 @@
             <p class="subtitle" id="yearSummary">Loading...</p>
         </header>
 
-        <div class="two-section-layout">
-            <section class="main-content">
-                <div class="section-header">
-                    <h2>Top Artists</h2>
-                    <div class="controls-group">
-                        <div class="sort-controls">
-                            <button class="sort-btn active" data-sort-artists="listens" title="Sort by listens">🎧</button>
-                            <button class="sort-btn" data-sort-artists="minutes" title="Sort by minutes">⏱️</button>
-                        </div>
-                        <span class="control-separator">|</span>
-                        <button class="view-toggle active" id="artistsViewEye" onclick="toggleView('artists', 'stats')" title="Toggle stats overlay">
-                            <i data-lucide="eye"></i>
-                        </button>
-                        <button class="view-toggle" id="artistsViewList" onclick="toggleView('artists', 'list')" title="Toggle list view">
-                            <i data-lucide="list"></i>
-                        </button>
-                    </div>
+        <div class="page-controls">
+            <div class="control-block">
+                <span class="control-block-label">Sort By</span>
+                <div class="sort-controls">
+                    <button class="sort-btn active" data-sort="listens" title="Sort by listens"><i data-lucide="headphones"></i></button>
+                    <button class="sort-btn" data-sort="minutes" title="Sort by minutes"><i data-lucide="clock"></i></button>
                 </div>
-                <div id="topArtists" class="image-grid">
-                    <div class="loading">Loading artists...</div>
+            </div>
+            <div class="control-block">
+                <span class="control-block-label">#</span>
+                <div class="sort-controls">
+                    <button class="sort-btn active" data-count="10">10</button>
+                    <button class="sort-btn" data-count="20">20</button>
+                    <button class="sort-btn" data-count="50">50</button>
+                    <button class="sort-btn" data-count="100">100</button>
                 </div>
-            </section>
-
-            <section class="main-content">
-                <div class="section-header">
-                    <h2>Top Albums</h2>
-                    <div class="controls-group">
-                        <div class="sort-controls">
-                            <button class="sort-btn active" data-sort-albums="listens" title="Sort by listens">🎧</button>
-                            <button class="sort-btn" data-sort-albums="minutes" title="Sort by minutes">⏱️</button>
-                        </div>
-                        <span class="control-separator">|</span>
-                        <button class="view-toggle" id="albumFilterToggle" title="Filter to albums released this year">
-                            <i data-lucide="filter"></i>
-                        </button>
-                        <button class="view-toggle active" id="albumsViewEye" onclick="toggleView('albums', 'stats')" title="Toggle stats overlay">
-                            <i data-lucide="eye"></i>
-                        </button>
-                        <button class="view-toggle" id="albumsViewList" onclick="toggleView('albums', 'list')" title="Toggle list view">
-                            <i data-lucide="list"></i>
-                        </button>
-                    </div>
+            </div>
+            <div class="control-block">
+                <span class="control-block-label">Display</span>
+                <div class="sort-controls">
+                    <button class="sort-btn active" id="viewList" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
+                    <button class="sort-btn" id="viewTiles" data-view="tiles" title="Tiles"><i data-lucide="layout-grid"></i></button>
+                    <button class="sort-btn" id="viewCollage" data-view="collage" title="Collage"><i data-lucide="grid-3x3"></i></button>
                 </div>
-                <div id="topAlbums" class="image-grid">
-                    <div class="loading">Loading albums...</div>
+            </div>
+            <div class="control-block">
+                <span class="control-block-label">Filter</span>
+                <div class="sort-controls">
+                    <button class="sort-btn active" data-filter="this-year">THIS YEAR</button>
+                    <button class="sort-btn" data-filter="all-years">ALL YEARS</button>
                 </div>
-            </section>
+            </div>
         </div>
+
+        <section class="year-section">
+            <h2>Releases</h2>
+            <div id="releasesContainer" class="image-grid">
+                <div class="loading">Loading releases...</div>
+            </div>
+        </section>
+
+        <section class="year-section">
+            <h2>Artists</h2>
+            <div id="artistsContainer" class="image-grid">
+                <div class="loading">Loading artists...</div>
+            </div>
+        </section>
 
         <footer>
             <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
         </footer>
 
         <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
-            ☀️
+            <i data-lucide="sun"></i>
         </button>
     </div>
 

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>aswin.db/music</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
     <script src="theme.js"></script>
 </head>
 <body>
@@ -66,9 +67,9 @@
         <!-- Tracks -->
         <section>
             <h2>Tracks</h2>
-            <ul class="track-list" id="trackList">
-                <li class="loading">Loading tracks...</li>
-            </ul>
+            <div class="track-two-col" id="trackList">
+                <div class="loading">Loading tracks...</div>
+            </div>
         </section>
 
         <footer>
@@ -76,7 +77,7 @@
         </footer>
 
         <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
-            ☀️
+            <i data-lucide="sun"></i>
         </button>
     </div>
 

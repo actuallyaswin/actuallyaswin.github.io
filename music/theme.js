@@ -28,8 +28,10 @@ function applyTheme(theme) {
 function updateThemeToggleIcon(theme) {
     const toggle = document.getElementById('themeToggle');
     if (toggle) {
-        toggle.textContent = theme === 'light' ? '🌙' : '☀️';
+        const iconName = theme === 'light' ? 'moon' : 'sun';
+        toggle.innerHTML = `<i data-lucide="${iconName}"></i>`;
         toggle.setAttribute('aria-label', `Switch to ${theme === 'light' ? 'dark' : 'light'} mode`);
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     }
 }
 

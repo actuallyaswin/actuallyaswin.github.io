@@ -1,5 +1,4 @@
 let db = null;
-let overridesDb = null;
 let releaseId = null;
 let currentChart = null;
 let chartData = {
@@ -28,7 +27,7 @@ async function init() {
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
 
-        overridesDb = await loadOverridesDatabase(SQL, db);
+        await loadOverridesDatabase(SQL, db);
 
         console.log('Database loaded successfully');
 
@@ -36,6 +35,7 @@ async function init() {
         loadTracks();
         loadListeningHistory();
         setupChartControls();
+        lucide.createIcons();
     } catch (error) {
         console.error('Error loading database:', error);
         document.getElementById('releaseName').textContent = 'Error loading data';
@@ -112,12 +112,14 @@ function loadTracks() {
             COALESCE(tro.track_name, t.track_name) as track_name,
             t.track_mbid,
             GROUP_CONCAT(DISTINCT a.artist_name) as artists,
-            COUNT(l.timestamp) as play_count
+            (SELECT COUNT(*) FROM listens l WHERE l.track_mbid = t.track_mbid) as play_count,
+            COALESCE(ro.album_art_url, r.album_art_url) as album_art_url
         FROM tracks t
         LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid
         LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
-        LEFT JOIN listens l ON t.track_mbid = l.track_mbid
+        LEFT JOIN releases r ON t.release_mbid = r.release_mbid
+        LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         WHERE t.release_mbid = '${releaseId.replace(/'/g, "''")}'
         AND (tro.hidden IS NULL OR tro.hidden = 0)
         GROUP BY t.track_mbid
@@ -128,22 +130,31 @@ function loadTracks() {
     container.innerHTML = '';
 
     if (!result || result.values.length === 0) {
-        container.innerHTML = '<li class="loading">No tracks found</li>';
+        container.innerHTML = '<div class="loading">No tracks found</div>';
         return;
     }
 
-    result.values.forEach(([trackName, trackMbid, artists, playCount]) => {
-        const li = document.createElement('li');
-        li.className = 'track-item';
-        li.innerHTML = `
-            <div class="track-info">
-                <div class="track-name">${escapeHtml(trackName)}</div>
-                <div class="track-artists">${escapeHtml(artists)}</div>
+    result.values.forEach(([trackName, trackMbid, artists, playCount, albumArtUrl]) => {
+        const row = document.createElement('div');
+        row.className = 'track-row';
+        const imgSrc = albumArtUrl || getFallbackImageUrl();
+        row.innerHTML = `
+            <div class="track-row-thumb" style="background-image: url('${imgSrc}')"></div>
+            <div class="track-row-info">
+                <div class="track-row-name">${escapeHtml(trackName)}</div>
+                ${artists ? `<div class="track-row-artist">${escapeHtml(artists)}</div>` : ''}
             </div>
-            <div class="track-plays">${playCount > 0 ? formatNumber(playCount) + ' plays' : 'Not played'}</div>
+            <div class="track-row-stats">
+                <span class="stat-item">
+                    <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
+                    ${playCount > 0 ? formatNumber(playCount) : '—'}
+                </span>
+            </div>
         `;
-        container.appendChild(li);
+        container.appendChild(row);
     });
+
+    lucide.createIcons();
 }
 
 function loadListeningHistory() {
@@ -234,24 +245,14 @@ function loadListeningHistory() {
 }
 
 function setupChartControls() {
-    // Granularity buttons
-    document.querySelectorAll('[data-granularity]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('[data-granularity]').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            chartState.granularity = e.target.dataset.granularity;
-            renderChart();
-        });
+    setupToggleGroup('[data-granularity]', btn => {
+        chartState.granularity = btn.dataset.granularity;
+        renderChart();
     });
 
-    // Type buttons
-    document.querySelectorAll('[data-type]').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('[data-type]').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            chartState.type = e.target.dataset.type;
-            renderChart();
-        });
+    setupToggleGroup('[data-type]', btn => {
+        chartState.type = btn.dataset.type;
+        renderChart();
     });
 
     // Listen for theme changes to update chart colors
@@ -368,17 +369,6 @@ function renderChart() {
             }
         }
     });
-}
-
-function formatNumber(num) {
-    return num.toLocaleString();
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 init();
