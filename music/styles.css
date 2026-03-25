@@ -38,10 +38,10 @@
 
 /* Light Mode */
 :root[data-theme="light"] {
-    --primary: #4f46e5;
-    --primary-dark: #4338ca;
-    --primary-light: #6366f1;
-    --accent: #db2777;
+    --primary: #4a7a35;
+    --primary-dark: #3a6128;
+    --primary-light: #87ae73;
+    --accent: #87ae73;
 
     --bg: #fafbfc;
     --bg-secondary: #f1f3f5;
@@ -58,22 +58,26 @@
     --error: #dc2626;
     --warning: #d97706;
 
-    --shadow-primary: rgba(79, 70, 229, 0.15);
+    --shadow-primary: rgba(74, 122, 53, 0.15);
     --shadow-sm: rgba(0, 0, 0, 0.05);
     --shadow-md: rgba(0, 0, 0, 0.1);
 
-    --chart-bg: rgba(79, 70, 229, 0.1);
-    --chart-bg-solid: rgba(79, 70, 229, 0.8);
+    --chart-bg: rgba(74, 122, 53, 0.1);
+    --chart-bg-solid: rgba(74, 122, 53, 0.8);
 
     --overlay: rgba(0, 0, 0, 0.3);
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-family: 'Lato', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg);
     color: var(--text);
     line-height: 1.6;
     transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Raleway', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 .container {
@@ -560,6 +564,11 @@ a.stat-card:hover .stat-label::after {
 
 .sort-btn.active {
     background: var(--primary);
+}
+
+:root[data-theme="light"] .sort-btn.active {
+    background: #87ae73;
+    color: #1a2d13;
 }
 
 /* Image Grid */
