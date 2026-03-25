@@ -10,70 +10,26 @@
 </head>
 <body>
     <div class="container">
-        <header>
-            <div class="site-logo">
-                <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-            </div>
-            <p class="subtitle">
-                Explore data through the years:
-                <a href="year.html" class="year-link" id="yearRange">2011 – 2025</a>
-            </p>
-        </header>
-
-        <div class="stats" id="stats">
-            <div class="stat-card">
-                <div class="stat-value">-</div>
-                <div class="stat-label">Total Listens</div>
-            </div>
-            <a href="top-artists.html" class="stat-card">
-                <div class="stat-value">-</div>
-                <div class="stat-label">Artists</div>
-            </a>
-            <a href="top-albums.html" class="stat-card">
-                <div class="stat-value">-</div>
-                <div class="stat-label">Releases</div>
-            </a>
-            <a href="top-tracks.html" class="stat-card">
-                <div class="stat-value">-</div>
-                <div class="stat-label">Tracks</div>
-            </a>
+        <div id="view-container">
+            <div class="loading">Loading database...</div>
         </div>
-
-        <div class="search-section">
-            <div class="search-col">
-                <input
-                    type="text"
-                    id="searchInput"
-                    class="search-input"
-                    placeholder="Search artists..."
-                    autocomplete="off"
-                >
-                <div id="searchResults" class="search-results"></div>
-            </div>
-            <div class="search-col">
-                <input
-                    type="text"
-                    id="releaseSearchInput"
-                    class="search-input"
-                    placeholder="Search releases..."
-                    autocomplete="off"
-                >
-                <div id="releaseSearchResults" class="search-results"></div>
-            </div>
-        </div>
-
-        <footer>
-            <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
-        </footer>
-
         <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
             <i data-lucide="sun"></i>
         </button>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="config.js"></script>
     <script src="utils.js"></script>
+    <script src="views/home.js"></script>
+    <script src="views/year.js"></script>
+    <script src="views/top-albums.js"></script>
+    <script src="views/top-artists.js"></script>
+    <script src="views/top-tracks.js"></script>
+    <script src="views/artist.js"></script>
+    <script src="views/release.js"></script>
+    <script src="views/genre.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

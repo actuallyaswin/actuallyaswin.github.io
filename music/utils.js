@@ -32,7 +32,8 @@ async function loadOverridesDatabase(SQL, mainDb) {
         spotify_album_id TEXT,
         hidden INTEGER DEFAULT 0,
         updated_at INTEGER,
-        notes TEXT
+        notes TEXT,
+        aoty_url TEXT
     )`);
     mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.track_overrides (
         track_mbid TEXT PRIMARY KEY,
@@ -42,9 +43,20 @@ async function loadOverridesDatabase(SQL, mainDb) {
         updated_at INTEGER,
         notes TEXT
     )`);
+    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.genres (
+        aoty_id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL
+    )`);
+    mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.release_genres (
+        release_mbid TEXT NOT NULL,
+        aoty_genre_id INTEGER NOT NULL,
+        is_primary INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (release_mbid, aoty_genre_id)
+    )`);
 
     if (overridesDb) {
-        const tables = ['artist_overrides', 'release_overrides', 'track_overrides'];
+        const tables = ['artist_overrides', 'release_overrides', 'track_overrides', 'genres', 'release_genres'];
         for (const table of tables) {
             try {
                 const rows = overridesDb.exec(`SELECT * FROM ${table}`);
@@ -91,6 +103,14 @@ function getFallbackImageUrl() {
 }
 
 const COLLAGE_SIZES = { 10: 3, 20: 4, 50: 7, 100: 10 };
+
+function renderGenreTags(rows) {
+    // rows: [[aoty_id, name, is_primary], ...]
+    if (!rows || !rows.length) return '';
+    return rows.map(([id, name, isPrimary]) =>
+        `<a href="?view=genre&id=${id}" class="genre-tag${isPrimary ? '' : ' genre-tag-secondary'}">${escapeHtml(name)}</a>`
+    ).join(', ');
+}
 
 function updateCountLabels(viewMode) {
     document.querySelectorAll('[data-count]').forEach(btn => {

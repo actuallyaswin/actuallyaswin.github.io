@@ -231,6 +231,34 @@ header h1 {
     }
 }
 
+/* Genre tags */
+.genre-list {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0.35rem 0 0.75rem;
+    line-height: 1.6;
+    text-align: left;
+}
+
+.genre-tag {
+    color: var(--text-secondary);
+    text-decoration: none;
+}
+
+.genre-tag:hover {
+    color: var(--primary);
+    text-decoration: underline;
+}
+
+.genre-tag-secondary {
+    color: var(--text-tertiary);
+}
+
+.genre-year-count {
+    color: var(--text-tertiary);
+    font-size: 0.85rem;
+}
+
 /* Release page specific styles */
 .release-artist {
     font-size: 1.15rem;

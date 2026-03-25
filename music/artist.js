@@ -58,7 +58,7 @@ function loadArtistInfo() {
             COUNT(DISTINCT t.release_mbid) as total_releases
         FROM artists a
         LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-        LEFT JOIN track_artists ta ON a.artist_mbid = ta.artist_mbid AND ta.role = 'main'
+        LEFT JOIN (SELECT DISTINCT artist_mbid, track_mbid FROM track_artists WHERE role = 'main') ta ON a.artist_mbid = ta.artist_mbid
         LEFT JOIN tracks t ON ta.track_mbid = t.track_mbid
         LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
@@ -96,19 +96,20 @@ function loadTopTracks() {
             COALESCE(tro.track_name, t.track_name) as track_name,
             t.track_mbid,
             t.duration_ms,
-            COUNT(l.timestamp) as play_count,
-            CAST(COUNT(l.timestamp) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes,
+            (SELECT COUNT(*) FROM listens l WHERE l.track_mbid = t.track_mbid) as play_count,
+            CAST((SELECT COUNT(*) FROM listens l WHERE l.track_mbid = t.track_mbid) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes,
             COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
             r.release_mbid
         FROM tracks t
         LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-        JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
-        JOIN listens l ON t.track_mbid = l.track_mbid
         LEFT JOIN releases r ON t.release_mbid = r.release_mbid
         LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-        WHERE ta.artist_mbid = '${artistId.replace(/'/g, "''")}'
+        WHERE t.track_mbid IN (
+            SELECT DISTINCT track_mbid FROM track_artists
+            WHERE artist_mbid = '${artistId.replace(/'/g, "''")}' AND role = 'main'
+        )
         AND (tro.hidden IS NULL OR tro.hidden = 0)
-        GROUP BY t.track_mbid
+        AND (SELECT COUNT(*) FROM listens l WHERE l.track_mbid = t.track_mbid) > 0
         ORDER BY ${orderClause}
         LIMIT 20
     `)[0];
@@ -169,9 +170,9 @@ function loadReleases() {
         LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
         JOIN tracks t ON r.release_mbid = t.release_mbid
         LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-        JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
+        JOIN (SELECT DISTINCT track_mbid FROM track_artists WHERE artist_mbid = '${artistId.replace(/'/g, "''")}' AND role = 'main') ta ON t.track_mbid = ta.track_mbid
         LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-        WHERE ta.artist_mbid = '${artistId.replace(/'/g, "''")}'
+        WHERE (ro.hidden IS NULL OR ro.hidden = 0)
         AND (ro.hidden IS NULL OR ro.hidden = 0)
         GROUP BY r.release_mbid
         HAVING total_listens > 0

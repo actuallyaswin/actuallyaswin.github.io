@@ -428,6 +428,11 @@ function setupYearNavigation() {
     });
 
     updateNavigationButtons();
+
+    window.addEventListener('popstate', e => {
+        currentYear = e.state?.year ?? parseInt(new URLSearchParams(window.location.search).get('year')) ?? MAX_YEAR;
+        switchYear();
+    });
 }
 
 function updateNavigationButtons() {
@@ -436,7 +441,18 @@ function updateNavigationButtons() {
 }
 
 function navigateToYear(year) {
-    window.location.href = `year.html?year=${year}`;
+    currentYear = year;
+    history.pushState({ year }, '', `year.html?year=${year}`);
+    switchYear();
+}
+
+function switchYear() {
+    document.getElementById('yearSelect').value = currentYear;
+    document.title = `aswin.db/music - ${currentYear}`;
+    updateNavigationButtons();
+    loadYearStats();
+    loadReleases();
+    loadArtists();
 }
 
 init();
