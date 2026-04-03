@@ -69,20 +69,18 @@ const ViewTopArtists = (() => {
 
         const result = _db.exec(`
             SELECT
-                a.artist_mbid,
-                a.artist_name,
-                COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
-                COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.track_mbid END) as unique_tracks,
-                COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_listens,
-                CAST(SUM(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                a.id,
+                a.name,
+                a.image_url,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN l.id END) as unique_tracks,
+                COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
+                CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
             FROM artists a
-            LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-            LEFT JOIN (SELECT DISTINCT artist_mbid, track_mbid FROM track_artists WHERE role = 'main') ta ON a.artist_mbid = ta.artist_mbid
-            LEFT JOIN tracks t ON ta.track_mbid = t.track_mbid
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-            WHERE (ao.hidden IS NULL OR ao.hidden = 0)
-            GROUP BY a.artist_mbid
+            LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
+            LEFT JOIN tracks t ON ta.track_id = t.id
+            LEFT JOIN listens l ON t.id = l.track_id
+            WHERE a.hidden = 0
+            GROUP BY a.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}
             LIMIT 100
@@ -91,6 +89,19 @@ const ViewTopArtists = (() => {
         cachedResults = result ? result.values : [];
         renderArtists();
     }
+
+    function getCertTier(totalListens) {
+        if (totalListens >= 1000) return 'diamond';
+        if (totalListens >= 500)  return 'platinum';
+        if (totalListens >= 250)  return 'gold';
+        return null;
+    }
+
+    const CERT_LABELS = {
+        gold: 'Gold — 250+ plays',
+        platinum: 'Platinum — 500+ plays',
+        diamond: 'Diamond — 1,000+ plays',
+    };
 
     function renderArtists() {
         const container = document.getElementById('artistsContainer');
@@ -104,10 +115,10 @@ const ViewTopArtists = (() => {
             container.className = 'collage-grid';
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedResults.forEach((row, i) => {
-                const [mbid, name, imageUrl] = row;
+                const [id, name, imageUrl] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=artist&id=${encodeURIComponent(mbid)}`;
+                card.href = `?view=artist&id=${encodeURIComponent(id)}`;
                 const imgSrc = imageUrl || getFallbackImageUrl();
                 card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
                 if (i >= show) card.style.display = 'none';
@@ -116,9 +127,9 @@ const ViewTopArtists = (() => {
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedResults.forEach((row, i) => {
-                const [mbid, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
                 const card = createWideCard({
-                    href: `?view=artist&id=${encodeURIComponent(mbid)}`,
+                    href: `?view=artist&id=${encodeURIComponent(id)}`,
                     imageUrl,
                     name,
                     meta: `${formatNumber(uniqueTracks)} tracks`,
@@ -126,16 +137,19 @@ const ViewTopArtists = (() => {
                     totalMinutes,
                     rounded: true
                 });
+                const cert = getCertTier(totalListens);
+                if (cert) card.classList.add(`release-card-cert-${cert}`);
                 if (i >= countLimit) card.style.display = 'none';
                 container.appendChild(card);
             });
         } else {
             container.className = 'image-grid';
             cachedResults.forEach((row, i) => {
-                const [mbid, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const cert = getCertTier(totalListens);
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=artist&id=${encodeURIComponent(mbid)}`;
+                card.href = `?view=artist&id=${encodeURIComponent(id)}`;
                 const imgSrc = imageUrl || getFallbackImageUrl();
                 card.innerHTML = `
                     <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>

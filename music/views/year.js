@@ -13,7 +13,6 @@ const ViewYear = (() => {
     function mount(container, db, params) {
         _db = db;
 
-        // Load year range once (cached after first mount)
         if (MIN_YEAR === null) {
             const yearRange = _db.exec(`
                 SELECT MIN(year) as min_year, MAX(year) as max_year
@@ -144,27 +143,21 @@ const ViewYear = (() => {
     function loadYearStats() {
         const result = _db.exec(`
             SELECT
-                (SELECT COUNT(DISTINCT l2.main_artist_mbid)
+                (SELECT COUNT(DISTINCT ta.artist_id)
                  FROM listens l2
-                 LEFT JOIN overrides.track_overrides tro2 ON l2.track_mbid = tro2.track_mbid
-                 LEFT JOIN artists a2 ON l2.main_artist_mbid = a2.artist_mbid
-                 LEFT JOIN overrides.artist_overrides ao2 ON a2.artist_mbid = ao2.artist_mbid
-                 WHERE l2.year = ${currentYear}
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)
-                 AND (ao2.hidden IS NULL OR ao2.hidden = 0)) as artist_count,
-                (SELECT COUNT(DISTINCT t2.release_mbid)
+                 JOIN tracks t2 ON l2.track_id = t2.id
+                 JOIN track_artists ta ON t2.id = ta.track_id AND ta.role = 'main'
+                 JOIN artists a2 ON ta.artist_id = a2.id
+                 WHERE l2.year = ${currentYear} AND t2.hidden = 0 AND a2.hidden = 0) as artist_count,
+                (SELECT COUNT(DISTINCT t2.release_id)
                  FROM listens l2
-                 JOIN tracks t2 ON l2.track_mbid = t2.track_mbid
-                 LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                 LEFT JOIN overrides.release_overrides ro2 ON t2.release_mbid = ro2.release_mbid
-                 WHERE l2.year = ${currentYear}
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)
-                 AND (ro2.hidden IS NULL OR ro2.hidden = 0)) as album_count,
+                 JOIN tracks t2 ON l2.track_id = t2.id
+                 JOIN releases r2 ON t2.release_id = r2.id
+                 WHERE l2.year = ${currentYear} AND t2.hidden = 0 AND r2.hidden = 0) as album_count,
                 (SELECT COUNT(*)
                  FROM listens l2
-                 LEFT JOIN overrides.track_overrides tro2 ON l2.track_mbid = tro2.track_mbid
-                 WHERE l2.year = ${currentYear}
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)) as total_listens
+                 JOIN tracks t2 ON l2.track_id = t2.id
+                 WHERE l2.year = ${currentYear} AND t2.hidden = 0) as total_listens
         `)[0];
 
         const el = document.getElementById('yearSummary');
@@ -182,56 +175,40 @@ const ViewYear = (() => {
         const thisYearFilter = filterMode === 'this-year';
 
         const whereClause = thisYearFilter
-            ? `(ro.hidden IS NULL OR ro.hidden = 0)
-               AND (ao.hidden IS NULL OR ao.hidden = 0)
-               AND COALESCE(ro.release_year, r.release_year) = ${currentYear}`
-            : `l.year = ${currentYear}
-               AND (ro.hidden IS NULL OR ro.hidden = 0)
-               AND (ao.hidden IS NULL OR ao.hidden = 0)`;
+            ? `r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) AND r.release_year = ${currentYear}`
+            : `l.year = ${currentYear} AND r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)`;
 
         const fromClause = thisYearFilter
             ? `FROM releases r
-               LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-               JOIN tracks t ON r.release_mbid = t.release_mbid
-               LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-               LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-               JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
-               JOIN artists a ON ta.artist_mbid = a.artist_mbid
-               LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid`
+               LEFT JOIN artists a ON a.id = r.primary_artist_id
+               LEFT JOIN tracks t ON r.id = t.release_id AND t.hidden = 0
+               LEFT JOIN listens l ON t.id = l.track_id`
             : `FROM listens l
-               JOIN tracks t ON l.track_mbid = t.track_mbid
-               LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-               JOIN releases r ON t.release_mbid = r.release_mbid
-               LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-               JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
-               JOIN artists a ON ta.artist_mbid = a.artist_mbid
-               LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid`;
+               JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+               JOIN releases r ON t.release_id = r.id
+               LEFT JOIN artists a ON a.id = r.primary_artist_id`;
 
         const result = _db.exec(`
             SELECT
-                r.release_mbid,
-                r.release_name,
-                COALESCE(ro.release_year, r.release_year) as release_year,
-                COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
-                a.artist_name,
-                a.artist_mbid,
+                r.id,
+                r.title,
+                r.release_year,
+                r.album_art_url,
+                a.name,
+                a.id as artist_id,
                 (SELECT COUNT(*)
                  FROM tracks t2
-                 LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                 LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
-                 WHERE t2.release_mbid = r.release_mbid
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)
+                 JOIN listens l2 ON t2.id = l2.track_id
+                 WHERE t2.release_id = r.id AND t2.hidden = 0
                  AND l2.year = ${currentYear}) as total_listens,
                 (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) / 60000.0 AS INTEGER)
                  FROM tracks t2
-                 LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                 LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
-                 WHERE t2.release_mbid = r.release_mbid
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)
+                 JOIN listens l2 ON t2.id = l2.track_id
+                 WHERE t2.release_id = r.id AND t2.hidden = 0
                  AND l2.year = ${currentYear}) as total_minutes
             ${fromClause}
             WHERE ${whereClause}
-            GROUP BY r.release_mbid, a.artist_mbid
+            GROUP BY r.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}
             LIMIT 100
@@ -243,28 +220,24 @@ const ViewYear = (() => {
 
     function loadArtists() {
         const orderClause = sortBy === 'minutes' ? 'total_minutes DESC' : 'total_listens DESC';
-        let query;
 
+        let query;
         if (filterMode === 'this-year') {
             query = `
                 SELECT
-                    a.artist_mbid,
-                    a.artist_name,
-                    COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
-                    COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) AND l.year = ${currentYear} THEN l.track_mbid END) as unique_tracks,
-                    COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) AND l.year = ${currentYear} THEN l.timestamp END) as total_listens,
-                    CAST(SUM(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) AND l.year = ${currentYear} THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
-                FROM artists a
-                LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-                LEFT JOIN (SELECT DISTINCT artist_mbid, track_mbid FROM track_artists WHERE role = 'main') ta ON a.artist_mbid = ta.artist_mbid
-                LEFT JOIN tracks t ON ta.track_mbid = t.track_mbid
-                LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-                LEFT JOIN releases r ON t.release_mbid = r.release_mbid
-                LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-                LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-                WHERE (ao.hidden IS NULL OR ao.hidden = 0)
-                AND COALESCE(ro.release_year, r.release_year) = ${currentYear}
-                GROUP BY a.artist_mbid
+                    a.id,
+                    a.name,
+                    a.image_url,
+                    COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN l.id END) as unique_tracks,
+                    COUNT(CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN l.id END) as total_listens,
+                    CAST(SUM(CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                FROM releases r
+                JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+                JOIN artists a ON ra.artist_id = a.id
+                LEFT JOIN tracks t ON r.id = t.release_id
+                LEFT JOIN listens l ON t.id = l.track_id
+                WHERE r.release_year = ${currentYear} AND r.hidden = 0 AND a.hidden = 0
+                GROUP BY a.id
                 HAVING total_listens > 0
                 ORDER BY ${orderClause}
                 LIMIT 100
@@ -272,22 +245,18 @@ const ViewYear = (() => {
         } else {
             query = `
                 SELECT
-                    a.artist_mbid,
-                    a.artist_name,
-                    COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
-                    COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) AND l.year = ${currentYear} THEN l.track_mbid END) as unique_tracks,
-                    COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) AND l.year = ${currentYear} THEN l.timestamp END) as total_listens,
-                    CAST(SUM(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) AND l.year = ${currentYear} THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                    a.id,
+                    a.name,
+                    a.image_url,
+                    COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN l.id END) as unique_tracks,
+                    COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
+                    CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
                 FROM listens l
-                JOIN tracks t ON l.track_mbid = t.track_mbid
-                LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-                LEFT JOIN (SELECT DISTINCT track_mbid, artist_mbid FROM track_artists WHERE role = 'main') ta ON t.track_mbid = ta.track_mbid
-                LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
-                LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-                WHERE l.year = ${currentYear}
-                AND a.artist_mbid IS NOT NULL
-                AND (ao.hidden IS NULL OR ao.hidden = 0)
-                GROUP BY a.artist_mbid
+                JOIN tracks t ON l.track_id = t.id
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                JOIN artists a ON ta.artist_id = a.id
+                WHERE l.year = ${currentYear} AND t.hidden = 0 AND a.hidden = 0
+                GROUP BY a.id
                 HAVING total_listens > 0
                 ORDER BY ${orderClause}
                 LIMIT 100
@@ -317,10 +286,10 @@ const ViewYear = (() => {
             container.className = 'collage-grid';
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedReleases.forEach((row, i) => {
-                const [releaseMbid, releaseName, releaseYear, albumArtUrl] = row;
+                const [id, title, year, albumArtUrl] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=release&id=${encodeURIComponent(releaseMbid)}`;
+                card.href = `?view=release&id=${encodeURIComponent(id)}`;
                 const imgSrc = albumArtUrl || getFallbackImageUrl();
                 card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
                 if (i >= show) card.style.display = 'none';
@@ -329,12 +298,12 @@ const ViewYear = (() => {
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedReleases.forEach((row, i) => {
-                const [releaseMbid, releaseName, releaseYear, albumArtUrl, artistName, artistMbid, totalListens, totalMinutes] = row;
+                const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes] = row;
                 const card = createWideCard({
-                    href: `?view=release&id=${encodeURIComponent(releaseMbid)}`,
+                    href: `?view=release&id=${encodeURIComponent(id)}`,
                     imageUrl: albumArtUrl,
-                    name: releaseName,
-                    meta: `${escapeHtml(artistName)} · ${releaseYear || 'Unknown'}`,
+                    name: title,
+                    meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
                     totalListens,
                     totalMinutes,
                     rounded: false
@@ -345,16 +314,16 @@ const ViewYear = (() => {
         } else {
             container.className = 'image-grid';
             cachedReleases.forEach((row, i) => {
-                const [releaseMbid, releaseName, releaseYear, albumArtUrl, artistName, artistMbid, totalListens, totalMinutes] = row;
+                const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=release&id=${encodeURIComponent(releaseMbid)}`;
+                card.href = `?view=release&id=${encodeURIComponent(id)}`;
                 const imgSrc = albumArtUrl || getFallbackImageUrl();
                 card.innerHTML = `
                     <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
                     <div class="image-card-overlay">
-                        <div class="image-card-name">${escapeHtml(releaseName)}</div>
-                        <div class="image-card-artist">${escapeHtml(artistName)}</div>
+                        <div class="image-card-name">${escapeHtml(title)}</div>
+                        <div class="image-card-artist">${escapeHtml(artistName || 'Various Artists')}</div>
                         <div class="image-card-stats">
                             <span class="stat-item">
                                 <i data-lucide="headphones" style="width: 14px; height: 14px;"></i>
@@ -393,10 +362,10 @@ const ViewYear = (() => {
             container.className = 'collage-grid';
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedArtists.forEach((row, i) => {
-                const [mbid, name, imageUrl] = row;
+                const [id, name, imageUrl] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=artist&id=${encodeURIComponent(mbid)}`;
+                card.href = `?view=artist&id=${encodeURIComponent(id)}`;
                 const imgSrc = imageUrl || getFallbackImageUrl();
                 card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
                 if (i >= show) card.style.display = 'none';
@@ -405,9 +374,9 @@ const ViewYear = (() => {
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedArtists.forEach((row, i) => {
-                const [mbid, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
                 const card = createWideCard({
-                    href: `?view=artist&id=${encodeURIComponent(mbid)}`,
+                    href: `?view=artist&id=${encodeURIComponent(id)}`,
                     imageUrl,
                     name,
                     meta: `${formatNumber(uniqueTracks)} tracks`,
@@ -421,10 +390,10 @@ const ViewYear = (() => {
         } else {
             container.className = 'image-grid';
             cachedArtists.forEach((row, i) => {
-                const [mbid, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=artist&id=${encodeURIComponent(mbid)}`;
+                card.href = `?view=artist&id=${encodeURIComponent(id)}`;
                 const imgSrc = imageUrl || getFallbackImageUrl();
                 card.innerHTML = `
                     <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
@@ -533,12 +502,10 @@ const ViewYear = (() => {
         const result = _db.exec(`
             SELECT g.aoty_id, g.name, COUNT(*) as listen_count
             FROM listens l
-            JOIN tracks t ON l.track_mbid = t.track_mbid
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            JOIN overrides.release_genres rg ON t.release_mbid = rg.release_mbid AND rg.is_primary = 1
-            JOIN overrides.genres g ON rg.aoty_genre_id = g.aoty_id
-            WHERE l.year = ${currentYear}
-            AND (tro.hidden IS NULL OR tro.hidden = 0)
+            JOIN tracks t ON l.track_id = t.id
+            JOIN release_genres rg ON t.release_id = rg.release_id AND rg.is_primary = 1
+            JOIN genres g ON rg.aoty_genre_id = g.aoty_id
+            WHERE l.year = ${currentYear} AND t.hidden = 0
             GROUP BY g.aoty_id
             ORDER BY listen_count DESC
             LIMIT 10

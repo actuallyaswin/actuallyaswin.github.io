@@ -87,17 +87,11 @@ const ViewHome = (() => {
         const stats = _db.exec(`
             SELECT
                 (SELECT COUNT(*) FROM listens l
-                 LEFT JOIN overrides.track_overrides tro ON l.track_mbid = tro.track_mbid
-                 WHERE (tro.hidden IS NULL OR tro.hidden = 0)) as total_listens,
-                (SELECT COUNT(*) FROM artists a
-                 LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-                 WHERE (ao.hidden IS NULL OR ao.hidden = 0)) as total_artists,
-                (SELECT COUNT(*) FROM releases r
-                 LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-                 WHERE (ro.hidden IS NULL OR ro.hidden = 0)) as total_releases,
-                (SELECT COUNT(*) FROM tracks t
-                 LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-                 WHERE (tro.hidden IS NULL OR tro.hidden = 0)) as total_tracks
+                 JOIN tracks t ON l.track_id = t.id
+                 WHERE t.hidden = 0) as total_listens,
+                (SELECT COUNT(*) FROM artists WHERE hidden = 0) as total_artists,
+                (SELECT COUNT(*) FROM releases WHERE hidden = 0) as total_releases,
+                (SELECT COUNT(*) FROM tracks WHERE hidden = 0) as total_tracks
         `)[0];
 
         const [totalListens, totalArtists, totalReleases, totalTracks] = stats.values[0];
@@ -136,20 +130,23 @@ const ViewHome = (() => {
         const searchResults = document.getElementById('searchResults');
         if (!searchResults) return;
 
+        const safeQ = query.replace(/'/g, "''");
         const result = _db.exec(`
             SELECT
-                a.artist_mbid,
-                a.artist_name,
-                COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_listens
+                a.id,
+                a.name,
+                COUNT(l.id) as total_listens,
+                (SELECT aa.alias FROM artist_aliases aa
+                 WHERE aa.artist_id = a.id AND lower(aa.alias) LIKE lower('%${safeQ}%')
+                 LIMIT 1) as matched_alias
             FROM artists a
-            LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-            LEFT JOIN (SELECT DISTINCT artist_mbid, track_mbid FROM track_artists WHERE role = 'main') ta ON a.artist_mbid = ta.artist_mbid
-            LEFT JOIN tracks t ON ta.track_mbid = t.track_mbid
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-            WHERE a.artist_name LIKE '%${query.replace(/'/g, "''")}%'
-            AND (ao.hidden IS NULL OR ao.hidden = 0)
-            GROUP BY a.artist_mbid
+            LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
+            LEFT JOIN tracks t ON ta.track_id = t.id AND t.hidden = 0
+            LEFT JOIN listens l ON t.id = l.track_id
+            WHERE (a.name LIKE '%${safeQ}%'
+                   OR a.id IN (SELECT artist_id FROM artist_aliases WHERE lower(alias) LIKE lower('%${safeQ}%')))
+            AND a.hidden = 0
+            GROUP BY a.id
             ORDER BY total_listens DESC
             LIMIT 10
         `)[0];
@@ -162,13 +159,14 @@ const ViewHome = (() => {
             return;
         }
 
-        result.values.forEach(([mbid, name, totalListens]) => {
+        result.values.forEach(([id, name, totalListens, matchedAlias]) => {
             const item = document.createElement('a');
             item.className = 'search-result-item';
-            item.href = `?view=artist&id=${encodeURIComponent(mbid)}`;
+            item.href = `?view=artist&id=${encodeURIComponent(id)}`;
+            const showAlias = matchedAlias && name.toLowerCase().indexOf(query.toLowerCase()) === -1;
             item.innerHTML = `
                 <div class="search-result-name">${escapeHtml(name)}</div>
-                <div class="search-result-meta">${formatNumber(totalListens)} plays</div>
+                <div class="search-result-meta">${formatNumber(totalListens)} plays${showAlias ? ` · <span class="search-result-alias">${escapeHtml(matchedAlias)}</span>` : ''}</div>
             `;
             searchResults.appendChild(item);
         });
@@ -206,23 +204,18 @@ const ViewHome = (() => {
 
         const result = _db.exec(`
             SELECT
-                r.release_mbid,
-                r.release_name,
-                COALESCE(ro.release_year, r.release_year) as release_year,
-                a.artist_name,
-                COUNT(l.timestamp) as total_listens
+                r.id,
+                r.title,
+                r.release_year,
+                a.name,
+                COUNT(l.id) as total_listens
             FROM releases r
-            LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-            JOIN tracks t ON r.release_mbid = t.release_mbid
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            JOIN (SELECT DISTINCT track_mbid, artist_mbid FROM track_artists WHERE role = 'main') ta ON t.track_mbid = ta.track_mbid
-            JOIN artists a ON ta.artist_mbid = a.artist_mbid
-            LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-            LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-            WHERE r.release_name LIKE '%${query.replace(/'/g, "''")}%'
-            AND (ro.hidden IS NULL OR ro.hidden = 0)
-            AND (ao.hidden IS NULL OR ao.hidden = 0)
-            GROUP BY r.release_mbid
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
+            LEFT JOIN tracks t ON t.release_id = r.id AND t.hidden = 0
+            LEFT JOIN listens l ON l.track_id = t.id
+            WHERE r.title LIKE '%${query.replace(/'/g, "''")}%'
+            AND r.hidden = 0
+            GROUP BY r.id
             ORDER BY total_listens DESC
             LIMIT 10
         `)[0];
@@ -235,13 +228,13 @@ const ViewHome = (() => {
             return;
         }
 
-        result.values.forEach(([mbid, name, year, artistName, totalListens]) => {
+        result.values.forEach(([id, title, year, artistName, totalListens]) => {
             const item = document.createElement('a');
             item.className = 'search-result-item';
-            item.href = `?view=release&id=${encodeURIComponent(mbid)}`;
+            item.href = `?view=release&id=${encodeURIComponent(id)}`;
             item.innerHTML = `
-                <div class="search-result-name">${escapeHtml(name)}</div>
-                <div class="search-result-meta">${escapeHtml(artistName)}${year ? ` · ${year}` : ''}</div>
+                <div class="search-result-name">${escapeHtml(title)}</div>
+                <div class="search-result-meta">${escapeHtml(artistName || 'Various Artists')}${year ? ` · ${year}` : ''}</div>
             `;
             searchResults.appendChild(item);
         });

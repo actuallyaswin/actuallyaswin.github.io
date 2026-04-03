@@ -2,16 +2,19 @@ const ViewArtist = (() => {
     let _db = null;
     let _artistId = null;
     let _currentChart = null;
-    let _chartData = { monthly: null, yearly: null };
+    let _chartData = { monthly: null, yearly: null, monthlyRaw: null };
     let _chartState = { granularity: 'monthly', type: 'distribution' };
     let _sortState = { tracks: 'listens', releases: 'listens' };
     let _themeObserver = null;
+
+    const CHART_ENABLED = false;
+    const HERO_ENABLED = false;
 
     function mount(container, db, params) {
         _db = db;
         _artistId = params.id;
         _currentChart = null;
-        _chartData = { monthly: null, yearly: null };
+        _chartData = { monthly: null, yearly: null, monthlyRaw: null };
 
         if (!_artistId) {
             navigate({ view: 'home' });
@@ -26,6 +29,8 @@ const ViewArtist = (() => {
                 <a href="javascript:history.back()" class="back-button">← Back</a>
             </div>
 
+            <div id="artistHero" class="artist-hero" hidden></div>
+
             <header id="artistHeader" class="artist-header-layout">
                 <div class="artist-photo-container">
                     <div class="artist-photo" id="artistPhoto">
@@ -36,8 +41,14 @@ const ViewArtist = (() => {
                     </div>
                 </div>
                 <div class="artist-info-container">
-                    <h1 id="artistName">Loading...</h1>
+                    <div class="artist-name-row">
+                        <h1 id="artistName">Loading...</h1>
+                        <p id="artistAka" class="artist-aka" hidden></p>
+                    </div>
+                    <div id="artistMembers" class="artist-members" hidden></div>
+                    <div id="artistMemberOf" class="artist-members" hidden></div>
                     <p id="artistGenres" class="genre-list"></p>
+                    <div id="artistLinks" class="release-links"></div>
                     <div class="stats-compact" id="artistStats">
                         <div class="stat-item">
                             <span class="stat-value" id="totalPlays">-</span>
@@ -52,25 +63,20 @@ const ViewArtist = (() => {
                             <span class="stat-label">releases</span>
                         </div>
                     </div>
+                    <div class="artist-badges" id="artistBadges"></div>
                 </div>
             </header>
 
-            <section class="chart-container">
-                <div class="chart-header">
-                    <h3 class="chart-title">Listening History Over Time</h3>
-                    <div class="chart-controls">
-                        <div class="control-group">
-                            <button class="control-btn${_chartState.granularity === 'monthly' ? ' active' : ''}" data-granularity="monthly">Monthly</button>
-                            <button class="control-btn${_chartState.granularity === 'yearly' ? ' active' : ''}" data-granularity="yearly">Yearly</button>
-                        </div>
-                        <div class="control-group">
-                            <button class="control-btn${_chartState.type === 'distribution' ? ' active' : ''}" data-type="distribution">Distribution</button>
-                            <button class="control-btn${_chartState.type === 'cumulative' ? ' active' : ''}" data-type="cumulative">Cumulative</button>
-                        </div>
-                    </div>
-                </div>
-                <canvas id="historyChart"></canvas>
-            </section>
+            <div class="stats-row">
+                <section class="pulse-section" id="pulseSection" hidden>
+                    <h2>Timeline</h2>
+                    <div class="pulse-rows" id="pulseRows"></div>
+                </section>
+                <section id="recentPlaysSection" hidden>
+                    <h2>Recent Plays</h2>
+                    <div class="recent-plays-list" id="recentPlaysList"></div>
+                </section>
+            </div>
 
             <div class="two-column-layout">
                 <section class="column">
@@ -109,10 +115,11 @@ const ViewArtist = (() => {
         lucide.createIcons();
 
         loadArtistInfo();
+        loadArtistBadges();
         loadTopTracks();
         loadReleases();
         loadListeningHistory();
-        setupChartControls();
+        loadRecentPlays();
         setupSortControls();
     }
 
@@ -128,21 +135,26 @@ const ViewArtist = (() => {
     }
 
     function loadArtistInfo() {
+        const safeId = _artistId.replace(/'/g, "''");
+
         const result = _db.exec(`
             SELECT
-                a.artist_name,
-                COALESCE(ao.profile_image_url, a.profile_image_url) as profile_image_url,
-                COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.track_mbid END) as unique_tracks,
-                COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_plays,
-                COUNT(DISTINCT t.release_mbid) as total_releases
+                a.name,
+                a.image_url,
+                a.hero_image_url,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END) as unique_tracks,
+                COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_plays,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.release_id END) as total_releases,
+                a.spotify_id,
+                a.mbid,
+                a.aoty_id,
+                a.aoty_url
             FROM artists a
-            LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-            LEFT JOIN (SELECT DISTINCT artist_mbid, track_mbid FROM track_artists WHERE role = 'main') ta ON a.artist_mbid = ta.artist_mbid
-            LEFT JOIN tracks t ON ta.track_mbid = t.track_mbid
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-            WHERE a.artist_mbid = '${_artistId.replace(/'/g, "''")}'
-            GROUP BY a.artist_mbid
+            LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
+            LEFT JOIN tracks t ON ta.track_id = t.id
+            LEFT JOIN listens l ON t.id = l.track_id
+            WHERE a.id = '${safeId}'
+            GROUP BY a.id
         `)[0];
 
         if (!result || result.values.length === 0) {
@@ -151,28 +163,58 @@ const ViewArtist = (() => {
             return;
         }
 
-        const [name, profileImageUrl, uniqueTracks, totalPlays, totalReleases] = result.values[0];
+        const [name, imageUrl, heroImageUrl, uniqueTracks, totalPlays, totalReleases,
+               spotifyId, mbid, aotyId, aotyUrl] = result.values[0];
 
-        document.getElementById('artistName').textContent = name;
+        // Load aliases and update name display
+        const aliasResult = _db.exec(`
+            SELECT alias, alias_type FROM artist_aliases
+            WHERE artist_id = '${safeId}'
+            ORDER BY sort_order, alias_type
+        `)[0];
+        const aliases = aliasResult ? aliasResult.values : [];
+        const nativeScript = aliases.find(([, t]) => t === 'native_script');
+        const pastNames    = aliases.filter(([, t]) => t === 'past_name').map(([a]) => a);
+
+        const nameEl = document.getElementById('artistName');
+        if (nativeScript) {
+            nameEl.innerHTML = `${escapeHtml(nativeScript[0])} <span class="artist-romanized">(${escapeHtml(name)})</span>`;
+        } else {
+            nameEl.textContent = name;
+        }
+
+        const akaEl = document.getElementById('artistAka');
+        if (akaEl && pastNames.length > 0) {
+            akaEl.textContent = `formerly ${pastNames.join(', ')}`;
+            akaEl.removeAttribute('hidden');
+        }
+
         document.getElementById('totalPlays').textContent = formatNumber(totalPlays);
         document.getElementById('uniqueTracks').textContent = formatNumber(uniqueTracks);
         document.getElementById('totalReleases').textContent = formatNumber(totalReleases);
         document.title = `aswin.db/music - ${name}`;
 
-        if (profileImageUrl) {
-            document.getElementById('artistPhoto').innerHTML = `<img src="${profileImageUrl}" alt="${escapeHtml(name)}">`;
+        if (imageUrl) {
+            document.getElementById('artistPhoto').innerHTML = `<img src="${imageUrl}" alt="${escapeHtml(name)}">`;
+        }
+
+        const heroEl = document.getElementById('artistHero');
+        if (HERO_ENABLED && heroImageUrl && heroEl) {
+            heroEl.removeAttribute('hidden');
+            heroEl.innerHTML = `<img class="artist-hero-img" src="${heroImageUrl}" alt="">`;
+            document.getElementById('artistHeader').classList.add('has-hero');
         }
 
         const genreResult = _db.exec(`
-            SELECT g.aoty_id, g.name, COUNT(DISTINCT rg.release_mbid) as freq
-            FROM overrides.release_genres rg
-            JOIN overrides.genres g ON rg.aoty_genre_id = g.aoty_id
+            SELECT g.aoty_id, g.name, COUNT(DISTINCT rg.release_id) as freq
+            FROM release_genres rg
+            JOIN genres g ON rg.aoty_genre_id = g.aoty_id
             WHERE rg.is_primary = 1
-            AND rg.release_mbid IN (
-                SELECT DISTINCT t.release_mbid
+            AND rg.release_id IN (
+                SELECT DISTINCT t.release_id
                 FROM track_artists ta
-                JOIN tracks t ON ta.track_mbid = t.track_mbid
-                WHERE ta.artist_mbid = '${_artistId.replace(/'/g, "''")}' AND ta.role = 'main'
+                JOIN tracks t ON ta.track_id = t.id
+                WHERE ta.artist_id = '${safeId}' AND ta.role = 'main' AND t.hidden = 0
             )
             GROUP BY g.aoty_id
             ORDER BY freq DESC
@@ -181,33 +223,82 @@ const ViewArtist = (() => {
 
         const genresEl = document.getElementById('artistGenres');
         if (genresEl && genreResult && genreResult.values.length > 0) {
-            // Pass is_primary=1 for all (already filtered); renderGenreTags expects [id, name, is_primary]
             genresEl.innerHTML = renderGenreTags(genreResult.values.map(([id, name]) => [id, name, 1]));
+        }
+
+        const linksEl = document.getElementById('artistLinks');
+        if (linksEl) {
+            const links = [];
+            if (spotifyId) {
+                links.push({ href: `https://open.spotify.com/artist/${spotifyId}`, img: 'images/spotify.svg', label: 'Spotify' });
+            }
+            if (mbid) {
+                links.push({ href: `https://musicbrainz.org/artist/${mbid}`, img: 'images/musicbrainz.svg', label: 'MusicBrainz' });
+            }
+            const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/artist/${aotyId}/` : null);
+            if (resolvedAotyUrl) {
+                links.push({ href: resolvedAotyUrl, img: 'images/aoty.png', label: 'Album of the Year' });
+            }
+            linksEl.innerHTML = links.map(({ href, img, label }) =>
+                `<a href="${href}" target="_blank" rel="noopener" class="release-link-icon" title="${label}">` +
+                `<img src="${img}" alt="${label}"></a>`
+            ).join('');
+        }
+
+        // Members of this group (supergroup display)
+        const membersResult = _db.exec(`
+            SELECT a.id, a.name FROM artist_members am
+            JOIN artists a ON a.id = am.member_artist_id
+            WHERE am.group_artist_id = '${safeId}'
+            ORDER BY am.sort_order, a.name
+        `)[0];
+        const membersEl = document.getElementById('artistMembers');
+        if (membersEl && membersResult && membersResult.values.length > 0) {
+            membersEl.innerHTML = '<span class="artist-members-label">Members</span>' +
+                membersResult.values.map(([mid, mname]) =>
+                    `<a href="?view=artist&id=${encodeURIComponent(mid)}" class="artist-member-chip">${escapeHtml(mname)}</a>`
+                ).join('');
+            membersEl.removeAttribute('hidden');
+        }
+
+        // Groups this artist belongs to
+        const memberOfResult = _db.exec(`
+            SELECT a.id, a.name FROM artist_members am
+            JOIN artists a ON a.id = am.group_artist_id
+            WHERE am.member_artist_id = '${safeId}'
+            ORDER BY a.name
+        `)[0];
+        const memberOfEl = document.getElementById('artistMemberOf');
+        if (memberOfEl && memberOfResult && memberOfResult.values.length > 0) {
+            memberOfEl.innerHTML = '<span class="artist-members-label">Member of</span>' +
+                memberOfResult.values.map(([gid, gname]) =>
+                    `<a href="?view=artist&id=${encodeURIComponent(gid)}" class="artist-member-chip">${escapeHtml(gname)}</a>`
+                ).join('');
+            memberOfEl.removeAttribute('hidden');
         }
     }
 
     function loadTopTracks() {
         const orderClause = _sortState.tracks === 'minutes' ? 'total_minutes DESC' : 'play_count DESC';
+        const safeId = _artistId.replace(/'/g, "''");
 
         const result = _db.exec(`
             SELECT
-                COALESCE(tro.track_name, t.track_name) as track_name,
-                t.track_mbid,
+                t.title,
+                t.id,
                 t.duration_ms,
-                (SELECT COUNT(*) FROM listens l WHERE l.track_mbid = t.track_mbid) as play_count,
-                CAST((SELECT COUNT(*) FROM listens l WHERE l.track_mbid = t.track_mbid) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes,
-                COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
-                r.release_mbid
+                (SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) as play_count,
+                CAST((SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes,
+                r.album_art_url,
+                r.id as release_id
             FROM tracks t
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            LEFT JOIN releases r ON t.release_mbid = r.release_mbid
-            LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-            WHERE t.track_mbid IN (
-                SELECT DISTINCT track_mbid FROM track_artists
-                WHERE artist_mbid = '${_artistId.replace(/'/g, "''")}' AND role = 'main'
+            LEFT JOIN releases r ON t.release_id = r.id
+            WHERE t.id IN (
+                SELECT DISTINCT track_id FROM track_artists
+                WHERE artist_id = '${safeId}' AND role = 'main'
             )
-            AND (tro.hidden IS NULL OR tro.hidden = 0)
-            AND (SELECT COUNT(*) FROM listens l WHERE l.track_mbid = t.track_mbid) > 0
+            AND t.hidden = 0
+            AND (SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) > 0
             ORDER BY ${orderClause}
             LIMIT 20
         `)[0];
@@ -221,15 +312,15 @@ const ViewArtist = (() => {
             return;
         }
 
-        result.values.forEach(([trackName, trackMbid, durationMs, playCount, totalMinutes, albumArtUrl, releaseMbid]) => {
+        result.values.forEach(([trackTitle, trackId, durationMs, playCount, totalMinutes, albumArtUrl, releaseId]) => {
             const card = document.createElement('a');
             card.className = 'track-row';
-            card.href = releaseMbid ? `?view=release&id=${encodeURIComponent(releaseMbid)}` : '#';
+            card.href = releaseId ? `?view=release&id=${encodeURIComponent(releaseId)}` : '#';
             const imgSrc = albumArtUrl || getFallbackImageUrl();
             card.innerHTML = `
                 <div class="track-row-thumb" style="background-image: url('${imgSrc}')"></div>
                 <div class="track-row-info">
-                    <div class="track-row-name">${escapeHtml(trackName)}</div>
+                    <div class="track-row-name">${escapeHtml(trackTitle)}</div>
                 </div>
                 <div class="track-row-stats">
                     <span class="stat-item">
@@ -245,6 +336,7 @@ const ViewArtist = (() => {
     }
 
     function loadReleases() {
+        const safeId = _artistId.replace(/'/g, "''");
         const sortBy = _sortState.releases;
         let orderClause;
         if (sortBy === 'minutes') {
@@ -257,22 +349,29 @@ const ViewArtist = (() => {
 
         const result = _db.exec(`
             SELECT
-                r.release_mbid,
-                r.release_name,
-                COALESCE(ro.release_year, r.release_year) as release_year,
-                COALESCE(ro.release_type_primary, r.release_type_primary) as release_type_primary,
-                COUNT(DISTINCT CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN t.track_mbid END) as tracks_listened,
-                COUNT(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN l.timestamp END) as total_listens,
-                CAST(SUM(CASE WHEN (tro.hidden IS NULL OR tro.hidden = 0) THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                r.id,
+                r.title,
+                r.release_year,
+                r.type,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END) as tracks_listened,
+                COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
+                CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
+                r.album_art_url,
+                CASE WHEN r.primary_artist_id != '${safeId}'
+                     THEN (SELECT a2.name FROM artists a2 WHERE a2.id = r.primary_artist_id)
+                     ELSE NULL END as via_artist
             FROM releases r
-            LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-            JOIN tracks t ON r.release_mbid = t.release_mbid
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            JOIN (SELECT DISTINCT track_mbid FROM track_artists WHERE artist_mbid = '${_artistId.replace(/'/g, "''")}' AND role = 'main') ta ON t.track_mbid = ta.track_mbid
-            LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-            WHERE (ro.hidden IS NULL OR ro.hidden = 0)
-            AND (ro.hidden IS NULL OR ro.hidden = 0)
-            GROUP BY r.release_mbid
+            JOIN tracks t ON r.id = t.release_id
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            LEFT JOIN listens l ON t.id = l.track_id
+            WHERE (
+                ta.artist_id = '${safeId}'
+                OR ta.artist_id IN (
+                    SELECT group_artist_id FROM artist_members WHERE member_artist_id = '${safeId}'
+                )
+            )
+            AND r.hidden = 0
+            GROUP BY r.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}
             LIMIT 15
@@ -287,32 +386,244 @@ const ViewArtist = (() => {
             return;
         }
 
-        result.values.forEach(([releaseMbid, releaseName, releaseYear, releaseType, tracksListened, totalListens, totalMinutes]) => {
+        result.values.forEach(([releaseId, releaseTitle, releaseYear, releaseType, tracksListened, totalListens, totalMinutes, albumArtUrl, viaArtist]) => {
             const card = document.createElement('a');
             card.className = 'release-card';
-            card.href = `?view=release&id=${encodeURIComponent(releaseMbid)}`;
+            card.href = `?view=release&id=${encodeURIComponent(releaseId)}`;
 
-            let statsText;
+            let stat1, stat2;
             if (sortBy === 'minutes') {
-                statsText = `${formatNumber(totalMinutes)} min · ${formatNumber(totalListens)} plays`;
+                stat1 = `${formatNumber(totalMinutes)} min`;
+                stat2 = `${formatNumber(totalListens)} plays`;
             } else if (sortBy === 'date') {
-                statsText = `${formatNumber(totalListens)} plays · ${formatNumber(tracksListened)} tracks`;
+                stat1 = `${formatNumber(totalListens)} plays`;
+                stat2 = `${formatNumber(tracksListened)} tracks`;
             } else {
-                statsText = `${formatNumber(totalListens)} plays · ${formatNumber(totalMinutes)} min`;
+                stat1 = `${formatNumber(totalListens)} plays`;
+                stat2 = `${formatNumber(totalMinutes)} min`;
             }
 
+            const thumbUrl = albumArtUrl || getFallbackImageUrl();
+            const relCert = totalListens >= 250 ? 'diamond' : totalListens >= 100 ? 'platinum' : totalListens >= 50 ? 'gold' : null;
+            const relCertLabels = { gold: '50+ plays', platinum: '100+ plays', diamond: '250+ plays' };
+            const certDot = relCert ? `<span class="release-cert-dot release-cert-dot-${relCert}" title="${relCertLabels[relCert]}"></span>` : '';
             card.innerHTML = `
-                <div class="release-header">
-                    <div>
-                        <div class="release-name">${escapeHtml(releaseName)}</div>
-                        ${releaseType ? `<span class="release-type">${releaseType}</span>` : ''}
+                <div class="release-card-thumb" style="background-image: url('${thumbUrl}')">${certDot}</div>
+                <div class="release-card-body">
+                    <div class="release-name">${escapeHtml(releaseTitle)}</div>
+                    <div class="release-stats">
+                        <span class="stat-item">
+                            <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
+                            ${stat1}
+                        </span>
+                        <span class="stat-item">
+                            <i data-lucide="clock" style="width: 13px; height: 13px;"></i>
+                            ${stat2}
+                        </span>
                     </div>
-                    <div class="release-year">${releaseYear || 'Unknown'}</div>
+                    <div class="release-meta">
+                        <span class="release-year">${releaseYear || 'Unknown'}</span>
+                        ${releaseType ? `<span class="release-type-label">${releaseType}</span>` : ''}
+                        ${viaArtist ? `<span class="release-via-artist">${escapeHtml(viaArtist)}</span>` : ''}
+                    </div>
                 </div>
-                <div class="release-stats">${statsText}</div>
             `;
             container.appendChild(card);
         });
+
+        lucide.createIcons();
+    }
+
+    function loadRecentPlays() {
+        const safeId = _artistId.replace(/'/g, "''");
+        const result = _db.exec(`
+            SELECT
+                t.title,
+                r.album_art_url,
+                r.title as release_title,
+                l.timestamp
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id
+            LEFT JOIN releases r ON t.release_id = r.id
+            WHERE t.id IN (
+                SELECT DISTINCT track_id FROM track_artists
+                WHERE artist_id = '${safeId}' AND role = 'main'
+            )
+            AND t.hidden = 0
+            ORDER BY l.timestamp DESC
+            LIMIT 10
+        `)[0];
+
+        const section = document.getElementById('recentPlaysSection');
+        const list = document.getElementById('recentPlaysList');
+        if (!section || !list || !result || result.values.length === 0) return;
+
+        const now = Date.now() / 1000;
+        list.innerHTML = result.values.map(([trackTitle, albumArtUrl, releaseTitle, timestamp]) => {
+            const imgSrc = albumArtUrl || getFallbackImageUrl();
+            let dateStr;
+            const diff = now - timestamp;
+            if (diff < 3600)        dateStr = `${Math.floor(diff / 60)}m ago`;
+            else if (diff < 86400)  dateStr = `${Math.floor(diff / 3600)}h ago`;
+            else if (diff < 604800) dateStr = `${Math.floor(diff / 86400)}d ago`;
+            else {
+                const d = new Date(timestamp * 1000);
+                dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            }
+            return `
+                <div class="recent-play-row">
+                    <div class="recent-play-thumb" style="background-image: url('${imgSrc}')"></div>
+                    <div class="recent-play-info">
+                        <div class="recent-play-name">${escapeHtml(trackTitle)}</div>
+                        ${releaseTitle ? `<div class="recent-play-album">${escapeHtml(releaseTitle)}</div>` : ''}
+                    </div>
+                    <span class="recent-play-date">${dateStr}</span>
+                </div>
+            `;
+        }).join('');
+
+        section.removeAttribute('hidden');
+    }
+
+    function loadArtistBadges() {
+        const safeId = _artistId.replace(/'/g, "''");
+        const badgesEl = document.getElementById('artistBadges');
+        if (!badgesEl) return;
+
+        const playsResult = _db.exec(`
+            SELECT COUNT(*) as plays
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
+        `)[0];
+
+        const totalPlays = playsResult ? playsResult.values[0][0] : 0;
+        let certTier = null;
+        if (totalPlays >= 1000) certTier = 'diamond';
+        else if (totalPlays >= 500) certTier = 'platinum';
+        else if (totalPlays >= 250) certTier = 'gold';
+
+        const medalResult = _db.exec(`
+            WITH all_yearly AS (
+                SELECT ta.artist_id, l.year, COUNT(*) as plays
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                WHERE t.hidden = 0
+                GROUP BY ta.artist_id, l.year
+            ),
+            ranked AS (
+                SELECT artist_id, year,
+                    RANK() OVER (PARTITION BY year ORDER BY plays DESC) as rnk
+                FROM all_yearly
+            )
+            SELECT year, rnk
+            FROM ranked
+            WHERE artist_id = '${safeId}' AND rnk <= 3
+            ORDER BY year ASC
+        `)[0];
+
+        const fragments = [];
+
+        const certLabels = {
+            gold: 'Gold — 250+ plays',
+            platinum: 'Platinum — 500+ plays',
+            diamond: 'Diamond — 1,000+ plays',
+        };
+
+        if (certTier) {
+            fragments.push(`<span class="badge-cert badge-cert-${certTier}" title="${certLabels[certTier]}">${certTier}</span>`);
+        }
+
+        if (medalResult && medalResult.values.length > 0) {
+            const streakCount = medalResult.values.length;
+            fragments.push(`<span class="badge-streak" title="${streakCount} year${streakCount > 1 ? 's' : ''} in your top 3">★ ${streakCount}</span>`);
+            const rankLabel = { 1: '#1', 2: '#2', 3: '#3' };
+            const rankText  = { 1: 'Most', 2: '2nd most', 3: '3rd most' };
+            const tierClass = { 1: 'gold', 2: 'silver', 3: 'bronze' };
+            medalResult.values.forEach(([year, rnk]) => {
+                fragments.push(`
+                    <span class="badge-medal badge-medal-${tierClass[rnk]}" title="${rankText[rnk]} played artist in ${year}">
+                        <span class="medal-rank">${rankLabel[rnk]}</span>
+                        <span class="medal-year">${year}</span>
+                    </span>
+                `);
+            });
+        }
+
+        badgesEl.innerHTML = fragments.join('');
+    }
+
+    function renderPulse(yearlyValues) {
+        const pulseEl = document.getElementById('pulseSection');
+        const rowsEl = document.getElementById('pulseRows');
+        if (!pulseEl || !rowsEl || !yearlyValues || yearlyValues.length === 0) return;
+
+        const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const max = Math.max(...yearlyValues.map(([, count]) => count));
+
+        const monthlyByYear = new Map();
+        if (_chartData.monthlyRaw) {
+            _chartData.monthlyRaw.forEach(([year, month, count]) => {
+                if (!monthlyByYear.has(year)) monthlyByYear.set(year, new Map());
+                monthlyByYear.get(year).set(month, count);
+            });
+        }
+
+        rowsEl.innerHTML = yearlyValues.map(([year, count]) => {
+            const pct = Math.round((count / max) * 100);
+            return `
+                <div class="pulse-row" data-year="${year}">
+                    <span class="pulse-year">${year}</span>
+                    <span class="pulse-count">${formatNumber(count)}</span>
+                    <div class="pulse-bar-track">
+                        <div class="pulse-bar-fill" style="width: ${pct}%"></div>
+                    </div>
+                    <span class="pulse-chevron">▶</span>
+                </div>
+                <div class="pulse-monthly" id="pulse-monthly-${year}" style="display:none"></div>
+            `;
+        }).join('');
+
+        rowsEl.addEventListener('click', e => {
+            const row = e.target.closest('.pulse-row');
+            if (!row) return;
+            const year = parseInt(row.dataset.year);
+            const monthlyEl = document.getElementById(`pulse-monthly-${year}`);
+            if (!monthlyEl) return;
+
+            const isExpanded = row.classList.contains('expanded');
+            if (isExpanded) {
+                monthlyEl.style.display = 'none';
+                row.classList.remove('expanded');
+                return;
+            }
+
+            if (!monthlyEl.innerHTML) {
+                const monthMap = monthlyByYear.get(year) || new Map();
+                const monthMax = Math.max(...[...monthMap.values()], 1);
+                monthlyEl.innerHTML = Array.from({ length: 12 }, (_, i) => {
+                    const m = i + 1;
+                    const c = monthMap.get(m) || 0;
+                    const p = Math.round((c / monthMax) * 100);
+                    return `
+                        <div class="pulse-month-row">
+                            <span class="pulse-month-name">${monthNames[i]}</span>
+                            <span class="pulse-month-count">${c > 0 ? formatNumber(c) : ''}</span>
+                            <div class="pulse-month-bar-track">
+                                <div class="pulse-month-bar-fill" style="width: ${p}%"></div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            monthlyEl.style.display = '';
+            row.classList.add('expanded');
+        });
+
+        pulseEl.removeAttribute('hidden');
     }
 
     function loadListeningHistory() {
@@ -321,9 +632,9 @@ const ViewArtist = (() => {
         const monthlyResult = _db.exec(`
             SELECT l.year, l.month, COUNT(*) as listen_count
             FROM listens l
-            LEFT JOIN overrides.track_overrides tro ON l.track_mbid = tro.track_mbid
-            WHERE l.main_artist_mbid = '${safeId}'
-            AND (tro.hidden IS NULL OR tro.hidden = 0)
+            JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
             GROUP BY l.year, l.month
             ORDER BY l.year, l.month
         `)[0];
@@ -331,29 +642,27 @@ const ViewArtist = (() => {
         const yearlyResult = _db.exec(`
             SELECT l.year, COUNT(*) as listen_count
             FROM listens l
-            LEFT JOIN overrides.track_overrides tro ON l.track_mbid = tro.track_mbid
-            WHERE l.main_artist_mbid = '${safeId}'
-            AND (tro.hidden IS NULL OR tro.hidden = 0)
+            JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
             GROUP BY l.year
             ORDER BY l.year
         `)[0];
 
         if ((!monthlyResult || monthlyResult.values.length === 0) &&
             (!yearlyResult || yearlyResult.values.length === 0)) {
-            const el = document.querySelector('.chart-container');
-            if (el) el.innerHTML = '<div class="loading">No listening history found</div>';
             return;
         }
 
         if (monthlyResult && monthlyResult.values.length > 0) {
-            _chartData.monthly = buildMonthlyChartData(monthlyResult.values);
+            _chartData.monthly    = buildMonthlyChartData(monthlyResult.values);
+            _chartData.monthlyRaw = monthlyResult.values;
         }
 
         if (yearlyResult && yearlyResult.values.length > 0) {
             _chartData.yearly = buildYearlyChartData(yearlyResult.values);
+            renderPulse(yearlyResult.values);
         }
-
-        renderChart();
     }
 
     function buildMonthlyChartData(values) {
@@ -387,26 +696,6 @@ const ViewArtist = (() => {
         return { labels, data };
     }
 
-    function setupChartControls() {
-        setupToggleGroup('[data-granularity]', btn => {
-            _chartState.granularity = btn.dataset.granularity;
-            renderChart();
-        });
-
-        setupToggleGroup('[data-type]', btn => {
-            _chartState.type = btn.dataset.type;
-            renderChart();
-        });
-
-        _themeObserver = new MutationObserver(() => {
-            if (_currentChart) renderChart();
-        });
-        _themeObserver.observe(document.documentElement, {
-            attributes: true,
-            attributeFilter: ['data-theme']
-        });
-    }
-
     function setupSortControls() {
         setupToggleGroup('[data-sort-tracks]', btn => {
             _sortState.tracks = btn.dataset.sortTracks;
@@ -416,82 +705,6 @@ const ViewArtist = (() => {
         setupToggleGroup('[data-sort-releases]', btn => {
             _sortState.releases = btn.dataset.sortReleases;
             loadReleases();
-        });
-    }
-
-    function renderChart() {
-        const data = _chartData[_chartState.granularity];
-        if (!data) return;
-
-        const primaryColor = getCSSColor('--primary');
-        const chartBg = getCSSColor('--chart-bg');
-        const chartBgSolid = getCSSColor('--chart-bg-solid');
-        const bgSecondary = getCSSColor('--bg-secondary');
-        const textColor = getCSSColor('--text');
-        const textSecondary = getCSSColor('--text-secondary');
-        const borderColor = getCSSColor('--border');
-
-        let chartValues = [...data.data];
-        if (_chartState.type === 'cumulative') {
-            chartValues = data.data.reduce((acc, val, idx) => {
-                acc.push(idx === 0 ? val : acc[idx - 1] + val);
-                return acc;
-            }, []);
-        }
-
-        const skipFactor = Math.max(1, Math.ceil(data.labels.length / 15));
-        const labelCallback = (value, index) => index % skipFactor === 0 ? data.labels[index] : '';
-
-        if (_currentChart) _currentChart.destroy();
-
-        const ctx = document.getElementById('historyChart');
-        if (!ctx) return;
-
-        _currentChart = new Chart(ctx.getContext('2d'), {
-            type: _chartState.type === 'cumulative' ? 'line' : 'bar',
-            data: {
-                labels: data.labels,
-                datasets: [{
-                    label: _chartState.type === 'cumulative' ? 'Total Listens' : 'Listens per Period',
-                    data: chartValues,
-                    backgroundColor: _chartState.type === 'cumulative' ? chartBg : chartBgSolid,
-                    borderColor: primaryColor,
-                    borderWidth: _chartState.type === 'cumulative' ? 3 : 1,
-                    fill: _chartState.type === 'cumulative',
-                    tension: 0.4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        backgroundColor: bgSecondary,
-                        titleColor: textColor,
-                        bodyColor: textColor,
-                        borderColor: borderColor,
-                        borderWidth: 1
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: textSecondary },
-                        grid: { color: borderColor }
-                    },
-                    x: {
-                        ticks: {
-                            color: textSecondary,
-                            maxRotation: 45,
-                            minRotation: 45,
-                            autoSkip: false,
-                            callback: labelCallback
-                        },
-                        grid: { color: borderColor }
-                    }
-                }
-            }
         });
     }
 

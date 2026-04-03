@@ -51,14 +51,38 @@ window.addEventListener('popstate', e => {
 // Bootstrap
 (async function () {
     const container = document.getElementById('view-container');
+
+    // Show a view-specific loading message based on URL params
+    const params = getParams();
+    const VIEW_LOADING = {
+        'artist':       'Loading artist…',
+        'release':      'Loading release…',
+        'genre':        'Loading genre…',
+        'year':         'Loading year…',
+        'top-albums':   'Loading top albums…',
+        'top-artists':  'Loading top artists…',
+        'top-tracks':   'Loading top tracks…',
+    };
+    container.innerHTML = `<div class="loading">${VIEW_LOADING[params.view] || 'Loading…'}</div>`;
+
     try {
+        console.time('[db] init-sql');
         const SQL = await initSqlJs({
             locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
         });
+        console.timeEnd('[db] init-sql');
+
+        console.time('[db] fetch-db');
         const buffer = await DB_CONFIG.fetchDatabase();
+        console.timeEnd('[db] fetch-db');
+
+        console.time('[db] parse-db');
         _db = new SQL.Database(new Uint8Array(buffer));
-        await loadOverridesDatabase(SQL, _db);
-        navigate(getParams(), false);
+        console.timeEnd('[db] parse-db');
+
+        console.time('[db] mount-view');
+        navigate(params, false);
+        console.timeEnd('[db] mount-view');
     } catch (err) {
         console.error('Error loading database:', err);
         container.innerHTML = '<div class="loading" style="color: var(--error);">Error loading database. Please refresh.</div>';

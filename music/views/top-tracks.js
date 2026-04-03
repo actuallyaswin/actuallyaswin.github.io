@@ -59,25 +59,21 @@ const ViewTopTracks = (() => {
 
         const result = _db.exec(`
             SELECT
-                t.track_mbid,
-                t.track_name,
-                a.artist_name,
-                a.artist_mbid,
-                COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
-                r.release_mbid,
-                COUNT(l.timestamp) as total_listens,
+                t.id,
+                t.title,
+                a.name,
+                a.id as artist_id,
+                r.album_art_url,
+                r.id as release_id,
+                COUNT(l.id) as total_listens,
                 CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes
             FROM tracks t
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            LEFT JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
-            LEFT JOIN artists a ON ta.artist_mbid = a.artist_mbid
-            LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-            LEFT JOIN releases r ON t.release_mbid = r.release_mbid
-            LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-            LEFT JOIN listens l ON t.track_mbid = l.track_mbid
-            WHERE (tro.hidden IS NULL OR tro.hidden = 0)
-            AND (ao.hidden IS NULL OR ao.hidden = 0)
-            GROUP BY t.track_mbid
+            LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            LEFT JOIN artists a ON ta.artist_id = a.id
+            LEFT JOIN releases r ON t.release_id = r.id
+            LEFT JOIN listens l ON t.id = l.track_id
+            WHERE t.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
+            GROUP BY t.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}
             LIMIT 100
@@ -93,8 +89,8 @@ const ViewTopTracks = (() => {
         container.innerHTML = '';
 
         cachedResults.forEach((row, i) => {
-            const [trackMbid, trackName, artistName, artistMbid, albumArtUrl, releaseMbid, totalListens, totalMinutes] = row;
-            const href = releaseMbid ? `?view=release&id=${encodeURIComponent(releaseMbid)}` : '#';
+            const [trackId, trackTitle, artistName, artistId, albumArtUrl, releaseId, totalListens, totalMinutes] = row;
+            const href = releaseId ? `?view=release&id=${encodeURIComponent(releaseId)}` : '#';
             const imgSrc = albumArtUrl || getFallbackImageUrl();
 
             const card = document.createElement('a');
@@ -103,7 +99,7 @@ const ViewTopTracks = (() => {
             card.innerHTML = `
                 <div class="track-row-thumb" style="background-image: url('${imgSrc}')"></div>
                 <div class="track-row-info">
-                    <div class="track-row-name">${escapeHtml(trackName)}</div>
+                    <div class="track-row-name">${escapeHtml(trackTitle)}</div>
                     ${artistName ? `<div class="track-row-artist">${escapeHtml(artistName)}</div>` : ''}
                 </div>
                 <div class="track-row-stats">

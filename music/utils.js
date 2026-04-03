@@ -17,7 +17,8 @@ async function loadOverridesDatabase(SQL, mainDb) {
         spotify_artist_id TEXT,
         hidden INTEGER DEFAULT 0,
         updated_at INTEGER,
-        notes TEXT
+        notes TEXT,
+        hero_image TEXT
     )`);
     mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.release_overrides (
         release_mbid TEXT PRIMARY KEY,
@@ -38,6 +39,8 @@ async function loadOverridesDatabase(SQL, mainDb) {
     mainDb.run(`CREATE TABLE IF NOT EXISTS overrides.track_overrides (
         track_mbid TEXT PRIMARY KEY,
         track_name TEXT,
+        track_number INTEGER,
+        disc_number INTEGER,
         spotify_track_id TEXT,
         hidden INTEGER DEFAULT 0,
         updated_at INTEGER,
@@ -136,25 +139,30 @@ function setupToggleGroup(selector, onChange) {
 
 function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes, rounded = false }) {
     const card = document.createElement('a');
-    card.className = 'wide-card';
+    card.className = 'release-card';
     card.href = href;
 
     const imgSrc = imageUrl || getFallbackImageUrl();
+    const metaParts = meta ? meta.split(' · ') : [];
+    const metaHtml = metaParts.map((p, i) =>
+        `<span class="${i === 0 ? 'release-year' : 'release-type-label'}">${p}</span>`
+    ).join('');
+
     card.innerHTML = `
-        <div class="wide-card-thumb${rounded ? ' rounded' : ''}" style="background-image: url('${imgSrc}')"></div>
-        <div class="wide-card-info">
-            <div class="wide-card-name">${escapeHtml(name)}</div>
-            ${meta ? `<div class="wide-card-meta">${meta}</div>` : ''}
-        </div>
-        <div class="wide-card-stats">
-            <span class="stat-item">
-                <i data-lucide="headphones" style="width: 14px; height: 14px;"></i>
-                ${formatNumber(totalListens)}
-            </span>
-            <span class="stat-item">
-                <i data-lucide="clock" style="width: 14px; height: 14px;"></i>
-                ${formatNumber(totalMinutes)} min
-            </span>
+        <div class="release-card-thumb${rounded ? ' rounded' : ''}" style="background-image: url('${imgSrc}')"></div>
+        <div class="release-card-body">
+            <div class="release-name">${escapeHtml(name)}</div>
+            <div class="release-stats">
+                <span class="stat-item">
+                    <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
+                    ${formatNumber(totalListens)}
+                </span>
+                <span class="stat-item">
+                    <i data-lucide="clock" style="width: 13px; height: 13px;"></i>
+                    ${formatNumber(totalMinutes)} min
+                </span>
+            </div>
+            ${metaHtml ? `<div class="release-meta">${metaHtml}</div>` : ''}
         </div>
     `;
     return card;

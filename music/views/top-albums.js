@@ -69,41 +69,30 @@ const ViewTopAlbums = (() => {
 
         const result = _db.exec(`
             SELECT
-                r.release_mbid,
-                r.release_name,
-                COALESCE(ro.release_year, r.release_year) as release_year,
-                COALESCE(ro.release_type_primary, r.release_type_primary) as release_type_primary,
-                COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
-                a.artist_name,
-                a.artist_mbid,
-                (SELECT COUNT(DISTINCT t2.track_mbid)
+                r.id,
+                r.title,
+                r.release_year,
+                r.type,
+                r.album_art_url,
+                a.name,
+                a.id as artist_id,
+                (SELECT COUNT(DISTINCT t2.id)
                  FROM tracks t2
-                 LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                 LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
-                 WHERE t2.release_mbid = r.release_mbid
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)
-                 AND l2.timestamp IS NOT NULL) as tracks_listened,
-                (SELECT COUNT(l2.timestamp)
+                 LEFT JOIN listens l2 ON t2.id = l2.track_id
+                 WHERE t2.release_id = r.id AND t2.hidden = 0
+                 AND l2.id IS NOT NULL) as tracks_listened,
+                (SELECT COUNT(l2.id)
                  FROM tracks t2
-                 LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                 LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
-                 WHERE t2.release_mbid = r.release_mbid
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)) as total_listens,
+                 LEFT JOIN listens l2 ON t2.id = l2.track_id
+                 WHERE t2.release_id = r.id AND t2.hidden = 0) as total_listens,
                 (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) / 60000.0 AS INTEGER)
                  FROM tracks t2
-                 LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                 LEFT JOIN listens l2 ON t2.track_mbid = l2.track_mbid
-                 WHERE t2.release_mbid = r.release_mbid
-                 AND (tro2.hidden IS NULL OR tro2.hidden = 0)) as total_minutes
+                 JOIN listens l2 ON t2.id = l2.track_id
+                 WHERE t2.release_id = r.id AND t2.hidden = 0) as total_minutes
             FROM releases r
-            LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-            JOIN tracks t ON r.release_mbid = t.release_mbid
-            JOIN track_artists ta ON t.track_mbid = ta.track_mbid AND ta.role = 'main'
-            JOIN artists a ON ta.artist_mbid = a.artist_mbid
-            LEFT JOIN overrides.artist_overrides ao ON a.artist_mbid = ao.artist_mbid
-            WHERE (ro.hidden IS NULL OR ro.hidden = 0)
-            AND (ao.hidden IS NULL OR ao.hidden = 0)
-            GROUP BY r.release_mbid, a.artist_mbid
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
+            WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
+            GROUP BY r.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}
             LIMIT 100
@@ -125,10 +114,10 @@ const ViewTopAlbums = (() => {
             container.className = 'collage-grid';
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedResults.forEach((row, i) => {
-                const [releaseMbid, releaseName, releaseYear, releaseType, albumArtUrl] = row;
+                const [id, title, year, type, albumArtUrl] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=release&id=${encodeURIComponent(releaseMbid)}`;
+                card.href = `?view=release&id=${encodeURIComponent(id)}`;
                 const imgSrc = albumArtUrl || getFallbackImageUrl();
                 card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
                 if (i >= show) card.style.display = 'none';
@@ -137,12 +126,12 @@ const ViewTopAlbums = (() => {
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedResults.forEach((row, i) => {
-                const [releaseMbid, releaseName, releaseYear, releaseType, albumArtUrl, artistName, artistMbid, tracksListened, totalListens, totalMinutes] = row;
+                const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes] = row;
                 const card = createWideCard({
-                    href: `?view=release&id=${encodeURIComponent(releaseMbid)}`,
+                    href: `?view=release&id=${encodeURIComponent(id)}`,
                     imageUrl: albumArtUrl,
-                    name: releaseName,
-                    meta: `${escapeHtml(artistName)} · ${releaseYear || 'Unknown'}`,
+                    name: title,
+                    meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
                     totalListens,
                     totalMinutes,
                     rounded: false
@@ -153,16 +142,16 @@ const ViewTopAlbums = (() => {
         } else {
             container.className = 'image-grid';
             cachedResults.forEach((row, i) => {
-                const [releaseMbid, releaseName, releaseYear, releaseType, albumArtUrl, artistName, artistMbid, tracksListened, totalListens, totalMinutes] = row;
+                const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = `?view=release&id=${encodeURIComponent(releaseMbid)}`;
+                card.href = `?view=release&id=${encodeURIComponent(id)}`;
                 const imgSrc = albumArtUrl || getFallbackImageUrl();
                 card.innerHTML = `
                     <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
                     <div class="image-card-overlay">
-                        <div class="image-card-name">${escapeHtml(releaseName)}</div>
-                        <div class="image-card-artist">${escapeHtml(artistName)}</div>
+                        <div class="image-card-name">${escapeHtml(title)}</div>
+                        <div class="image-card-artist">${escapeHtml(artistName || 'Various Artists')}</div>
                         <div class="image-card-stats">
                             <span class="stat-item">
                                 <i data-lucide="headphones" style="width: 14px; height: 14px;"></i>

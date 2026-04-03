@@ -50,15 +50,13 @@ const ViewGenre = (() => {
 
         const result = _db.exec(`
             SELECT g.name,
-                   COUNT(DISTINCT rg.release_mbid) as release_count,
-                   COUNT(l.timestamp) as total_plays
-            FROM overrides.genres g
-            JOIN overrides.release_genres rg ON g.aoty_id = rg.aoty_genre_id
-            JOIN tracks t ON rg.release_mbid = t.release_mbid
-            LEFT JOIN overrides.track_overrides tro ON t.track_mbid = tro.track_mbid
-            JOIN listens l ON t.track_mbid = l.track_mbid
+                   COUNT(DISTINCT rg.release_id) as release_count,
+                   COUNT(l.id) as total_plays
+            FROM genres g
+            JOIN release_genres rg ON g.aoty_id = rg.aoty_genre_id
+            JOIN tracks t ON rg.release_id = t.release_id AND t.hidden = 0
+            JOIN listens l ON t.id = l.track_id
             WHERE g.aoty_id = ${safeId}
-            AND (tro.hidden IS NULL OR tro.hidden = 0)
         `)[0];
 
         if (!result || result.values.length === 0) {
@@ -80,31 +78,23 @@ const ViewGenre = (() => {
         const result = _db.exec(`
             SELECT * FROM (
                 SELECT
-                    r.release_mbid,
-                    r.release_name,
-                    COALESCE(ro.release_year, r.release_year) as release_year,
-                    COALESCE(ro.album_art_url, r.album_art_url) as album_art_url,
-                    (SELECT a.artist_name FROM track_artists ta
-                     JOIN artists a ON ta.artist_mbid = a.artist_mbid
-                     WHERE ta.track_mbid = (SELECT t2.track_mbid FROM tracks t2
-                                            WHERE t2.release_mbid = r.release_mbid LIMIT 1)
-                     AND ta.role = 'main' LIMIT 1) as artist_name,
-                    (SELECT COUNT(l2.timestamp)
+                    r.id,
+                    r.title,
+                    r.release_year,
+                    r.album_art_url,
+                    (SELECT a.name FROM artists a WHERE a.id = r.primary_artist_id) as artist_name,
+                    (SELECT COUNT(l2.id)
                      FROM tracks t2
-                     LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                     JOIN listens l2 ON t2.track_mbid = l2.track_mbid
-                     WHERE t2.release_mbid = r.release_mbid
-                     AND (tro2.hidden IS NULL OR tro2.hidden = 0)) as total_plays,
+                     LEFT JOIN listens l2 ON t2.id = l2.track_id
+                     WHERE t2.release_id = r.id AND t2.hidden = 0) as total_plays,
                     (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) / 60000.0 AS INTEGER)
                      FROM tracks t2
-                     LEFT JOIN overrides.track_overrides tro2 ON t2.track_mbid = tro2.track_mbid
-                     JOIN listens l2 ON t2.track_mbid = l2.track_mbid
-                     WHERE t2.release_mbid = r.release_mbid
-                     AND (tro2.hidden IS NULL OR tro2.hidden = 0)) as total_minutes
-                FROM overrides.release_genres rg
-                JOIN releases r ON rg.release_mbid = r.release_mbid
-                LEFT JOIN overrides.release_overrides ro ON r.release_mbid = ro.release_mbid
-                WHERE rg.aoty_genre_id = ${safeId}
+                     JOIN listens l2 ON t2.id = l2.track_id
+                     WHERE t2.release_id = r.id AND t2.hidden = 0) as total_minutes
+                FROM release_genres rg
+                JOIN releases r ON rg.release_id = r.id
+                JOIN genres g ON rg.aoty_genre_id = g.aoty_id
+                WHERE g.aoty_id = ${safeId} AND r.hidden = 0
             ) WHERE total_plays > 0
             ORDER BY total_plays DESC
         `)[0];
@@ -118,12 +108,12 @@ const ViewGenre = (() => {
             return;
         }
 
-        result.values.forEach(([releaseMbid, releaseName, releaseYear, albumArtUrl, artistName, totalPlays, totalMinutes]) => {
+        result.values.forEach(([id, title, year, albumArtUrl, artistName, totalPlays, totalMinutes]) => {
             const card = createWideCard({
-                href: `?view=release&id=${encodeURIComponent(releaseMbid)}`,
+                href: `?view=release&id=${encodeURIComponent(id)}`,
                 imageUrl: albumArtUrl,
-                name: releaseName,
-                meta: `${escapeHtml(artistName || 'Unknown')} · ${releaseYear || 'Unknown'}`,
+                name: title,
+                meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
                 totalListens: totalPlays,
                 totalMinutes,
                 rounded: false
