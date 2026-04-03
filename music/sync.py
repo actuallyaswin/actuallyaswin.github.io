@@ -577,6 +577,7 @@ def cmd_match(args):
     token  = _sp_token()
     limit  = args.limit or 50
     include_deferred = getattr(args, 'skipped', False)
+    sort_recent      = getattr(args, 'recent',  False)
 
     if not token:
         console.print('[yellow]No Spotify credentials found — auto-search disabled.[/yellow]')
@@ -586,25 +587,63 @@ def cmd_match(args):
     while True:
         # Top unresolved albums, excluding permanently-hidden (and deferred unless --skipped)
         method_filter = "('hide')" if include_deferred else "('hide', 'skip')"
-        rows = conn.execute(f'''
-            SELECT   l.raw_album_name,
-                     l.raw_artist_name,
-                     COUNT(*)                 AS listen_count,
-                     COUNT(DISTINCT l.raw_source_id) AS unique_tracks
-            FROM     listens l
-            WHERE    l.track_id IS NULL
-              AND    NOT EXISTS (
-                         SELECT 1 FROM legacy_track_map ltm
-                         WHERE  ltm.lastfm_id = 'album|||'
-                                    || lower(l.raw_artist_name)
-                                    || '|||'
-                                    || lower(l.raw_album_name)
-                           AND  ltm.match_method IN {method_filter}
-                     )
-            GROUP BY l.raw_album_name, l.raw_artist_name
-            ORDER BY listen_count DESC
-            LIMIT    ?
-        ''', [limit]).fetchall()
+
+        if sort_recent:
+            # Walk the listen timeline and surface contiguous runs of the same album,
+            # ordered by the most recent session first.  LAG() detects boundaries.
+            rows = conn.execute(f'''
+                SELECT   raw_album_name,
+                         raw_artist_name,
+                         COUNT(*)                      AS listen_count,
+                         COUNT(DISTINCT raw_source_id) AS unique_tracks,
+                         MAX(timestamp)                AS last_listened
+                FROM (
+                    SELECT timestamp, raw_artist_name, raw_album_name, raw_source_id,
+                           SUM(boundary) OVER (ORDER BY timestamp) AS run_id
+                    FROM (
+                        SELECT timestamp, raw_artist_name, raw_album_name, raw_source_id,
+                               CASE
+                                   WHEN raw_album_name  != LAG(raw_album_name)  OVER (ORDER BY timestamp)
+                                     OR raw_artist_name != LAG(raw_artist_name) OVER (ORDER BY timestamp)
+                                     OR LAG(raw_album_name) OVER (ORDER BY timestamp) IS NULL
+                                   THEN 1 ELSE 0 END AS boundary
+                        FROM   listens
+                        WHERE  track_id IS NULL
+                          AND  NOT EXISTS (
+                                   SELECT 1 FROM legacy_track_map ltm
+                                   WHERE  ltm.lastfm_id = 'album|||'
+                                              || lower(raw_artist_name)
+                                              || '|||'
+                                              || lower(raw_album_name)
+                                     AND  ltm.match_method IN {method_filter}
+                               )
+                    )
+                )
+                GROUP BY run_id, raw_artist_name, raw_album_name
+                ORDER BY last_listened DESC
+                LIMIT    ?
+            ''', [limit]).fetchall()
+        else:
+            rows = conn.execute(f'''
+                SELECT   l.raw_album_name,
+                         l.raw_artist_name,
+                         COUNT(*)                      AS listen_count,
+                         COUNT(DISTINCT l.raw_source_id) AS unique_tracks,
+                         MAX(l.timestamp)              AS last_listened
+                FROM     listens l
+                WHERE    l.track_id IS NULL
+                  AND    NOT EXISTS (
+                             SELECT 1 FROM legacy_track_map ltm
+                             WHERE  ltm.lastfm_id = 'album|||'
+                                        || lower(l.raw_artist_name)
+                                        || '|||'
+                                        || lower(l.raw_album_name)
+                               AND  ltm.match_method IN {method_filter}
+                         )
+                GROUP BY l.raw_album_name, l.raw_artist_name
+                ORDER BY listen_count DESC
+                LIMIT    ?
+            ''', [limit]).fetchall()
 
         if not rows:
             console.print('[green]All listens resolved (or skipped)![/green]')
@@ -613,9 +652,10 @@ def cmd_match(args):
         total_unresolved = conn.execute(
             'SELECT COUNT(*) FROM listens WHERE track_id IS NULL'
         ).fetchone()[0]
+        mode_label = 'most recent session' if sort_recent else 'play count'
         console.print(
             f'  [dim]{total_unresolved:,} unresolved listens — '
-            f'showing top {len(rows)} albums by play count[/dim]\n'
+            f'showing top {len(rows)} albums by {mode_label}[/dim]\n'
         )
 
         for album_i, row in enumerate(rows, 1):
@@ -626,7 +666,11 @@ def cmd_match(args):
 
             console.rule(f'[dim]{album_i}/{len(rows)}[/dim]', style='dim')
             console.print(f'  [bold]{artist}[/bold]  [dim]—  {album}[/dim]')
-            console.print(f'  [dim]{count:,} listens · {tracks} unique tracks[/dim]\n')
+            if sort_recent:
+                last_dt = datetime.fromtimestamp(row['last_listened'], tz=timezone.utc).strftime('%Y-%m-%d')
+                console.print(f'  [dim]{count:,} listens in session · last played {last_dt}[/dim]\n')
+            else:
+                console.print(f'  [dim]{count:,} listens · {tracks} unique tracks[/dim]\n')
 
             # Auto-search Spotify
             sp_results = []
@@ -1054,6 +1098,8 @@ def main():
                     help='Max albums to display per session (default: 50)')
     pm.add_argument('--skipped', action='store_true',
                     help='Include albums previously skipped with [s]')
+    pm.add_argument('--recent',  action='store_true',
+                    help='Sort by most recently listened instead of most-played')
 
     # status
     sub.add_parser('status', help='Show matched / unmatched breakdown')
