@@ -1,0 +1,2237 @@
+#!/usr/bin/env python3
+"""
+mdb — Music Database CLI
+
+Consolidated import and enrichment tool for master.sqlite.
+
+Usage:
+  mdb import  <album…|file>               Import Spotify album(s) + MB + AOTY + Wikipedia
+  mdb enrich  aoty  [options]             Scrape AOTY for genres, dates, and types
+  mdb enrich  dates [options]             Look up release dates via Wikipedia + MusicBrainz
+  mdb enrich  tracks [options]            Fetch track MBIDs from MusicBrainz
+  mdb hide    <artists|tracks|releases>   <csv>  Bulk hide/unhide
+  mdb artist  images <csv>               Bulk update artist profile images
+
+Default flags:
+  --no-mb     skip MusicBrainz during import
+  --no-aoty   skip AOTY scraping during import
+  --no-wiki   skip Wikipedia date lookup during import
+"""
+
+import argparse
+import csv
+import json
+import logging
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+from rich.console import Console
+from mdb_strings import (
+    resolve_title,
+    detect_variant_type, detect_variant_types, _base_title, VARIANT_TYPES,
+    _PRIMARY_TYPES, _SECONDARY_TYPES, _EDITION_TYPES,
+    ascii_key as _norm,
+    MONTHS, _SOURCE_PRIORITY, _date_prec, _should_update_date, _parse_user_date,
+)
+from mdb_ops import (
+    new_ulid, slugify, unique_slug, load_dotenv,
+    DB_PATH, open_db, init_schema,
+    _best_image, _sp_type, _VARIOUS_ARTISTS_SPOTIFY_ID, _is_various_artists,
+    upsert_artist, upsert_release, upsert_tracks,
+)
+from mdb_apis import (
+    SpotifyClient,
+    MB_API, MB_UA, SP_TOKEN, SP_BASE,
+    AOTY_AHEAD, DATES_AHEAD,
+    _mb_get, _mb_get_safe,
+    mb_find_release, mb_fetch_recording_ids, mb_fetch_artist_data,
+)
+from mdb_websources import (
+    AOTY_TYPE_MAP,
+    find_aoty_url, scrape_aoty_page, fetch_aoty_data,
+    _has_aoty, _fmt_aoty, save_aoty_data,
+    fetch_wikipedia_date, search_wikipedia, fetch_date_candidates, _save_date,
+)
+from mdb_cli import (
+    _fmt_dur, _trunc,
+    _format_mb_type, _print_member,
+    _aoty_prompt, _dates_prompt, _prompt_choice,
+)
+
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    _AOTY_AVAILABLE = True
+except ImportError:
+    _AOTY_AVAILABLE = False
+
+console = Console(width=80, highlight=False)
+log = logging.getLogger(__name__)
+
+# ── Batch file reader ─────────────────────────────────────────────────────────
+
+_CSV_ID_COLS  = {'url', 'spotify_url', 'spotify_id', 'id', 'album_id'}
+_RE_SP_URL    = re.compile(r'https?://open\.spotify\.com/(?:album|prerelease)/([A-Za-z0-9]+)(?:\?[^\s,]*)?',
+                           re.IGNORECASE)
+_RE_DISC_ANN  = re.compile(r'\(\s*discs?\s+([\d,\s\-]+?)(?:\s+only)?\s*\)', re.IGNORECASE)
+
+def _parse_disc_annotation(text):
+    """Parse '(disc 3 only)' / '(discs 1, 2)' / '(disc 1-2)' → list[int] or None."""
+    m = _RE_DISC_ANN.search(text)
+    if not m:
+        return None
+    raw     = m.group(1).strip()
+    range_m = re.fullmatch(r'(\d+)\s*-\s*(\d+)', raw)
+    if range_m:
+        return list(range(int(range_m.group(1)), int(range_m.group(2)) + 1))
+    return [int(x.strip()) for x in raw.split(',') if x.strip().isdigit()]
+
+def _parse_group_line(line):
+    """Parse one import-file line into a list of album-entry dicts.
+
+    Each entry: {'url': str, 'album_id': str, 'discs': list[int]|None}
+    A comma-separated line produces multiple entries (a variant group).
+    Prerelease URLs (open.spotify.com/prerelease/…) are skipped — the
+    Spotify public API returns 404 for unreleased content.
+    """
+    entries = []
+    for token in re.split(r',\s*', line.strip()):
+        token = token.strip()
+        if not token or token.startswith('#'):
+            continue
+        if re.search(r'open\.spotify\.com/prerelease/', token, re.IGNORECASE):
+            console.print(f'[dim]  skip prerelease  {token[:60]}[/dim]')
+            continue
+        m = _RE_SP_URL.search(token)
+        if not m:
+            continue
+        album_id = m.group(1)
+        after    = token[m.end():]
+        entries.append({
+            'url':      f'https://open.spotify.com/album/{album_id}',
+            'album_id': album_id,
+            'discs':    _parse_disc_annotation(after),
+        })
+    return entries
+
+def read_ids_from_file(path):
+    """Return list[list[dict]] — each inner list is a variant group of album entries."""
+    ext    = os.path.splitext(path)[1].lower()
+    lines  = []
+    with open(path, newline='', encoding='utf-8') as f:
+        if ext == '.csv':
+            reader = csv.reader(f)
+            first  = next(reader, None)
+            if first is None:
+                return []
+            lower  = [c.strip().lower() for c in first]
+            match  = next((i for i, h in enumerate(lower) if h in _CSV_ID_COLS), None)
+            col    = match if match is not None else 0
+            if match is None:
+                val = first[0].strip()
+                if val and not val.startswith('#'):
+                    lines.append(val)
+            for row in reader:
+                if row:
+                    val = row[col].strip() if col < len(row) else ''
+                    if val and not val.startswith('#'):
+                        lines.append(val)
+        elif ext in ('.yaml', '.yml'):
+            for line in f:
+                line = line.strip()
+                if line.startswith('-'):
+                    val = line[1:].strip().strip('"\'')
+                    if val and not val.startswith('#'):
+                        lines.append(val)
+        else:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    lines.append(line)
+    groups = []
+    for line in lines:
+        group = _parse_group_line(line)
+        if group:
+            groups.append(group)
+    return groups
+
+def import_album(db_path, client, album_url, use_mb=True, discs=None):
+    """Import a Spotify album. Returns (release_id, title, artist_name, release_date)."""
+    album_id   = (re.search(r'(?:album|prerelease)/([A-Za-z0-9]+)', album_url) or type('m', (), {'group': lambda s, i: album_url})()).group(1)
+    album      = client.get_album(album_id)
+    all_tracks = album['_all_tracks']
+    year       = (album.get('release_date') or '?')[:4]
+    artist_str = ', '.join(a['name'] for a in album['artists'])
+
+    console.print(f"[bold]{album['name']}[/bold]  "
+                  f"[dim]{artist_str} · {year} · {len(all_tracks)} tracks[/dim]")
+
+    all_artist_ids = list(dict.fromkeys(
+        [a['id'] for a in album['artists']] +
+        [a['id'] for t in all_tracks for a in t.get('artists', [])]
+    ))
+    sp_artists  = client.get_artists_batch(all_artist_ids)
+    full_tracks = client.get_tracks_batch([t['id'] for t in all_tracks if t.get('id')])
+    full_by_id  = {t['id']: t for t in full_tracks if t}
+    enriched    = [full_by_id.get(t['id'], t) for t in all_tracks]
+    if discs:
+        enriched = [t for t in enriched if (t.get('disc_number') or 1) in discs]
+
+    conn = open_db(db_path)
+    cur  = conn.cursor()
+    init_schema(conn)
+
+    try:
+        console.rule('[dim]Artists[/dim]', style='dim')
+        artist_map = {}
+        for sp_a in sp_artists:
+            if not sp_a:
+                continue
+            if _is_various_artists(sp_a):
+                console.print(f"  [dim]skip[/dim]  {sp_a['name']:<28} [dim](Various Artists — not stored)[/dim]")
+                continue
+            our_id, created = upsert_artist(cur, sp_a)
+            artist_map[sp_a['id']] = our_id
+            tag = '[green]new[/green]' if created else '[dim]upd[/dim]'
+            console.print(f"  {tag}  {sp_a['name']:<28} [dim]{our_id}[/dim]")
+
+        first_album_artist = album['artists'][0]
+        primary_id = (None if _is_various_artists(first_album_artist)
+                      else artist_map.get(first_album_artist['id']))
+        release_id, r_new = upsert_release(cur, album, primary_id)
+        tag               = '[green]new[/green]' if r_new else '[dim]upd[/dim]'
+        console.print(f"\n  {tag}  [bold]{album['name']}[/bold] [dim]→ {release_id}[/dim]")
+
+        cur.execute('DELETE FROM release_artists WHERE release_id = ?', (release_id,))
+        for sp_a in album['artists']:
+            aid = artist_map.get(sp_a['id'])
+            if aid:
+                try:
+                    cur.execute('INSERT INTO release_artists (release_id, artist_id) VALUES (?, ?)',
+                                (release_id, aid))
+                except sqlite3.IntegrityError:
+                    pass
+
+        mb_by_isrc, mb_by_title = {}, {}
+        if use_mb:
+            console.rule('[dim]MusicBrainz[/dim]', style='dim')
+
+            # Check if we already have a stable MBID — if so, skip the search
+            # and just re-fetch recording IDs to avoid MBID churn on re-import
+            existing_mb = conn.execute(
+                'SELECT mbid FROM releases WHERE id = ?', (release_id,)
+            ).fetchone()
+            existing_mbid = existing_mb[0] if existing_mb else None
+
+            if existing_mbid:
+                mb_id, mb_score = existing_mbid, 100
+                console.print(f'  [dim]using stored MBID[/dim]  [dim]{mb_id}[/dim]')
+            else:
+                year_int       = int(year) if year.isdigit() else 0
+                mb_id, mb_score = mb_find_release(album['name'], album['artists'][0]['name'],
+                                                   len(all_tracks), year_int)
+
+            if mb_id:
+                mb_by_isrc, mb_by_title, rg_mbid = mb_fetch_recording_ids(mb_id)
+                updates = {}
+                if not existing_mbid:
+                    updates['mbid'] = mb_id
+                if rg_mbid:
+                    updates['release_group_mbid'] = rg_mbid
+                mb_stored = True
+                if updates:
+                    set_clause = ', '.join(f'{k} = ?' for k in updates)
+                    try:
+                        cur.execute(f'UPDATE releases SET {set_clause} WHERE id = ?',
+                                    (*updates.values(), release_id))
+                    except sqlite3.IntegrityError:
+                        # Another release already has this MBID — skip MB data
+                        mb_by_isrc, mb_by_title, mb_stored = {}, {}, False
+                        console.print(f'  [yellow]⚠[/yellow]  [dim]MBID {mb_id} already claimed — skipping MB[/dim]')
+                if mb_stored:
+                    matched = sum(
+                        1 for t in enriched
+                        if ((t.get('external_ids') or {}).get('isrc') in mb_by_isrc)
+                        or (_norm(t.get('name', '')) in mb_by_title)
+                    )
+                    console.print(f"  [green]✓[/green]  [dim]{mb_id}[/dim]  "
+                                  f"[dim]score {mb_score} · {matched}/{len(all_tracks)} tracks[/dim]")
+            else:
+                console.print('  [dim]no match found[/dim]')
+
+        tr_created, tr_updated = upsert_tracks(cur, release_id, enriched, artist_map,
+                                               mb_by_isrc, mb_by_title)
+        conn.commit()
+
+        # ── Infer primary artist for Various Artists releases ────────────────
+        if primary_id is None:
+            rows = conn.execute('''
+                SELECT a.id, a.name, COUNT(*) as n
+                FROM track_artists ta
+                JOIN tracks t ON t.id = ta.track_id
+                JOIN artists a ON a.id = ta.artist_id
+                WHERE t.release_id = ? AND ta.role = 'main'
+                GROUP BY a.id
+                ORDER BY n DESC
+                LIMIT 5
+            ''', [release_id]).fetchall()
+
+            if rows:
+                total_tracks = conn.execute(
+                    'SELECT COUNT(*) FROM tracks WHERE release_id = ?', [release_id]
+                ).fetchone()[0]
+                top_id, top_name, top_count = rows[0]
+                console.rule('[dim]Primary Artist[/dim]', style='dim')
+                for aid, aname, n in rows:
+                    bar = '█' * round(n / total_tracks * 24)
+                    console.print(f'  {aname:<30}  [dim]{n:>3}/{total_tracks}[/dim]  [green]{bar}[/green]')
+                console.print()
+                try:
+                    ans = input(f'  Set "{top_name}" as primary artist? [Y/n] ').strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    ans = 'n'
+                if ans in ('', 'y', 'yes'):
+                    conn.execute(
+                        'UPDATE releases SET primary_artist_id = ? WHERE id = ?',
+                        [top_id, release_id]
+                    )
+                    conn.commit()
+                    console.print(f'  [green]✓[/green]  primary artist → {top_name}')
+                else:
+                    console.print('  [dim]keeping primary_artist_id = NULL[/dim]')
+    finally:
+        conn.close()
+
+    console.rule('[dim]Tracks[/dim]', style='dim')
+    max_disc = max((t.get('disc_number') or 1) for t in enriched)
+    any_isrc = any((t.get('external_ids') or {}).get('isrc') for t in enriched)
+    cur_disc = None
+    for t in enriched:
+        disc  = t.get('disc_number') or 1
+        num   = t.get('track_number', '?')
+        title = t.get('name', '?')
+        dur   = _fmt_dur(t.get('duration_ms'))
+        isrc  = (t.get('external_ids') or {}).get('isrc', '')
+        mb_ok = (isrc and isrc in mb_by_isrc) or _norm(title) in mb_by_title
+        mb_ic = '[green]✓[/green]' if mb_ok else '[dim]·[/dim]'
+        if max_disc > 1 and disc != cur_disc:
+            cur_disc = disc
+            console.print(f'\n  [bold dim]Disc {disc}[/bold dim]')
+        isrc_col = f'  [dim]{isrc:<12}[/dim]' if any_isrc else ''
+        console.print(f"  [dim]{num:>2}.[/dim]  {_trunc(title, 40):<40}  "
+                      f"[dim]{dur:>5}[/dim]{isrc_col}  {mb_ic}")
+    console.print(f'\n  [dim]{tr_created} created · {tr_updated} updated[/dim]  '
+                  f'[bold]{os.path.basename(db_path)}[/bold]')
+
+    return release_id, album['name'], album['artists'][0]['name'], album.get('release_date', '')
+
+# ── Variant / source helpers ──────────────────────────────────────────────────
+
+def pick_canonical(group_results):
+    """Return index of the canonical release in a group.
+
+    group_results: list of (release_id, title, release_date).
+    Canonical = earliest-dated release with no edition qualifier in its title.
+    Ties broken by date alone.
+    """
+    def score(item):
+        _, title, date = item
+        return (0 if detect_variant_type(title) is None else 1, date or '9999')
+    return min(range(len(group_results)), key=lambda i: score(group_results[i]))
+
+def _write_variant_links(conn, canonical_id, variants):
+    """Insert release_variants rows.  variants: [(variant_id, title, sort_order)]"""
+    for variant_id, title, sort_order in variants:
+        vtypes = detect_variant_types(title)
+        vtype_val = ','.join(vtypes) if vtypes else None
+        conn.execute(
+            '''INSERT INTO release_variants (canonical_id, variant_id, variant_type, sort_order)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(canonical_id, variant_id) DO UPDATE SET
+                   variant_type = excluded.variant_type,
+                   sort_order   = excluded.sort_order''',
+            (canonical_id, variant_id, vtype_val, sort_order),
+        )
+    conn.commit()
+
+# ── cmd: import ───────────────────────────────────────────────────────────────
+
+def _import_aoty_step(db_path, release_id, release_title, artist_name):
+    console.rule('[dim]AOTY[/dim]', style='dim')
+    conn       = open_db(db_path)
+    cached     = conn.execute('SELECT aoty_url FROM releases WHERE id = ?', (release_id,)).fetchone()
+    cached_url = cached[0] if cached else None
+    url, data  = fetch_aoty_data(release_title, artist_name, cached_url)
+    if _has_aoty(data):
+        save_aoty_data(conn, release_id, url, data)
+        type_str  = f'  [{data["aoty_type"]}]' if data['aoty_type'] else ''
+        date_str  = f'  {data["release_date"]}' if data['release_date'] else ''
+        primary   = [n for _, n, _, p in data['genres'] if p]
+        genre_str = f'  {", ".join(primary)}' if primary else ''
+        console.print(f'  [green]✓[/green]  [dim]{url}[/dim]{type_str}{date_str}{genre_str}')
+    else:
+        console.print('  [dim]no match[/dim]')
+    conn.close()
+
+def _import_wiki_step(db_path, release_id, release_title, artist_name):
+    console.rule('[dim]Wikipedia[/dim]', style='dim')
+    conn = open_db(db_path)
+    row  = conn.execute(
+        'SELECT mbid, release_date, date_source FROM releases WHERE id = ?', (release_id,)
+    ).fetchone()
+    if not row or not row['mbid']:
+        console.print('  [dim]no MBID — skipped[/dim]')
+        conn.close()
+        return
+    mbid        = row['mbid']
+    ex_date     = row['release_date']
+    ex_source   = row['date_source']
+    candidates, wiki_url = fetch_date_candidates(mbid, release_title, artist_name)
+    if candidates:
+        best     = candidates[0]
+        src      = 'wikipedia' if 'Wikipedia' in best['source'] else 'musicbrainz'
+        saved    = _save_date(conn, release_id, best['date'], wiki_url, source=src)
+        if saved:
+            console.print(f"  [green]✓[/green]  {best['date']}  [dim]{best['source']}[/dim]"
+                          + (f"  [dim]{wiki_url}[/dim]" if wiki_url else ""))
+        else:
+            console.print(f"  [dim]kept {ex_date} ({ex_source}) — "
+                          f"{src} had {best['date']}[/dim]")
+    else:
+        if wiki_url:
+            conn.execute('UPDATE releases SET wikipedia_url = ?, updated_at = ? WHERE id = ?',
+                         (wiki_url, int(time.time()), release_id))
+            conn.commit()
+            console.print(f'  [dim]no date found — saved wiki URL[/dim]')
+        else:
+            console.print('  [dim]no date found[/dim]')
+    conn.close()
+
+def cmd_import(args):
+    load_dotenv()
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    if not cid or not csc:
+        console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set.')
+        sys.exit(1)
+
+    use_aoty = not args.no_aoty
+    use_wiki = not args.no_wiki
+
+    if use_aoty and not _AOTY_AVAILABLE:
+        console.print('[yellow]Warning:[/yellow] AOTY disabled — pip install requests beautifulsoup4')
+        use_aoty = False
+
+    db_path = args.db or DB_PATH
+    groups  = []
+    for arg in args.albums:
+        if os.path.isfile(arg):
+            file_groups = read_ids_from_file(arg)
+            if not file_groups:
+                console.print(f'[yellow]Warning:[/yellow] {arg} contained no album IDs')
+            groups.extend(file_groups)
+        else:
+            parsed = _parse_group_line(arg)
+            if parsed:
+                groups.append(parsed)
+            else:
+                groups.append([{'url': arg, 'album_id': arg, 'discs': None}])
+
+    if not groups:
+        console.print('[red]Error:[/red] No album IDs found.')
+        sys.exit(1)
+
+    client  = SpotifyClient(cid, csc)
+    total   = sum(len(g) for g in groups)
+    errors  = 0
+    seq     = 0
+
+    for group in groups:
+        group_results = []  # (release_id, title, release_date) or None per entry
+
+        for entry in group:
+            seq += 1
+            if total > 1:
+                console.rule(f'[dim]{seq} / {total}[/dim]', style='dim')
+            disc_note = f'  [dim]discs {entry["discs"]}[/dim]' if entry['discs'] else ''
+            if disc_note:
+                console.print(disc_note)
+            try:
+                release_id, title, artist, rel_date = import_album(
+                    db_path, client, entry['url'],
+                    use_mb=not args.no_mb,
+                    discs=entry['discs'],
+                )
+                group_results.append((release_id, title, rel_date))
+                if use_aoty and release_id:
+                    _import_aoty_step(db_path, release_id, title, artist)
+                if use_wiki and release_id and not args.no_mb:
+                    _import_wiki_step(db_path, release_id, title, artist)
+            except urllib.error.HTTPError as e:
+                console.print(f'[red]HTTP {e.code}:[/red] {e.reason}')
+                errors += 1
+                group_results.append(None)
+            except Exception as e:
+                console.print(f'[red]Error:[/red] {e}')
+                if total == 1:
+                    raise
+                errors += 1
+                group_results.append(None)
+
+        valid = [x for x in group_results if x is not None]
+        if len(valid) > 1:
+            canon_idx   = pick_canonical(valid)
+            canon_id, canon_title, _ = valid[canon_idx]
+            variants    = [
+                (rid, vtitle, order)
+                for order, (rid, vtitle, _) in enumerate(valid)
+                if rid != canon_id
+            ]
+            console.rule('[dim]Variants[/dim]', style='dim')
+            console.print(f'  [bold]Canonical:[/bold] {canon_title}  [dim]{canon_id}[/dim]')
+            conn = open_db(db_path)
+            _write_variant_links(conn, canon_id, variants)
+            conn.close()
+            for vid, vtitle, _ in variants:
+                vtypes = detect_variant_types(vtitle)
+                vtype_label = ','.join(vtypes) if vtypes else 'variant'
+                console.print(f'  [dim]{vtype_label}:[/dim]  {vtitle}  [dim]{vid}[/dim]')
+
+    if total > 1:
+        console.rule(style='dim')
+        ok = total - errors
+        console.print(f'  [dim]Batch:[/dim] {ok}/{total} succeeded'
+                      + (f'  [red]{errors} failed[/red]' if errors else ''))
+
+# ── cmd: enrich aoty ─────────────────────────────────────────────────────────
+
+def cmd_enrich_aoty(args):
+    if not _AOTY_AVAILABLE:
+        console.print('[red]Error:[/red] pip install requests beautifulsoup4')
+        sys.exit(1)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format='  [%(levelname)s] %(message)s',
+    )
+
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    # Resolve --artist to an id
+    artist_filter = None
+    if args.artist:
+        row = conn.execute(
+            'SELECT id, name FROM artists WHERE id = ? OR LOWER(name) = LOWER(?)',
+            (args.artist, args.artist)
+        ).fetchone()
+        if not row:
+            rows = conn.execute(
+                "SELECT id, name FROM artists WHERE LOWER(name) LIKE LOWER('%' || ? || '%')",
+                (args.artist,)
+            ).fetchall()
+            if not rows:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                sys.exit(1)
+            if len(rows) > 1:
+                for rid, rname in rows:
+                    console.print(f'  {rid}  {rname}')
+                console.print('[yellow]Multiple matches — use exact name or id.[/yellow]')
+                sys.exit(1)
+            row = rows[0]
+        artist_filter = row[0]
+        console.print(f'[dim]Artist: {row[1]} ({artist_filter})[/dim]')
+
+    not_found_clause = "AND aoty_url != 'not_found'" if args.force else ''
+    done = set() if args.overwrite_genre else set(
+        r[0] for r in conn.execute(f'''
+            SELECT DISTINCT release_id FROM release_genres
+            UNION
+            SELECT id FROM releases WHERE aoty_url IS NOT NULL {not_found_clause}
+        ''')
+    )
+
+    if args.release_id:
+        row = conn.execute('''
+            SELECT r.id, r.title, r.release_year, a.name
+            FROM releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            LEFT JOIN artists a ON ra.artist_id = a.id
+            WHERE r.id = ?
+        ''', (args.release_id,)).fetchone()
+        if not row:
+            console.print(f'[red]Release not found:[/red] {args.release_id}')
+            sys.exit(1)
+        queue = [row]
+    else:
+        artist_clause = 'AND r.id IN (SELECT release_id FROM release_artists WHERE artist_id = ? AND role = \'main\')' if artist_filter else ''
+        params        = (artist_filter,) if artist_filter else ()
+        rows          = conn.execute(f'''
+            SELECT r.id, r.title, r.release_year, a.name
+            FROM releases r
+            LEFT JOIN artists a ON r.primary_artist_id = a.id
+            WHERE r.hidden = 0 {artist_clause}
+            ORDER BY (
+                SELECT COUNT(*) FROM tracks t
+                JOIN listens l ON l.track_id = t.id
+                WHERE t.release_id = r.id AND t.hidden = 0
+            ) DESC, r.release_year DESC NULLS LAST, r.title
+        ''', params).fetchall()
+        queue = [r for r in rows if r[0] not in done]
+        total_skipped = len(rows) - len(queue)
+        console.print(f'[dim]{len(rows)} releases  ({total_skipped} already done, '
+                      f'{len(queue)} to process)[/dim]')
+        queue = queue[args.skip:]
+        if args.limit:
+            queue = queue[:args.limit]
+
+    console.print(f'[dim]Processing {len(queue)}  '
+                  f'(skip={args.skip}, limit={args.limit or "none"}, '
+                  f'auto={"yes" if args.auto else "no"})[/dim]')
+    if not args.auto:
+        console.print('[dim]Press Ctrl+C or type q to stop.[/dim]')
+    console.print()
+
+    updated = skipped = marked = 0
+    now = int(time.time())
+
+    def submit(entry):
+        cached = conn.execute('SELECT aoty_url FROM releases WHERE id = ?',
+                               (entry[0],)).fetchone()
+        cached_url = cached[0] if cached else None
+        if cached_url == 'not_found':
+            cached_url = None  # treat sentinel as no cache; do a fresh search
+        return executor.submit(fetch_aoty_data, entry[1], entry[3], cached_url)
+
+    with ThreadPoolExecutor(max_workers=AOTY_AHEAD) as executor:
+        futures = deque(submit(queue[j]) for j in range(min(AOTY_AHEAD, len(queue))))
+        i = 0
+        while i < len(queue):
+            release_id, release_name, release_year, artist_name = queue[i]
+            aoty_url, data = futures.popleft().result()
+
+            nxt = i + AOTY_AHEAD
+            if nxt < len(queue):
+                futures.append(submit(queue[nxt]))
+
+            console.print(f'[dim][{i+1}/{len(queue)}][/dim]  ', end='')
+
+            if args.auto:
+                if _has_aoty(data):
+                    save_aoty_data(conn, release_id, aoty_url, data,
+                                   overwrite_date=args.overwrite_date,
+                                   overwrite_type=args.overwrite_type)
+                    type_str  = f'  [{data["aoty_type"]}]' if data['aoty_type'] else ''
+                    date_str  = f'  {data["release_date"]}' if data['release_date'] else ''
+                    primary   = [n for _, n, _, p in data['genres'] if p]
+                    genre_str = f'  {", ".join(primary)}' if primary else ''
+                    console.print(f'[bold]{release_name}[/bold]{type_str}{date_str}{genre_str}')
+                    updated += 1
+                else:
+                    if not aoty_url:
+                        conn.execute(
+                            'UPDATE releases SET aoty_url = ?, updated_at = ? WHERE id = ?',
+                            ('not_found', now, release_id)
+                        )
+                        conn.commit()
+                        console.print(f'[dim]{release_name}  — not found (marked)[/dim]')
+                        marked += 1
+                    else:
+                        console.print(f'[dim]{release_name}  — no data[/dim]')
+                    skipped += 1
+                i += 1
+                continue
+
+            action, val_url, val_data = _aoty_prompt(
+                release_name, artist_name, aoty_url, data)
+
+            if action == 'quit':
+                for f in futures: f.cancel()
+                break
+            elif action == 'skip':
+                if not aoty_url:
+                    conn.execute(
+                        'UPDATE releases SET aoty_url = ?, updated_at = ? WHERE id = ?',
+                        ('not_found', now, release_id)
+                    )
+                    conn.commit()
+                    console.print(f'  [dim]Marked as not found.[/dim]')
+                    marked += 1
+                skipped += 1
+                i += 1
+            elif action == 'url':
+                new_url, new_data = val_url, scrape_aoty_page(val_url)
+                if not _has_aoty(new_data):
+                    console.print('  [yellow]Still no data — skipping.[/yellow]')
+                    skipped += 1
+                    i += 1
+                    continue
+                action2, _, val_data2 = _aoty_prompt(release_name, artist_name, new_url, new_data)
+                if action2 == 'save':
+                    save_aoty_data(conn, release_id, new_url, val_data2,
+                                   overwrite_date=args.overwrite_date,
+                                   overwrite_type=args.overwrite_type)
+                    console.print(f'  [green]Saved.[/green]')
+                    updated += 1
+                else:
+                    skipped += 1
+                i += 1
+            elif action == 'save':
+                save_aoty_data(conn, release_id, val_url, val_data,
+                               overwrite_date=args.overwrite_date,
+                               overwrite_type=args.overwrite_type)
+                primary = [n for _, n, _, p in val_data['genres'] if p]
+                console.print(f'  [green]Saved:[/green] {", ".join(primary) or "(no genres)"}')
+                updated += 1
+                i += 1
+
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]Updated: {updated}  Skipped: {skipped}  Marked not-found: {marked}[/dim]')
+
+# ── cmd: enrich dates ─────────────────────────────────────────────────────────
+
+def cmd_enrich_dates(args):
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format='  [%(levelname)s] %(message)s',
+    )
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    artist_clause = ''
+    params        = []
+    if args.artist:
+        artist_clause = 'AND (ra.artist_id = ? OR LOWER(a.name) = LOWER(?))'
+        params        = [args.artist, args.artist]
+    release_clause = ''
+    if args.release_id:
+        release_clause = 'AND r.id = ?'
+        params         = [args.release_id]
+
+    overwrite_clause = '' if args.overwrite else 'AND (r.release_date IS NULL OR r.release_date = \'\')'
+
+    rows = conn.execute(f'''
+        SELECT DISTINCT r.id, r.title, r.release_year, a.name
+        FROM releases r
+        LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+        LEFT JOIN artists a ON ra.artist_id = a.id
+        WHERE r.mbid IS NOT NULL AND r.hidden = 0
+        {overwrite_clause} {artist_clause} {release_clause}
+        ORDER BY r.release_year DESC NULLS LAST, r.title
+    ''', params).fetchall()
+
+    queue = rows[args.skip:]
+    if args.limit:
+        queue = queue[:args.limit]
+
+    console.print(f'[dim]{len(rows)} releases need dates, processing {len(queue)}  '
+                  f'(skip={args.skip}, limit={args.limit or "none"})[/dim]')
+    console.print('[dim]Press Ctrl+C or type q to stop.[/dim]\n')
+
+    updated = skipped = 0
+
+    def submit(entry):
+        return executor.submit(fetch_date_candidates, entry[0], entry[1], entry[3])
+
+    with ThreadPoolExecutor(max_workers=DATES_AHEAD) as executor:
+        futures = deque(submit(queue[j]) for j in range(min(DATES_AHEAD, len(queue))))
+
+        for i, (release_id, release_name, release_year, artist_name) in enumerate(queue):
+            candidates, wiki_url = futures.popleft().result()
+
+            nxt = i + DATES_AHEAD
+            if nxt < len(queue):
+                futures.append(submit(queue[nxt]))
+
+            console.print(f'[dim][{i+1}/{len(queue)}][/dim]  ', end='')
+
+            if not candidates:
+                if wiki_url:
+                    conn.execute('UPDATE releases SET wikipedia_url = ?, updated_at = ? WHERE id = ?',
+                                 (wiki_url, int(time.time()), release_id))
+                    conn.commit()
+                console.print(f'[dim]{release_name}  — no date found[/dim]')
+                skipped += 1
+                continue
+
+            choice = _dates_prompt(candidates, release_name, artist_name, release_year)
+
+            if choice == 'QUIT':
+                for f in futures: f.cancel()
+                break
+            elif choice is None:
+                console.print('  [dim]Skipped.[/dim]')
+                skipped += 1
+            else:
+                _save_date(conn, release_id, choice, wiki_url, source='manual')
+                console.print(f'  [green]Saved:[/green] {choice}')
+                updated += 1
+
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]Updated: {updated}  Skipped: {skipped}[/dim]')
+
+# ── cmd: enrich tracks ────────────────────────────────────────────────────────
+
+def cmd_enrich_tracks(args):
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    artist_clause  = ''
+    release_clause = ''
+    params         = []
+    if args.artist:
+        artist_clause = 'AND (ra.artist_id = ? OR LOWER(a.name) = LOWER(?))'
+        params        = [args.artist, args.artist]
+    if args.release_id:
+        release_clause = 'AND r.id = ?'
+        params         = [args.release_id]
+
+    rows = conn.execute(f'''
+        SELECT DISTINCT r.id, r.title, r.mbid
+        FROM releases r
+        LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+        LEFT JOIN artists a ON ra.artist_id = a.id
+        WHERE r.mbid IS NOT NULL AND r.hidden = 0
+        AND EXISTS (SELECT 1 FROM tracks t WHERE t.release_id = r.id AND t.mbid IS NULL)
+        {artist_clause} {release_clause}
+        ORDER BY r.title
+    ''', params).fetchall()
+
+    queue = rows[args.skip:]
+    if args.limit:
+        queue = queue[:args.limit]
+
+    console.print(f'[dim]{len(rows)} releases need track MBIDs, processing {len(queue)}[/dim]\n')
+
+    total_matched = 0
+    for i, (release_id, title, mbid) in enumerate(queue):
+        console.print(f'[dim][{i+1}/{len(queue)}][/dim]  [bold]{title}[/bold]', end='')
+        by_isrc, by_title, _ = mb_fetch_recording_ids(mbid)
+        if not by_isrc and not by_title:
+            console.print('  [dim]no MB recordings[/dim]')
+            continue
+        tracks  = conn.execute(
+            'SELECT id, title, isrc FROM tracks WHERE release_id = ? AND mbid IS NULL',
+            (release_id,)
+        ).fetchall()
+        matched = 0
+        now     = int(time.time())
+        for track_id, track_title, isrc in tracks:
+            mb_id = (by_isrc.get(isrc) if isrc else None) or by_title.get(_norm(track_title))
+            if mb_id:
+                conn.execute('UPDATE OR IGNORE tracks SET mbid = ?, updated_at = ? WHERE id = ?',
+                             (mb_id, now, track_id))
+                matched += 1
+        conn.commit()
+        console.print(f'  [dim]{matched}/{len(tracks)} matched[/dim]')
+        total_matched += matched
+
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]Matched {total_matched} track MBIDs across {len(queue)} releases[/dim]')
+
+# ── cmd: enrich audio ─────────────────────────────────────────────────────────
+
+def cmd_enrich_audio(args):
+    """Fetch Spotify audio features for tracks that don't have them yet."""
+    load_dotenv()
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    if not cid or not csc:
+        console.print('[red]SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET not set[/red]')
+        return
+    client = SpotifyClient(cid, csc)
+    conn   = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    where = 'WHERE t.spotify_id IS NOT NULL AND t.audio_features IS NULL AND t.hidden = 0'
+    params = []
+    if args.artist:
+        row = _resolve_artist(conn, args.artist)
+        if not row:
+            console.print(f'[red]Artist not found: {args.artist}[/red]')
+            conn.close(); return
+        where += ' AND r.primary_artist_id = ?'
+        params.append(row['id'])
+    if args.release_id:
+        where += ' AND t.release_id = ?'
+        params.append(args.release_id)
+
+    rows = conn.execute(f'''
+        SELECT t.id, t.spotify_id, t.title, r.title AS album
+        FROM tracks t JOIN releases r ON r.id = t.release_id
+        {where}
+        ORDER BY r.release_year DESC, r.title, t.disc_number, t.track_number
+    ''', params).fetchall()
+
+    if not rows:
+        console.print('[dim]No tracks to enrich.[/dim]')
+        conn.close(); return
+
+    console.print(f'[dim]Fetching audio features for {len(rows)} tracks…[/dim]')
+    sp_ids    = [r['spotify_id'] for r in rows]
+    id_to_row = {r['spotify_id']: r for r in rows}
+    features  = client.get_audio_features_batch(sp_ids)
+
+    _AF_BLOB_KEYS = ('energy', 'danceability', 'valence', 'acousticness',
+                     'instrumentalness', 'liveness', 'speechiness',
+                     'key', 'mode', 'time_signature')
+
+    updated = 0
+    now     = int(time.time())
+    for feat in features:
+        if not feat:
+            continue
+        sid = feat.get('id')
+        if sid not in id_to_row:
+            continue
+        tempo = feat.get('tempo')
+        blob  = {k: feat[k] for k in _AF_BLOB_KEYS if feat.get(k) is not None}
+        conn.execute(
+            'UPDATE tracks SET tempo_bpm = ?, audio_features = ?, updated_at = ? WHERE spotify_id = ?',
+            (tempo, json.dumps(blob) if blob else None, now, sid)
+        )
+        updated += 1
+
+    conn.commit()
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]Updated {updated}/{len(rows)} tracks with audio features[/dim]')
+
+# ── cmd: enrich artists ────────────────────────────────────────────────────────
+
+def cmd_enrich_artists(args):
+    """Fetch artist metadata from MusicBrainz (type, gender, country, dates)."""
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    where  = 'WHERE 1=1'
+    params = []
+    if not args.overwrite:
+        # Skip artists already attempted (have MBID) or searched but not found (mb_attempted=1)
+        where += ' AND a.mbid IS NULL AND a.mb_attempted = 0'
+    if args.artist:
+        row = _resolve_artist(conn, args.artist)
+        if not row:
+            console.print(f'[red]Artist not found: {args.artist}[/red]')
+            conn.close(); return
+        where += ' AND a.id = ?'
+        params.append(row['id'])
+
+    queue = conn.execute(
+        f'SELECT id, name, mbid FROM artists a {where} ORDER BY name', params
+    ).fetchall()
+
+    if not queue:
+        console.print('[dim]No artists to enrich.[/dim]')
+        conn.close(); return
+
+    console.print(f'[dim]Enriching {len(queue)} artists from MusicBrainz…[/dim]')
+    console.rule(style='dim')
+
+    _MB_COL_MAP = {
+        'type':           'type',
+        'gender':         'gender',
+        'country':        'country',
+        'sort_name':      'sort_name',
+        'disambiguation': 'disambiguation',
+        'formed_year':    'formed_year',
+        'disbanded_year': 'disbanded_year',
+        'wikipedia_url':  'wikipedia_url',
+    }
+    updated = skipped = 0
+    now     = int(time.time())
+
+    for artist in queue:
+        mbid = artist['mbid']
+
+        if not mbid:
+            search = _mb_get_safe('/artist/', {
+                'query': f'artist:"{artist["name"]}"',
+                'limit': 3,
+            })
+            candidates = (search or {}).get('artists') or []
+            best = next(
+                (c for c in candidates if c.get('score', 0) >= 90
+                 and _norm(c.get('name', '')) == _norm(artist['name'])),
+                None
+            )
+            if not best:
+                console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]no MB match[/dim]')
+                conn.execute('UPDATE artists SET mb_attempted = 1 WHERE id = ?', (artist['id'],))
+                conn.commit()
+                skipped += 1
+                continue
+            mbid = best['id']
+            try:
+                conn.execute('UPDATE artists SET mbid = ? WHERE id = ?', (mbid, artist['id']))
+                conn.commit()
+            except sqlite3.IntegrityError:
+                console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]MBID already assigned to another artist[/dim]')
+                skipped += 1
+                continue
+
+        data = mb_fetch_artist_data(mbid)
+        if not data:
+            console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]no MB data[/dim]')
+            skipped += 1
+            continue
+        updates = {col: data[key] for key, col in _MB_COL_MAP.items() if key in data}
+        if not updates:
+            skipped += 1
+            continue
+        updates['updated_at'] = now
+        set_clause = ', '.join(f'{k} = ?' for k in updates)
+        conn.execute(f'UPDATE artists SET {set_clause} WHERE id = ?',
+                     (*updates.values(), artist['id']))
+        parts = []
+        if 'type'           in updates: parts.append(updates['type'])
+        if 'gender'         in updates: parts.append(updates['gender'])
+        if 'country'        in updates: parts.append(updates['country'])
+        if 'formed_year'    in updates: parts.append(str(updates['formed_year']))
+        if 'disbanded_year' in updates: parts.append(f'–{updates["disbanded_year"]}')
+        console.print(f'  [green]✓[/green]  {artist["name"]:<30}  [dim]{" · ".join(parts)}[/dim]')
+        updated += 1
+
+    conn.commit()
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]Updated: {updated}  Skipped: {skipped}[/dim]')
+
+# ── cmd: hide ─────────────────────────────────────────────────────────────────
+
+def cmd_hide(args):
+    conn   = open_db(args.db or DB_PATH)
+    init_schema(conn)
+    action = 'unhide' if args.unhide else 'hide'
+    hval   = 0 if args.unhide else 1
+
+    table_map = {
+        'artists':  ('artists',  'name',  'id'),
+        'tracks':   ('tracks',   'title', 'id'),
+        'releases': ('releases', 'title', 'id'),
+    }
+    table, name_col, id_col = table_map[args.entity]
+
+    names = []
+    with open(args.csv_file, encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        if 'name' not in (reader.fieldnames or []):
+            console.print('[red]Error:[/red] CSV must have a "name" column')
+            sys.exit(1)
+        for row in reader:
+            names.append(row['name'].strip())
+
+    console.print(f'[dim]{len(names)} {args.entity} to {action}[/dim]\n')
+    ok, not_found = 0, []
+    now = int(time.time())
+    for name in names:
+        row = conn.execute(
+            f'SELECT {id_col} FROM {table} WHERE LOWER({name_col}) = LOWER(?)', (name,)
+        ).fetchone()
+        if not row:
+            not_found.append(name)
+            console.print(f'  [dim]not found:[/dim] {name}')
+            continue
+        conn.execute(f'UPDATE {table} SET hidden = ?, updated_at = ? WHERE {id_col} = ?',
+                     (hval, now, row[0]))
+        tag = '[green]shown[/green]' if args.unhide else '[dim]hidden[/dim]'
+        console.print(f'  {tag}  {name}')
+        ok += 1
+
+    conn.commit()
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]{ok} {action}d  ·  {len(not_found)} not found[/dim]')
+
+# ── cmd: artist images ────────────────────────────────────────────────────────
+
+def cmd_artist_images(args):
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    updates = []
+    with open(args.csv_file, encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            updates.append({
+                'name': row['artist_name'].strip(),
+                'url':  row['profile_image_url'].strip(),
+                'crop': row.get('profile_image_crop', '').strip() or None,
+            })
+
+    console.print(f'[dim]{len(updates)} artists in CSV[/dim]\n')
+    ok, not_found = 0, []
+    now = int(time.time())
+    for u in updates:
+        row = conn.execute('SELECT id FROM artists WHERE LOWER(name) = LOWER(?)',
+                           (u['name'],)).fetchone()
+        if not row:
+            not_found.append(u['name'])
+            console.print(f'  [dim]not found:[/dim] {u["name"]}')
+            continue
+        conn.execute(
+            "UPDATE artists SET image_url = ?, image_source = 'manual',"
+            " image_position = ?, updated_at = ? WHERE id = ?",
+            (u['url'], u['crop'], now, row[0])
+        )
+        console.print(f'  [green]upd[/green]  {u["name"]}')
+        ok += 1
+
+    conn.commit()
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]{ok} updated  ·  {len(not_found)} not found[/dim]')
+
+# ── cmd: link sources ─────────────────────────────────────────────────────────
+
+def cmd_link_sources(args):
+    db_path = args.db or DB_PATH
+    conn    = open_db(db_path)
+    init_schema(conn)
+
+    def resolve(url_or_id):
+        row = conn.execute('SELECT id, title FROM releases WHERE id = ?',
+                           (url_or_id,)).fetchone()
+        if row:
+            return row
+        m    = _RE_SP_URL.search(url_or_id)
+        spid = m.group(1) if m else url_or_id
+        return conn.execute('SELECT id, title FROM releases WHERE spotify_id = ?',
+                            (spid,)).fetchone()
+
+    compilation = resolve(args.compilation)
+    if not compilation:
+        console.print(f'[red]Compilation not found:[/red] {args.compilation}')
+        sys.exit(1)
+    console.print(f'  Compilation: [bold]{compilation[1]}[/bold]  [dim]{compilation[0]}[/dim]\n')
+
+    ok = 0
+    for spec in args.sources:
+        disc   = None
+        disc_m = re.search(r':disc=(\d+)$', spec)
+        if disc_m:
+            disc = int(disc_m.group(1))
+            spec = spec[:disc_m.start()]
+        src = resolve(spec.strip())
+        if not src:
+            console.print(f'  [red]not found:[/red] {spec}')
+            continue
+        conn.execute(
+            '''INSERT INTO release_sources (compilation_id, source_id, disc_number)
+               VALUES (?, ?, ?)
+               ON CONFLICT(compilation_id, source_id) DO UPDATE SET
+                   disc_number = excluded.disc_number''',
+            (compilation[0], src[0], disc),
+        )
+        disc_str = f'  disc {disc}' if disc else ''
+        console.print(f'  [green]linked[/green]  {src[1]}{disc_str}  [dim]{src[0]}[/dim]')
+        ok += 1
+
+    conn.commit()
+    conn.close()
+    console.print(f'\n  [dim]{ok} source(s) linked to {compilation[1]}[/dim]')
+
+# ── cmd: alias ────────────────────────────────────────────────────────────────
+
+def _resolve_artist(conn, key: str):
+    """Look up an artist by internal ID, slug, Spotify ID, or name (case-insensitive). Returns row or None."""
+    return (
+        conn.execute('SELECT id, name FROM artists WHERE id = ?',                 [key]).fetchone() or
+        conn.execute('SELECT id, name FROM artists WHERE slug = ?',               [key]).fetchone() or
+        conn.execute('SELECT id, name FROM artists WHERE spotify_id = ?',         [key]).fetchone() or
+        conn.execute('SELECT id, name FROM artists WHERE lower(name) = lower(?)', [key]).fetchone()
+    )
+
+def cmd_alias(args):
+    conn = open_db(getattr(args, 'db', None) or DB_PATH)
+    init_schema(conn)
+    artist = _resolve_artist(conn, args.artist)
+    if not artist:
+        console.print(f'[red]Artist not found:[/red] {args.artist}')
+        sys.exit(1)
+
+    if args.alias_cmd == 'add':
+        conn.execute(
+            '''INSERT INTO artist_aliases (artist_id, alias, alias_type, language, source, sort_order)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(artist_id, alias) DO UPDATE SET
+                   alias_type = excluded.alias_type,
+                   language   = excluded.language,
+                   source     = excluded.source,
+                   sort_order = excluded.sort_order''',
+            [artist['id'], args.alias, args.alias_type, getattr(args, 'language', None), args.source, getattr(args, 'sort_order', 0)],
+        )
+        conn.commit()
+        type_tag = f'  [dim]{args.alias_type}[/dim]' if args.alias_type != 'common' else ''
+        console.print(f'  [green]✓[/green]  "{args.alias}"{type_tag}  →  {artist["name"]}  [dim]({args.source})[/dim]')
+
+    elif args.alias_cmd == 'remove':
+        cur = conn.execute(
+            'DELETE FROM artist_aliases WHERE artist_id = ? AND lower(alias) = lower(?)',
+            [artist['id'], args.alias],
+        )
+        conn.commit()
+        if cur.rowcount:
+            console.print(f'  [green]✓[/green]  Removed "{args.alias}" from {artist["name"]}')
+        else:
+            console.print(f'  [yellow]Not found:[/yellow] "{args.alias}" on {artist["name"]}')
+
+    elif args.alias_cmd == 'list':
+        rows = conn.execute(
+            'SELECT alias, alias_type, language, source FROM artist_aliases WHERE artist_id = ? ORDER BY sort_order, alias_type, alias',
+            [artist['id']],
+        ).fetchall()
+        console.print(f'  Aliases for [bold]{artist["name"]}[/bold]:')
+        if rows:
+            for r in rows:
+                lang_tag = f'  [dim]{r["language"]}[/dim]' if r['language'] else ''
+                console.print(f'    {r["alias"]}  [dim]({r["alias_type"]}){lang_tag}  ({r["source"]})[/dim]')
+        else:
+            console.print('    [dim]none[/dim]')
+    conn.close()
+
+
+# ── cmd: artist merge ──────────────────────────────────────────────────────────
+
+def cmd_artist_merge(args):
+    """
+    Merge FROM artist into TO artist (the canonical record to keep).
+
+    - Repoints release_artists, track_artists, releases.primary_artist_id
+    - Inserts FROM artist's name as a past_name alias on TO (unless --no-alias)
+    - Transfers missing metadata fields from FROM → TO
+    - Deletes the FROM artist row
+    """
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    from_artist = _resolve_artist(conn, args.from_artist)
+    to_artist   = _resolve_artist(conn, args.to_artist)
+
+    if not from_artist:
+        console.print(f'[red]Artist not found:[/red] {args.from_artist}')
+        sys.exit(1)
+    if not to_artist:
+        console.print(f'[red]Artist not found:[/red] {args.to_artist}')
+        sys.exit(1)
+    if from_artist['id'] == to_artist['id']:
+        console.print('[yellow]FROM and TO are the same artist — nothing to do.[/yellow]')
+        sys.exit(0)
+
+    from_id, from_name = from_artist['id'], from_artist['name']
+    to_id,   to_name   = to_artist['id'],   to_artist['name']
+
+    console.print(f'  Merging [bold]{from_name}[/bold] [dim]({from_id})[/dim]')
+    console.print(f'      → [bold]{to_name}[/bold] [dim]({to_id})[/dim]\n')
+
+    # Counts before
+    ra_count  = conn.execute('SELECT COUNT(*) FROM release_artists WHERE artist_id = ?', [from_id]).fetchone()[0]
+    ta_count  = conn.execute('SELECT COUNT(*) FROM track_artists   WHERE artist_id = ?', [from_id]).fetchone()[0]
+    rel_count = conn.execute('SELECT COUNT(*) FROM releases WHERE primary_artist_id = ?', [from_id]).fetchone()[0]
+
+    conn.execute('PRAGMA foreign_keys = OFF')
+    now = int(time.time())
+
+    # Remove FROM rows where TO is already present (avoid UNIQUE constraint violations)
+    dup_ra = conn.execute('''
+        DELETE FROM release_artists
+        WHERE artist_id = ?
+        AND release_id IN (SELECT release_id FROM release_artists WHERE artist_id = ?)
+    ''', [from_id, to_id]).rowcount
+    dup_ta = conn.execute('''
+        DELETE FROM track_artists
+        WHERE artist_id = ?
+        AND track_id IN (SELECT track_id FROM track_artists WHERE artist_id = ?)
+    ''', [from_id, to_id]).rowcount
+    if dup_ra or dup_ta:
+        console.print(f'  [dim]Removed {dup_ra} duplicate release_artists, {dup_ta} duplicate track_artists[/dim]')
+
+    # Repoint FK references
+    conn.execute('UPDATE release_artists SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
+    conn.execute('UPDATE track_artists   SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
+    conn.execute('UPDATE releases SET primary_artist_id = ? WHERE primary_artist_id = ?', [to_id, from_id])
+    conn.execute('UPDATE artist_aliases  SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
+    conn.execute('UPDATE artist_relations SET from_artist_id = ? WHERE from_artist_id = ?', [to_id, from_id])
+    conn.execute('UPDATE artist_relations SET to_artist_id   = ? WHERE to_artist_id   = ?', [to_id, from_id])
+
+    console.print(f'  [dim]Repointed {ra_count} release_artists, {ta_count} track_artists, {rel_count} primary releases[/dim]')
+
+    # Transfer missing metadata fields (TO takes priority for existing values)
+    fields_to_transfer = [
+        'sort_name', 'spotify_id', 'mbid', 'lastfm_url',
+        'image_url', 'image_source', 'image_position', 'hero_image_url',
+        'country', 'formed_year', 'disbanded_year', 'bio',
+        'aoty_id', 'aoty_url', 'wikipedia_url', 'type', 'gender', 'disambiguation',
+    ]
+    from_row = conn.execute(f'SELECT * FROM artists WHERE id = ?', [from_id]).fetchone()
+    to_row   = conn.execute(f'SELECT * FROM artists WHERE id = ?', [to_id]).fetchone()
+    transferred = []
+    for field in fields_to_transfer:
+        try:
+            if to_row[field] is None and from_row[field] is not None:
+                conn.execute(f'UPDATE artists SET {field} = ?, updated_at = ? WHERE id = ?',
+                             [from_row[field], now, to_id])
+                transferred.append(field)
+        except IndexError:
+            pass  # column might not exist on older schema
+    if transferred:
+        console.print(f'  [dim]Transferred metadata: {", ".join(transferred)}[/dim]')
+
+    # Add FROM name as past_name alias on TO (unless suppressed)
+    if not getattr(args, 'no_alias', False):
+        conn.execute(
+            '''INSERT INTO artist_aliases (artist_id, alias, alias_type, source, sort_order)
+               VALUES (?, ?, 'past_name', 'manual', 0)
+               ON CONFLICT(artist_id, alias) DO NOTHING''',
+            [to_id, from_name],
+        )
+        console.print(f'  [dim]Added past_name alias: "{from_name}"[/dim]')
+
+    # Delete the FROM artist
+    conn.execute('DELETE FROM artists WHERE id = ?', [from_id])
+    console.print(f'  [dim]Deleted artist row: {from_name} ({from_id})[/dim]')
+
+    conn.commit()
+    conn.execute('PRAGMA foreign_keys = ON')
+    conn.close()
+    console.print(f'\n  [green]✓[/green]  Merged [bold]{from_name}[/bold] → [bold]{to_name}[/bold]')
+
+
+# ── cmd: artist members ────────────────────────────────────────────────────────
+
+def cmd_artist_members(args):
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    if args.members_cmd == 'list':
+        group = _resolve_artist(conn, args.group)
+        if not group:
+            console.print(f'[red]Artist not found:[/red] {args.group}')
+            conn.close(); return
+        rows = conn.execute(
+            '''SELECT a.name, a.id, am.sort_order
+               FROM artist_members am
+               JOIN artists a ON a.id = am.member_artist_id
+               WHERE am.group_artist_id = ?
+               ORDER BY am.sort_order, a.name''',
+            [group['id']]
+        ).fetchall()
+        console.print(f'[bold]{group["name"]}[/bold]  ({len(rows)} members)')
+        for r in rows:
+            console.print(f'  {r["sort_order"]:2}  {r["name"]}  [dim]{r["id"]}[/dim]')
+        # Also show which other groups list this artist as a member
+        groups_for = conn.execute(
+            '''SELECT a.name FROM artist_members am
+               JOIN artists a ON a.id = am.group_artist_id
+               WHERE am.member_artist_id = ?''',
+            [group['id']]
+        ).fetchall()
+        if groups_for:
+            console.print(f'\n  [dim]Also listed as member of: {", ".join(r["name"] for r in groups_for)}[/dim]')
+
+    elif args.members_cmd == 'add':
+        group = _resolve_artist(conn, args.group)
+        if not group:
+            console.print(f'[red]Group not found:[/red] {args.group}')
+            conn.close(); return
+        # Next sort_order after existing members
+        cur_max = conn.execute(
+            'SELECT COALESCE(MAX(sort_order), -1) FROM artist_members WHERE group_artist_id = ?',
+            [group['id']]
+        ).fetchone()[0]
+        added = 0
+        for i, member_key in enumerate(args.members):
+            member = _resolve_artist(conn, member_key)
+            if not member:
+                console.print(f'  [yellow]Not found:[/yellow] {member_key}  — skipped (use Spotify ID or exact name)')
+                continue
+            try:
+                conn.execute(
+                    'INSERT INTO artist_members (group_artist_id, member_artist_id, sort_order) VALUES (?, ?, ?)',
+                    [group['id'], member['id'], cur_max + 1 + i]
+                )
+                console.print(f'  [green]added[/green]  {member["name"]}  →  {group["name"]}')
+                added += 1
+            except Exception:
+                console.print(f'  [dim]already linked:[/dim]  {member["name"]}')
+        conn.commit()
+        console.print(f'\n  {added} member(s) added to [bold]{group["name"]}[/bold]')
+
+    elif args.members_cmd == 'remove':
+        group = _resolve_artist(conn, args.group)
+        member = _resolve_artist(conn, args.member)
+        if not group:
+            console.print(f'[red]Group not found:[/red] {args.group}')
+            conn.close(); return
+        if not member:
+            console.print(f'[red]Member not found:[/red] {args.member}')
+            conn.close(); return
+        deleted = conn.execute(
+            'DELETE FROM artist_members WHERE group_artist_id = ? AND member_artist_id = ?',
+            [group['id'], member['id']]
+        ).rowcount
+        conn.commit()
+        if deleted:
+            console.print(f'  [green]removed[/green]  {member["name"]}  from  {group["name"]}')
+        else:
+            console.print(f'  [yellow]No link found[/yellow] between {member["name"]} and {group["name"]}')
+
+    conn.close()
+
+
+
+def _resolve_release(conn, key: str):
+    """Look up a release by internal ID, Spotify ID, MusicBrainz ID, or title (case-insensitive)."""
+    return (
+        conn.execute('SELECT id, title FROM releases WHERE id = ?',                  [key]).fetchone() or
+        conn.execute('SELECT id, title FROM releases WHERE spotify_id = ?',          [key]).fetchone() or
+        conn.execute('SELECT id, title FROM releases WHERE mbid = ?',                [key]).fetchone() or
+        conn.execute('SELECT id, title FROM releases WHERE lower(title) = lower(?)', [key]).fetchone()
+    )
+
+def cmd_release_alias(args):
+    conn = open_db(getattr(args, 'db', None) or DB_PATH)
+    init_schema(conn)
+    release = _resolve_release(conn, args.release)
+    if not release:
+        console.print(f'[red]Release not found:[/red] {args.release}')
+        sys.exit(1)
+
+    if args.release_alias_cmd == 'add':
+        is_def = 1 if getattr(args, 'definitive', False) else 0
+        conn.execute(
+            '''INSERT INTO release_aliases (release_id, alias, is_definitive, source)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(release_id, alias) DO UPDATE SET
+                   is_definitive = excluded.is_definitive,
+                   source        = excluded.source''',
+            [release['id'], args.alias, is_def, args.source],
+        )
+        conn.commit()
+        def_label = '  [bold](definitive)[/bold]' if is_def else ''
+        console.print(f'  [green]✓[/green]  "{args.alias}"{def_label}  →  {release["title"]}  [dim]({args.source})[/dim]')
+
+    elif args.release_alias_cmd == 'remove':
+        cur = conn.execute(
+            'DELETE FROM release_aliases WHERE release_id = ? AND lower(alias) = lower(?)',
+            [release['id'], args.alias],
+        )
+        conn.commit()
+        if cur.rowcount:
+            console.print(f'  [green]✓[/green]  Removed "{args.alias}" from {release["title"]}')
+        else:
+            console.print(f'  [yellow]Not found:[/yellow] "{args.alias}" on {release["title"]}')
+
+    elif args.release_alias_cmd == 'list':
+        rows = conn.execute(
+            '''SELECT alias, is_definitive, source
+               FROM release_aliases WHERE release_id = ?
+               ORDER BY is_definitive DESC, alias''',
+            [release['id']],
+        ).fetchall()
+        console.print(f'  Aliases for [bold]{release["title"]}[/bold]:')
+        if rows:
+            for r in rows:
+                def_tag = '  [bold dim](definitive)[/bold dim]' if r['is_definitive'] else ''
+                console.print(f'    {r["alias"]}{def_tag}  [dim]({r["source"]})[/dim]')
+        else:
+            console.print('    [dim]none[/dim]')
+
+    conn.close()
+
+
+# ── cmd: relation ──────────────────────────────────────────────────────────────
+
+def cmd_relation(args):
+    conn = open_db(getattr(args, 'db', None) or DB_PATH)
+    init_schema(conn)
+
+    if args.relation_cmd == 'list':
+        artist = _resolve_artist(conn, args.artist)
+        if not artist:
+            console.print(f'[red]Artist not found:[/red] {args.artist}')
+            sys.exit(1)
+        rows = conn.execute('''
+            SELECT ar.relation_type, ar.source,
+                   a_from.name AS from_name, a_to.name AS to_name,
+                   ar.from_artist_id, ar.to_artist_id
+            FROM   artist_relations ar
+            JOIN   artists a_from ON a_from.id = ar.from_artist_id
+            JOIN   artists a_to   ON a_to.id   = ar.to_artist_id
+            WHERE  ar.from_artist_id = ? OR ar.to_artist_id = ?
+            ORDER  BY ar.relation_type, a_from.name
+        ''', [artist['id'], artist['id']]).fetchall()
+        console.print(f'  Relations for [bold]{artist["name"]}[/bold]:')
+        if rows:
+            for r in rows:
+                arrow = f'{r["from_name"]} → [dim]{r["relation_type"]}[/dim] → {r["to_name"]}'
+                console.print(f'    {arrow}  [dim]({r["source"]})[/dim]')
+        else:
+            console.print('    [dim]none[/dim]')
+        conn.close()
+        return
+
+    from_artist = _resolve_artist(conn, args.from_artist)
+    to_artist   = _resolve_artist(conn, args.to_artist)
+    if not from_artist:
+        console.print(f'[red]Artist not found:[/red] {args.from_artist}')
+        sys.exit(1)
+    if not to_artist:
+        console.print(f'[red]Artist not found:[/red] {args.to_artist}')
+        sys.exit(1)
+
+    if args.relation_cmd == 'add':
+        conn.execute(
+            '''INSERT OR REPLACE INTO artist_relations
+               (from_artist_id, to_artist_id, relation_type, source)
+               VALUES (?, ?, ?, 'manual')''',
+            [from_artist['id'], to_artist['id'], args.type],
+        )
+        conn.commit()
+        console.print(
+            f'  [green]✓[/green]  {from_artist["name"]} → [dim]{args.type}[/dim] → {to_artist["name"]}'
+        )
+    elif args.relation_cmd == 'remove':
+        cur = conn.execute(
+            '''DELETE FROM artist_relations
+               WHERE from_artist_id = ? AND to_artist_id = ? AND relation_type = ?''',
+            [from_artist['id'], to_artist['id'], args.type],
+        )
+        conn.commit()
+        if cur.rowcount:
+            console.print(f'  [green]✓[/green]  Removed')
+        else:
+            console.print(f'  [yellow]Not found[/yellow]')
+    conn.close()
+
+
+# ── cmd: migrate artist-slugs ─────────────────────────────────────────────────
+
+def cmd_migrate_artist_slugs(args):
+    """
+    One-time migration: convert legacy slug-as-id artists to ULID ids.
+    For every artist where slug IS NULL, the current id is the slug.
+    Generates a new ULID id, backfills slug, and updates all FK references.
+    """
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)  # ensures slug column exists
+
+    artists = conn.execute(
+        'SELECT id, name FROM artists WHERE slug IS NULL ORDER BY name'
+    ).fetchall()
+
+    if not artists:
+        console.print('  [dim]All artists already have slugs — nothing to do.[/dim]')
+        conn.close()
+        return
+
+    console.print(f'  Migrating [bold]{len(artists)}[/bold] artist(s) to ULID ids...')
+    conn.execute('PRAGMA foreign_keys = OFF')
+
+    for artist in artists:
+        old_id = artist['id']
+        new_id = new_ulid()
+        slug   = old_id  # current id IS the slug for legacy rows
+
+        conn.execute('UPDATE releases        SET primary_artist_id = ? WHERE primary_artist_id = ?', [new_id, old_id])
+        conn.execute('UPDATE release_artists SET artist_id          = ? WHERE artist_id          = ?', [new_id, old_id])
+        conn.execute('UPDATE track_artists   SET artist_id          = ? WHERE artist_id          = ?', [new_id, old_id])
+        conn.execute('UPDATE artist_aliases  SET artist_id          = ? WHERE artist_id          = ?', [new_id, old_id])
+        conn.execute('UPDATE artist_relations SET from_artist_id    = ? WHERE from_artist_id     = ?', [new_id, old_id])
+        conn.execute('UPDATE artist_relations SET to_artist_id      = ? WHERE to_artist_id       = ?', [new_id, old_id])
+        conn.execute('UPDATE artists SET id = ?, slug = ? WHERE id = ?', [new_id, slug, old_id])
+
+        console.print(f'    [dim]{slug:<30}[/dim] {new_id}')
+
+    conn.commit()
+    conn.execute('PRAGMA foreign_keys = ON')
+    console.print(f'  [green]✓ Done.[/green]')
+    conn.close()
+
+
+# ── cmd: migrate genres ────────────────────────────────────────────────────────
+
+def cmd_migrate_genres(args):
+    """Copy genres from the legacy overrides DB into master.sqlite, matching by release MBID."""
+    legacy_path = args.legacy_db
+    if not os.path.exists(legacy_path):
+        console.print(f'[red]Legacy DB not found:[/red] {legacy_path}')
+        sys.exit(1)
+
+    master = open_db(args.db or DB_PATH)
+    init_schema(master)
+    legacy = sqlite3.connect(legacy_path)
+
+    # Pull all genres from legacy
+    legacy_genres = {
+        row[0]: (row[1], row[2])
+        for row in legacy.execute('SELECT aoty_id, name, slug FROM genres')
+    }
+
+    # Find releases in master that have an MBID and could have legacy genres
+    candidates = master.execute(
+        'SELECT id, title, mbid FROM releases WHERE mbid IS NOT NULL'
+    ).fetchall()
+
+    console.print(f'[dim]{len(candidates)} releases with MBIDs to check[/dim]\n')
+
+    total_genres  = 0
+    total_releases = 0
+    now = int(time.time())
+
+    for release_id, title, mbid in candidates:
+        rows = legacy.execute(
+            'SELECT aoty_genre_id, is_primary FROM release_genres WHERE release_mbid = ?',
+            (mbid,)
+        ).fetchall()
+        if not rows:
+            continue
+
+        added = 0
+        for aoty_id, is_primary in rows:
+            if aoty_id not in legacy_genres:
+                continue
+            name, slug = legacy_genres[aoty_id]
+
+            # Upsert genre into master
+            master.execute(
+                'INSERT INTO genres (aoty_id, name, slug) VALUES (?, ?, ?)'
+                ' ON CONFLICT(aoty_id) DO UPDATE SET name = excluded.name, slug = excluded.slug',
+                (aoty_id, name, slug)
+            )
+
+            master.execute('''
+                INSERT INTO release_genres (release_id, aoty_genre_id, is_primary) VALUES (?, ?, ?)
+                ON CONFLICT(release_id, aoty_genre_id) DO UPDATE SET is_primary = excluded.is_primary
+            ''', (release_id, aoty_id, int(is_primary)))
+            added += 1
+
+        if added:
+            console.print(f'  [green]{added:2d} genre(s)[/green]  {title}  [dim]{mbid}[/dim]')
+            total_genres  += added
+            total_releases += 1
+
+    master.commit()
+    master.close()
+    legacy.close()
+
+    console.rule(style='dim')
+    console.print(f'  [dim]Migrated {total_genres} genre tags across {total_releases} releases[/dim]')
+
+# ── cmd: release variants ─────────────────────────────────────────────────────
+
+def _find_variant_groups(conn, include_linked=False):
+    """
+    Return a list of candidate variant groups.  Each group is a list of dicts:
+        { id, title, release_date, primary_artist_id, artist_name,
+          release_group_mbid, spotify_id, mbid,
+          track_count, explicit_count, existing_canonical_id }
+
+    Two detection passes:
+      1. Same release_group_mbid (high confidence — MusicBrainz data)
+      2. Same primary_artist_id + same _base_title() (catches releases without MB data)
+
+    Groups where every member already appears in release_variants (as canonical or
+    variant) are skipped unless include_linked=True.
+    """
+    rows = conn.execute('''
+        SELECT r.id, r.title, r.release_date, r.primary_artist_id,
+               a.name AS artist_name, r.release_group_mbid,
+               r.spotify_id, r.mbid,
+               r.type, r.type_secondary,
+               COUNT(t.id)                                    AS track_count,
+               SUM(CASE WHEN t.is_explicit = 1 THEN 1 ELSE 0 END) AS explicit_count
+        FROM   releases r
+        JOIN   artists  a ON a.id = r.primary_artist_id
+        LEFT JOIN tracks t ON t.release_id = r.id
+        WHERE  r.hidden = 0
+        GROUP  BY r.id
+        ORDER  BY a.name, r.release_date
+    ''').fetchall()
+
+    # Build lookup: release_id → which canonical/variant rows it appears in
+    linked_ids = set()
+    for row in conn.execute('''
+        SELECT canonical_id FROM release_variants
+        UNION
+        SELECT variant_id   FROM release_variants
+    ''').fetchall():
+        linked_ids.add(row[0])
+
+    # Index rows
+    by_mbgrp  = {}   # release_group_mbid → [row]
+    by_artist = {}   # (primary_artist_id, base_title_lower) → [row]
+
+    for row in rows:
+        rid, title, date, artist_id, artist_name, rg_mbid = row[:6]
+
+        if rg_mbid:
+            by_mbgrp.setdefault(rg_mbid, []).append(dict(row))
+
+        bt = _base_title(title).lower().strip()
+        if artist_id:
+            by_artist.setdefault((artist_id, bt), []).append(dict(row))
+
+    seen_sets = []   # list of frozensets of ids, to deduplicate
+    groups    = []
+
+    def _add_group(members):
+        ids = frozenset(m['id'] for m in members)
+        if len(ids) < 2:
+            return
+        # deduplicate against already-seen groups
+        for s in seen_sets:
+            if s == ids:
+                return
+        seen_sets.append(ids)
+
+        if not include_linked and ids.issubset(linked_ids):
+            return  # skip groups that are already fully linked
+
+        # Annotate each member with its existing canonical_id (if any)
+        for m in members:
+            existing = conn.execute(
+                'SELECT canonical_id FROM release_variants WHERE variant_id = ?',
+                (m['id'],)
+            ).fetchone()
+            m['existing_canonical_id'] = existing[0] if existing else None
+
+        groups.append(members)
+
+    # Pass 1: MusicBrainz release-group
+    for rg_mbid, members in by_mbgrp.items():
+        if len(members) >= 2:
+            _add_group(members)
+
+    # Pass 2: title similarity
+    for key, members in by_artist.items():
+        if len(members) >= 2:
+            _add_group(members)
+
+    return groups
+
+
+def _fetch_release_row(conn, rid):
+    """Re-fetch a single release row in the same shape as _find_variant_groups uses."""
+    row = conn.execute('''
+        SELECT r.id, r.title, r.release_date, r.primary_artist_id,
+               a.name AS artist_name, r.release_group_mbid,
+               r.spotify_id, r.mbid,
+               r.type, r.type_secondary,
+               COUNT(t.id)                                    AS track_count,
+               SUM(CASE WHEN t.is_explicit = 1 THEN 1 ELSE 0 END) AS explicit_count
+        FROM   releases r
+        JOIN   artists  a ON a.id = r.primary_artist_id
+        LEFT JOIN tracks t ON t.release_id = r.id
+        WHERE  r.id = ?
+        GROUP  BY r.id
+    ''', (rid,)).fetchone()
+    if not row:
+        return None
+    m = dict(row)
+    existing = conn.execute(
+        'SELECT canonical_id FROM release_variants WHERE variant_id = ?', (rid,)
+    ).fetchone()
+    m['existing_canonical_id'] = existing[0] if existing else None
+    return m
+
+
+_RE_UUID = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I
+)
+
+def cmd_release_variants(args):
+    """
+    Interactive CLI: walk through potential variant groups.
+
+    For every release in the group (including canonical):
+      Stage 1 — primary type   (releases.type)
+      Stage 2 — secondary type (releases.type_secondary)
+
+    For every non-canonical release:
+      Stage 3 — edition type   (release_variants.variant_type)
+    """
+    db_path = getattr(args, 'db', None) or DB_PATH
+    conn    = open_db(db_path)
+    init_schema(conn)
+
+    include_linked = getattr(args, 'all', False)
+    groups = _find_variant_groups(conn, include_linked=include_linked)
+
+    if not groups:
+        console.print('  [dim]No unlinked variant groups found.[/dim]')
+        conn.close()
+        return
+
+    console.print(
+        f'  Found [bold]{len(groups)}[/bold] candidate group(s).  '
+        f'[dim]\\[s]kip  \\[q]uit  \\[a]dd release[/dim]\n'
+    )
+
+    saved    = 0
+    gi       = 0
+    quit_all = False
+
+    while gi < len(groups) and not quit_all:
+        group = groups[gi]
+        gi   += 1
+        console.rule(f'[dim]Group {gi}/{len(groups)}[/dim]', style='dim')
+
+        group.sort(key=lambda m: (
+            1 if detect_variant_type(m['title']) else 0,
+            m['release_date'] or '9999',
+        ))
+
+        artist_name = group[0]['artist_name']
+
+        # ── canonical selection loop (allows [a]dd to re-prompt) ──────────────
+        canonical = None
+        while True:
+            console.print(f'  [bold]{artist_name}[/bold]')
+            for i, m in enumerate(group, 1):
+                _print_member(i, m)
+            console.print()
+            console.print(
+                '  [bold]Canonical?[/bold]  '
+                '[dim]number / \\[a] Spotify URL or MBID to add / \\[s]kip / \\[q]uit:[/dim] ',
+                end='',
+            )
+            raw = input().strip()
+            rl  = raw.lower()
+
+            if rl == 'q':
+                quit_all = True
+                break
+
+            if rl == 's' or rl == '':
+                console.print('  [dim]Skipped.[/dim]\n')
+                break
+
+            # ── [a]dd ─────────────────────────────────────────────────────────
+            sp_m    = _RE_SP_URL.search(raw)
+            is_uuid = _RE_UUID.match(raw.strip())
+            if rl == 'a' or sp_m or is_uuid:
+                if rl == 'a':
+                    console.print('  Paste Spotify URL or MBID UUID: ', end='')
+                    raw     = input().strip()
+                    sp_m    = _RE_SP_URL.search(raw)
+                    is_uuid = _RE_UUID.match(raw.strip())
+
+                existing_id = None
+                if sp_m:
+                    row = conn.execute(
+                        'SELECT id FROM releases WHERE spotify_id = ?', (sp_m.group(1),)
+                    ).fetchone()
+                    existing_id = row[0] if row else None
+                elif is_uuid:
+                    row = conn.execute(
+                        'SELECT id FROM releases WHERE mbid = ?', (raw.strip(),)
+                    ).fetchone()
+                    existing_id = row[0] if row else None
+
+                if not existing_id:
+                    console.print(f'  [dim]Importing {raw[:80]}…[/dim]')
+                    result = subprocess.run(
+                        [sys.executable, os.path.abspath(__file__), 'import', raw, '--db', db_path],
+                        capture_output=False,
+                    )
+                    if result.returncode != 0:
+                        console.print('  [red]Import failed — skipping add.[/red]')
+                        continue
+                    if sp_m:
+                        row = conn.execute(
+                            'SELECT id FROM releases WHERE spotify_id = ?', (sp_m.group(1),)
+                        ).fetchone()
+                    elif is_uuid:
+                        row = conn.execute(
+                            'SELECT id FROM releases WHERE mbid = ?', (raw.strip(),)
+                        ).fetchone()
+                    existing_id = row[0] if row else None
+
+                if not existing_id:
+                    console.print('  [red]Could not find release after import.[/red]')
+                    continue
+                if any(m['id'] == existing_id for m in group):
+                    console.print('  [yellow]Already in this group.[/yellow]')
+                    continue
+
+                new_member = _fetch_release_row(conn, existing_id)
+                if not new_member:
+                    console.print('  [red]Release not found in DB.[/red]')
+                    continue
+
+                group.append(new_member)
+                group.sort(key=lambda m: (
+                    1 if detect_variant_type(m['title']) else 0,
+                    m['release_date'] or '9999',
+                ))
+                console.print()
+                continue  # re-display updated group
+
+            if not raw.isdigit() or not (1 <= int(raw) <= len(group)):
+                console.print(f'  [red]Enter 1–{len(group)}, a, s, or q.[/red]')
+                continue
+
+            canonical = group[int(raw) - 1]
+            break
+
+        if quit_all or canonical is None:
+            continue
+
+        # ── per-release type assignment (stages 1 & 2 for every member) ───────
+        type_updates  = {}   # release_id → (type, type_secondary)
+        edition_links = []   # (variant_id, edition_type, sort_order)
+        hide_ids      = set()
+        aborted       = False
+
+        all_members = [canonical] + [m for m in group if m['id'] != canonical['id']]
+
+        for sort_i, m in enumerate(all_members):
+            is_canonical = (m['id'] == canonical['id'])
+            role_label   = '[bold green]canonical[/bold green]' if is_canonical \
+                           else f'[bold]variant {sort_i}[/bold]'
+            console.rule(
+                f'  {role_label}: [bold]{m["title"]}[/bold]'
+                f'  [dim]{m["release_date"] or "?"}[/dim]',
+                style='dim',
+            )
+
+            # Stage 1 — primary type
+            cur_type = m.get('type') or 'album'
+            chosen_type, quit_now, _ = _prompt_choice(
+                'Stage 1 — Primary type', _PRIMARY_TYPES, current=cur_type
+            )
+            if quit_now:
+                aborted  = True
+                quit_all = True
+                break
+
+            # Stage 2 — secondary type
+            cur_sec = m.get('type_secondary') or 'none'
+            chosen_sec, quit_now, _ = _prompt_choice(
+                'Stage 2 — Secondary type', _SECONDARY_TYPES, current=cur_sec
+            )
+            if quit_now:
+                aborted  = True
+                quit_all = True
+                break
+            chosen_sec = None if chosen_sec == 'none' else chosen_sec
+
+            type_updates[m['id']] = (chosen_type, chosen_sec)
+
+            # Stage 3 — edition type (non-canonical only)
+            if not is_canonical:
+                # Auto-detect from title; suppress live/remix (captured in stage 2)
+                auto_eds = [t for t in detect_variant_types(m['title'])
+                            if t not in ('live', 'remix')]
+                cur_eds = auto_eds if auto_eds else ['none']
+                chosen_eds, quit_now, do_hide = _prompt_choice(
+                    'Stage 3 — Edition type', _EDITION_TYPES, current=cur_eds,
+                    allow_hide=True, multi=True,
+                )
+                if quit_now:
+                    aborted  = True
+                    quit_all = True
+                    break
+                if do_hide:
+                    hide_ids.add(m['id'])
+                    del type_updates[m['id']]  # don't update type on a hidden release
+                    continue
+                if chosen_eds == ['none']:
+                    edition_type = None
+                else:
+                    edition_type = ','.join(t for t in chosen_eds if t != 'none') or None
+                edition_links.append((m['id'], edition_type, sort_i))
+
+        # ── write everything accumulated so far (even on partial abort) ────────
+        _write_group(conn, canonical, type_updates, edition_links, hide_ids)
+        saved += len(edition_links)
+
+        parts = [f'+{len(edition_links)} variant(s)']
+        if hide_ids:
+            parts.append(f'{len(hide_ids)} hidden')
+
+        if aborted:
+            console.print(
+                f'\n  [green]✓[/green]  Canonical: [bold]{canonical["title"]}[/bold]'
+                f'  {", ".join(parts)}  [dim](partial)[/dim]\n'
+            )
+            console.print('  [dim]Quit — progress saved.[/dim]')
+            break
+
+        console.print(
+            f'\n  [green]✓[/green]  Canonical: [bold]{canonical["title"]}[/bold]'
+            f'  {", ".join(parts)}\n'
+        )
+
+    console.rule(style='dim')
+    console.print(f'  [dim]Done — {saved} variant link(s) saved.[/dim]')
+    conn.close()
+
+
+def _write_group(conn, canonical, type_updates, edition_links, hide_ids):
+    """Write all accumulated type/variant/hide changes for one group."""
+    for rid in hide_ids:
+        conn.execute('UPDATE releases SET hidden = 1 WHERE id = ?', (rid,))
+
+    for rid, (ptype, stype) in type_updates.items():
+        conn.execute(
+            'UPDATE releases SET type = ?, type_secondary = ? WHERE id = ?',
+            (ptype, stype, rid),
+        )
+
+    for variant_id, edition_type, sort_order in edition_links:
+        conn.execute(
+            '''INSERT INTO release_variants (canonical_id, variant_id, variant_type, sort_order)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(canonical_id, variant_id) DO UPDATE SET
+                   variant_type = excluded.variant_type,
+                   sort_order   = excluded.sort_order''',
+            (canonical['id'], variant_id, edition_type, sort_order),
+        )
+
+    conn.commit()
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='mdb',
+        description='Music database import and enrichment tool',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest='cmd', required=True)
+
+    # import
+    p = sub.add_parser('import', help='Import Spotify album(s)')
+    p.add_argument('albums', nargs='+', metavar='ALBUM',
+                   help='Spotify album URL/ID or a batch file (csv/yaml/txt)')
+    p.add_argument('--no-mb',   action='store_true', help='Skip MusicBrainz lookup')
+    p.add_argument('--no-aoty', action='store_true', help='Skip AOTY enrichment')
+    p.add_argument('--no-wiki', action='store_true', help='Skip Wikipedia date lookup')
+    p.add_argument('--db',      metavar='PATH',      help='Path to master.sqlite')
+    p.set_defaults(func=cmd_import)
+
+    # enrich
+    p_enrich = sub.add_parser('enrich', help='Enrich existing DB entries')
+    es       = p_enrich.add_subparsers(dest='enrich_cmd', required=True)
+
+    def _add_filter_args(p_):
+        p_.add_argument('--artist',     metavar='NAME_OR_ID', help='Limit to one artist')
+        p_.add_argument('--release-id', metavar='ID',         help='Process a single release')
+        p_.add_argument('--skip',       type=int, default=0,  help='Skip first N')
+        p_.add_argument('--limit',      type=int,             help='Process at most N')
+        p_.add_argument('--db',         metavar='PATH',       help='Path to master.sqlite')
+
+    p_aoty = es.add_parser('aoty', help='Scrape Album of the Year for genres/dates/types')
+    _add_filter_args(p_aoty)
+    p_aoty.add_argument('--auto',           action='store_true', help='Auto-accept without prompting')
+    p_aoty.add_argument('--overwrite-date', action='store_true', help='Overwrite existing dates')
+    p_aoty.add_argument('--overwrite-type', action='store_true', help='Overwrite existing types')
+    p_aoty.add_argument('--overwrite-genre',action='store_true', help='Re-process already-tagged releases')
+    p_aoty.add_argument('--force',          action='store_true', help='Re-try releases previously marked as not-found')
+    p_aoty.add_argument('--verbose',        action='store_true', help='Debug scraping output')
+    p_aoty.set_defaults(func=cmd_enrich_aoty)
+
+    p_dates = es.add_parser('dates', help='Look up release dates via Wikipedia + MusicBrainz')
+    _add_filter_args(p_dates)
+    p_dates.add_argument('--overwrite', action='store_true', help='Overwrite existing dates')
+    p_dates.add_argument('--verbose',   action='store_true', help='Debug output')
+    p_dates.set_defaults(func=cmd_enrich_dates)
+
+    p_tracks = es.add_parser('tracks', help='Fetch track MBIDs from MusicBrainz')
+    _add_filter_args(p_tracks)
+    p_tracks.set_defaults(func=cmd_enrich_tracks)
+
+    p_audio = es.add_parser('audio', help='Fetch Spotify audio features (BPM, energy, etc.)')
+    _add_filter_args(p_audio)
+    p_audio.set_defaults(func=cmd_enrich_audio)
+
+    p_artists_enrich = es.add_parser('artists', help='Fetch artist metadata from MusicBrainz')
+    p_artists_enrich.add_argument('--artist',    metavar='NAME_OR_ID', help='Limit to one artist')
+    p_artists_enrich.add_argument('--overwrite', action='store_true',  help='Re-fetch even if already populated')
+    p_artists_enrich.add_argument('--db',        metavar='PATH',       help='Path to master.sqlite')
+    p_artists_enrich.set_defaults(func=cmd_enrich_artists)
+
+    # hide
+    p = sub.add_parser('hide', help='Bulk hide or unhide artists, tracks, or releases')
+    p.add_argument('entity',   choices=['artists', 'tracks', 'releases'])
+    p.add_argument('csv_file', metavar='CSV')
+    p.add_argument('--unhide', action='store_true')
+    p.add_argument('--db',     metavar='PATH')
+    p.set_defaults(func=cmd_hide)
+
+    # artist
+    p_artist = sub.add_parser('artist', help='Manage artist metadata')
+    as_      = p_artist.add_subparsers(dest='artist_cmd', required=True)
+    p_img    = as_.add_parser('images', help='Bulk update artist profile images from CSV')
+    p_img.add_argument('csv_file', metavar='CSV',
+                       help='CSV with columns: artist_name, profile_image_url[, profile_image_crop]')
+    p_img.add_argument('--db', metavar='PATH')
+    p_img.set_defaults(func=cmd_artist_images)
+
+    p_merge = as_.add_parser('merge', help='Merge FROM artist into TO (canonical) artist')
+    p_merge.add_argument('from_artist', metavar='FROM',
+                         help='Artist to remove (slug, ID, or name)')
+    p_merge.add_argument('to_artist',   metavar='TO',
+                         help='Canonical artist to keep (slug, ID, or name)')
+    p_merge.add_argument('--no-alias', action='store_true',
+                         help="Don't add FROM name as a past_name alias on TO")
+    p_merge.add_argument('--db', metavar='PATH')
+    p_merge.set_defaults(func=cmd_artist_merge)
+
+    p_members = as_.add_parser('members', help='Manage supergroup membership')
+    p_members.add_argument('--db', metavar='PATH')
+    ms_ = p_members.add_subparsers(dest='members_cmd', required=True)
+
+    p_mem_add = ms_.add_parser('add', help='Add member(s) to a group artist')
+    p_mem_add.add_argument('group',   metavar='GROUP')
+    p_mem_add.add_argument('members', metavar='MEMBER', nargs='+')
+    p_mem_add.set_defaults(func=cmd_artist_members)
+
+    p_mem_rm = ms_.add_parser('remove', help='Remove a member from a group')
+    p_mem_rm.add_argument('group',  metavar='GROUP')
+    p_mem_rm.add_argument('member', metavar='MEMBER')
+    p_mem_rm.set_defaults(func=cmd_artist_members)
+
+    p_mem_ls = ms_.add_parser('list', help='List members of a group artist')
+    p_mem_ls.add_argument('group', metavar='GROUP')
+    p_mem_ls.set_defaults(func=cmd_artist_members)
+
+    # release
+    p_release = sub.add_parser('release', help='Manage release metadata')
+    rs2_      = p_release.add_subparsers(dest='release_cmd', required=True)
+    p_rvariants = rs2_.add_parser('variants', help='Interactive editor for release variant groups')
+    p_rvariants.add_argument('--all', action='store_true',
+                             help='Include groups already fully linked in release_variants')
+    p_rvariants.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_rvariants.set_defaults(func=cmd_release_variants)
+
+    p_ralias  = rs2_.add_parser('alias', help='Manage release title aliases')
+    ras_      = p_ralias.add_subparsers(dest='release_alias_cmd', required=True)
+
+    p_ra_add = ras_.add_parser('add', help='Add a title alias for a release')
+    p_ra_add.add_argument('release', metavar='RELEASE',
+                          help='Spotify URL/ID, MusicBrainz ID, internal ID, or title')
+    p_ra_add.add_argument('alias',   metavar='ALIAS', help='Alias title to add')
+    p_ra_add.add_argument('--definitive', action='store_true',
+                          help='Mark as the authoritative/official alternate title')
+    p_ra_add.add_argument('--source', choices=['manual', 'musicbrainz'], default='manual')
+    p_ra_add.add_argument('--db', metavar='PATH')
+    p_ra_add.set_defaults(func=cmd_release_alias)
+
+    p_ra_rm = ras_.add_parser('remove', help='Remove a title alias')
+    p_ra_rm.add_argument('release', metavar='RELEASE')
+    p_ra_rm.add_argument('alias',   metavar='ALIAS')
+    p_ra_rm.add_argument('--db', metavar='PATH')
+    p_ra_rm.set_defaults(func=cmd_release_alias)
+
+    p_ra_ls = ras_.add_parser('list', help='List title aliases for a release')
+    p_ra_ls.add_argument('release', metavar='RELEASE')
+    p_ra_ls.add_argument('--db', metavar='PATH')
+    p_ra_ls.set_defaults(func=cmd_release_alias)
+
+    # link
+    p_link  = sub.add_parser('link', help='Link release relationships')
+    ls_     = p_link.add_subparsers(dest='link_cmd', required=True)
+    p_src   = ls_.add_parser('sources',
+                              help='Record which releases a compilation was assembled from')
+    p_src.add_argument('compilation', metavar='COMPILATION',
+                       help='Spotify URL/ID or internal ID of the compilation release')
+    p_src.add_argument('sources', nargs='+', metavar='SOURCE[:disc=N]',
+                       help='Source release(s) with optional :disc=N annotation')
+    p_src.add_argument('--db', metavar='PATH')
+    p_src.set_defaults(func=cmd_link_sources)
+
+    # migrate
+    p_migrate = sub.add_parser('migrate', help='One-time data migrations')
+    ms_       = p_migrate.add_subparsers(dest='migrate_cmd', required=True)
+    p_mg      = ms_.add_parser('genres', help='Copy genres from legacy overrides DB by MBID')
+    p_mg.add_argument('legacy_db', metavar='LEGACY_DB',
+                      help='Path to listening_history_overrides.sqlite')
+    p_mg.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_mg.set_defaults(func=cmd_migrate_genres)
+
+    p_mas = ms_.add_parser('artist-slugs',
+                           help='Backfill ULID ids + slug column for legacy artists')
+    p_mas.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_mas.set_defaults(func=cmd_migrate_artist_slugs)
+
+    # alias
+    p_alias = sub.add_parser('alias', help='Manage artist name aliases')
+    als_    = p_alias.add_subparsers(dest='alias_cmd', required=True)
+    p_al_add = als_.add_parser('add', help='Add an alias for an artist')
+    p_al_add.add_argument('artist', metavar='ARTIST',
+                          help='Artist slug, Spotify ID, or internal ID')
+    p_al_add.add_argument('alias', metavar='ALIAS',
+                          help='Alias name (e.g. "Totally Enormous Extinct Dinosaurs")')
+    p_al_add.add_argument('--type', dest='alias_type',
+                          choices=['past_name', 'native_script', 'common'],
+                          default='common',
+                          help='Alias type (default: common)')
+    p_al_add.add_argument('--language', metavar='LANG',
+                          help='BCP-47 language tag, e.g. "ja" for Japanese')
+    p_al_add.add_argument('--sort-order', dest='sort_order', type=int, default=0,
+                          help='Sort order within alias type (lower = first)')
+    p_al_add.add_argument('--source', choices=['manual', 'lastfm', 'musicbrainz'],
+                          default='manual')
+    p_al_add.add_argument('--db', metavar='PATH')
+    p_al_add.set_defaults(func=cmd_alias)
+    p_al_rm = als_.add_parser('remove', help='Remove an alias')
+    p_al_rm.add_argument('artist', metavar='ARTIST')
+    p_al_rm.add_argument('alias',  metavar='ALIAS')
+    p_al_rm.add_argument('--db', metavar='PATH')
+    p_al_rm.set_defaults(func=cmd_alias)
+    p_al_ls = als_.add_parser('list', help='List aliases for an artist')
+    p_al_ls.add_argument('artist', metavar='ARTIST')
+    p_al_ls.add_argument('--db', metavar='PATH')
+    p_al_ls.set_defaults(func=cmd_alias)
+
+    # relation
+    p_rel = sub.add_parser('relation', help='Manage artist-to-artist relationships')
+    rs_   = p_rel.add_subparsers(dest='relation_cmd', required=True)
+    _rel_types = ['member', 'collaboration', 'side_project']
+    p_r_add = rs_.add_parser('add', help='Add a relationship between two artists')
+    p_r_add.add_argument('from_artist', metavar='FROM',
+                         help='Artist who is the member / subject')
+    p_r_add.add_argument('to_artist', metavar='TO',
+                         help='Group / project they belong to')
+    p_r_add.add_argument('type', metavar='TYPE', choices=_rel_types,
+                         help=f'Relationship type: {", ".join(_rel_types)}')
+    p_r_add.add_argument('--db', metavar='PATH')
+    p_r_add.set_defaults(func=cmd_relation)
+    p_r_rm = rs_.add_parser('remove', help='Remove a relationship')
+    p_r_rm.add_argument('from_artist', metavar='FROM')
+    p_r_rm.add_argument('to_artist',   metavar='TO')
+    p_r_rm.add_argument('type', metavar='TYPE', choices=_rel_types)
+    p_r_rm.add_argument('--db', metavar='PATH')
+    p_r_rm.set_defaults(func=cmd_relation)
+    p_r_ls = rs_.add_parser('list', help='List relationships for an artist')
+    p_r_ls.add_argument('artist', metavar='ARTIST')
+    p_r_ls.add_argument('--db', metavar='PATH')
+    p_r_ls.set_defaults(func=cmd_relation)
+
+    args = parser.parse_args()
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        console.print('\n[dim]Interrupted.[/dim]')
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()

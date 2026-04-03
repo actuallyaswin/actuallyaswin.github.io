@@ -1,0 +1,426 @@
+"""
+mdb_websources — Web scrapers for AOTY and Wikipedia.
+
+Provides: AOTY URL finder + scraper, Wikipedia date fetcher, _save_date.
+
+Dependency order: mdb_strings → mdb_apis → mdb_websources
+"""
+
+import difflib
+import json
+import logging
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    _SCRAPING_AVAILABLE = True
+except ImportError:
+    _SCRAPING_AVAILABLE = False
+
+from mdb_strings import MONTHS, _should_update_date
+from mdb_apis import (
+    _aoty_lim, _wiki_lim,
+    AOTY_SEARCH, AOTY_UA, AOTY_RETRY, MB_UA,
+    mb_fetch_release_data,
+)
+
+log = logging.getLogger(__name__)
+
+# ── AOTY type mapping ──────────────────────────────────────────────────────────
+
+AOTY_TYPE_MAP = {
+    'LP':          ('album',  None),
+    'EP':          ('ep',     None),
+    'Single':      ('single', None),
+    'Mixtape':     ('album',  'mixtape'),
+    'Soundtrack':  ('album',  'soundtrack'),
+    'Compilation': ('album',  'compilation'),
+    'Live Album':  ('album',  'live'),
+    'Demo':        ('other',  None),
+    'Bootleg':     ('other',  'bootleg'),
+    'Remix':       (None,     'remix'),    # ambiguous primary — sub-prompt fires
+    'Reissue':     ('album',  'reissue'),
+    'Remaster':    ('album',  'remaster'),
+}
+
+# ── AOTY helpers ───────────────────────────────────────────────────────────────
+
+_RE_DASH  = re.compile(
+    r'\s*[-–—]\s*(?:(?:Official|Original|Complete|Full|Deluxe|Special|Expanded|Anniversary|Remastered?)\s+)*'
+    r'(?:Soundtrack|Score|OST|Edition|Version|Release|Remaster(?:ed)?)\b.*$', re.IGNORECASE)
+_RE_PAREN = re.compile(
+    r'\s*\((?:Deluxe|Special|Expanded|Anniversary|Remaster(?:ed)?|Bonus\s+Track|Explicit)[^)]*\)\s*$',
+    re.IGNORECASE)
+_RE_TYPE  = re.compile(r'\s+(?:EP|LP|OST|Soundtrack|Mixtape|Compilation)\s*$', re.IGNORECASE)
+_RE_PUNCT = re.compile(r'[\s!?:,;.\-–—]+$')
+
+
+def _clean_aoty_title(title: str) -> str:
+    t = _RE_DASH.sub('', title)
+    t = _RE_PAREN.sub('', t)
+    t = _RE_TYPE.sub('', t)
+    t = _RE_PUNCT.sub('', t)
+    return t.strip() or title.strip()
+
+
+def _aoty_get(url: str, **kw):
+    _aoty_lim.wait()
+    r = requests.get(url, headers={'User-Agent': AOTY_UA}, timeout=15, **kw)
+    if r.status_code == 403:
+        log.debug('AOTY 403 — waiting %.0fs', AOTY_RETRY)
+        time.sleep(AOTY_RETRY)
+        _aoty_lim.wait()
+        r = requests.get(url, headers={'User-Agent': AOTY_UA}, timeout=15, **kw)
+    r.raise_for_status()
+    return r
+
+
+def find_aoty_url(release_name: str, artist_name: str) -> 'str | None':
+    query = f'{_clean_aoty_title(release_name)} {artist_name or ""}'.strip()
+    try:
+        r = _aoty_get(AOTY_SEARCH, params={'q': query, 'type': 'albums'})
+    except Exception as e:
+        log.debug('AOTY search error: %s', e)
+        return None
+    soup       = BeautifulSoup(r.text, 'html.parser')
+    candidates = soup.find_all('a', href=re.compile(r'^/album/'))[:8]
+    if not candidates:
+        return None
+
+    target = _clean_aoty_title(release_name).lower()
+
+    def _score(a):
+        text = a.get_text(strip=True)
+        if not text:
+            slug = re.sub(r'^\d+-', '', a['href'].split('/')[-1].replace('.php', ''))
+            text = slug.replace('-', ' ')
+        return difflib.SequenceMatcher(None, _clean_aoty_title(text).lower(), target).ratio()
+
+    best = max(candidates, key=_score)
+    return 'https://www.albumoftheyear.org' + best['href']
+
+
+def _empty_aoty() -> dict:
+    return {'genres': [], 'release_date': None, 'release_year': None,
+            'aoty_type': None, 'type': None, 'type_secondary': None,
+            'score_critic': None, 'score_user': None,
+            'ratings_critic': None, 'ratings_user': None}
+
+
+def _parse_aoty_date(text: str) -> 'str | None':
+    t = text.strip()
+    m = re.fullmatch(r'(\w+)\s+(\d{1,2}),?\s+(\d{4})', t, re.IGNORECASE)
+    if m and m.group(1).lower() in MONTHS:
+        return f'{m.group(3)}-{MONTHS[m.group(1).lower()]}-{m.group(2).zfill(2)}'
+    m = re.fullmatch(r'(\w+)\s+(\d{4})', t, re.IGNORECASE)
+    if m and m.group(1).lower() in MONTHS:
+        return f'{m.group(2)}-{MONTHS[m.group(1).lower()]}'
+    m = re.fullmatch(r'(\d{4})', t)
+    return m.group(1) if m else None
+
+
+def scrape_aoty_page(url: str) -> dict:
+    try:
+        r = _aoty_get(url)
+    except Exception as e:
+        log.debug('AOTY fetch error: %s', e)
+        return _empty_aoty()
+    soup = BeautifulSoup(r.text, 'html.parser')
+    rows = soup.find_all('div', class_='detailRow')
+
+    genre_row = date_row = type_row = None
+    for row in rows:
+        span = row.find('span')
+        lbl  = span.get_text(strip=True).lstrip('/').strip().lower() if span else ''
+        if 'genre' in lbl:
+            genre_row = row
+        elif 'release date' in lbl or lbl == 'date':
+            date_row = row
+        elif lbl in ('type', 'format'):
+            type_row = row
+
+    data = _empty_aoty()
+
+    if genre_row:
+        secondary_ids = set()
+        for div in genre_row.find_all('div', class_='secondary'):
+            a_tag = (div.parent if div.parent and div.parent.name == 'a'
+                     else div.find_previous_sibling('a'))
+            if a_tag:
+                m2 = re.match(r'^/genre/(\d+)-', a_tag.get('href', ''))
+                if m2:
+                    secondary_ids.add(int(m2.group(1)))
+        genres, seen = [], set()
+        for a in genre_row.find_all('a', href=re.compile(r'^/genre/\d+-')):
+            m = re.match(r'^/genre/(\d+)-([^/]+)/', a['href'])
+            if not m:
+                continue
+            gid = int(m.group(1))
+            if gid in seen:
+                continue
+            seen.add(gid)
+            slug = m.group(2)
+            name = a.get_text(strip=True)
+            if not name:
+                sib  = a.find_next_sibling('div', class_='secondary')
+                name = sib.get_text(strip=True) if sib else slug.replace('-', ' ').title()
+            genres.append((gid, name, slug, gid not in secondary_ids))
+        data['genres'] = genres
+
+    if date_row:
+        raw = re.sub(r'/\s*release\s*date', '',
+                     date_row.get_text(separator=' ', strip=True), flags=re.IGNORECASE).strip()
+        d = _parse_aoty_date(raw)
+        if d:
+            data['release_date'] = d
+            data['release_year'] = int(d[:4])
+
+    if type_row:
+        raw  = re.sub(r'/\s*(type|format)\s*$', '',
+                      type_row.get_text(separator=' ', strip=True), flags=re.IGNORECASE).strip()
+        pri, sec           = AOTY_TYPE_MAP.get(raw, (None, None))
+        data['aoty_type']  = raw
+        data['type']       = pri
+        data['type_secondary'] = sec
+
+    def _parse_score_int(el):
+        if not el: return None
+        m = re.search(r'\d+', el.get_text(strip=True))
+        return int(m.group()) if m else None
+
+    def _parse_score_float(el):
+        if not el: return None
+        m = re.search(r'\d+\.?\d*', el.get_text(strip=True))
+        return float(m.group()) if m else None
+
+    def _parse_rating_count(el):
+        if not el: return None
+        m = re.search(r'([\d,]+)', el.get_text(strip=True))
+        return int(m.group(1).replace(',', '')) if m else None
+
+    critic_box = soup.find('div', class_=re.compile(r'\balbumCriticScore\b'))
+    if critic_box:
+        data['score_critic'] = _parse_score_int(critic_box.find('a') or critic_box)
+        count_el = critic_box.find_next(class_=re.compile(r'\bnumReviews\b|\bcriticReviewCount\b'))
+        if count_el:
+            data['ratings_critic'] = _parse_rating_count(count_el)
+
+    user_box = soup.find('div', class_=re.compile(r'\balbumUserScore\b'))
+    if user_box:
+        data['score_user'] = _parse_score_float(user_box.find('a') or user_box)
+        count_el = user_box.find_next(class_=re.compile(r'\bnumRatings\b|\buserRatingCount\b'))
+        if count_el:
+            data['ratings_user'] = _parse_rating_count(count_el)
+
+    return data
+
+
+def fetch_aoty_data(release_name: str, artist_name: str,
+                    cached_url: 'str | None' = None) -> 'tuple[str | None, dict]':
+    url = cached_url or find_aoty_url(release_name, artist_name)
+    if not url:
+        return None, _empty_aoty()
+    return url, scrape_aoty_page(url)
+
+
+def _has_aoty(data: dict) -> bool:
+    return bool(data['genres'] or data['release_date'] or data['type']
+                or data['score_critic'] is not None or data['score_user'] is not None)
+
+
+def _fmt_aoty(data: dict) -> str:
+    parts = []
+    if data['aoty_type']:
+        t = data['type'] or '?'
+        if data['type_secondary']:
+            t += f' + {data["type_secondary"]}'
+        if not data['type']:
+            t = '? (ambiguous — Album/EP/Single)'
+        parts.append(f'  type:    {data["aoty_type"]}  →  {t}')
+    if data['release_date']:
+        parts.append(f'  date:    {data["release_date"]}')
+    if data['score_critic'] is not None:
+        rc = f'  ({data["ratings_critic"]} reviews)' if data['ratings_critic'] else ''
+        parts.append(f'  critic:  {data["score_critic"]}/100{rc}')
+    if data['score_user'] is not None:
+        ru = f'  ({data["ratings_user"]} ratings)' if data['ratings_user'] else ''
+        parts.append(f'  user:    {data["score_user"]:.2f}/10{ru}')
+    primary   = [(i, n) for i, n, s, p in data['genres'] if p]
+    secondary = [(i, n) for i, n, s, p in data['genres'] if not p]
+    if primary:
+        parts.append('  genres:  ' + ', '.join(f'{n} (#{i})' for i, n in primary))
+    if secondary:
+        parts.append('  2nd:     ' + ', '.join(f'{n} (#{i})' for i, n in secondary))
+    return '\n'.join(parts)
+
+
+def save_aoty_data(conn, release_id: str, aoty_url: str, data: dict,
+                   overwrite_date: bool = False, overwrite_type: bool = False) -> None:
+    now      = int(time.time())
+    existing = conn.execute(
+        'SELECT release_date, type, date_source FROM releases WHERE id = ?', (release_id,)
+    ).fetchone()
+    ex_date   = existing['release_date'] if existing else None
+    ex_type   = existing['type']         if existing else None
+    ex_source = existing['date_source']  if existing else None
+
+    updates = {'aoty_url': aoty_url, 'updated_at': now}
+    if data['release_date'] and (overwrite_date
+            or _should_update_date(ex_date, ex_source, data['release_date'], 'aoty')):
+        updates['release_date'] = data['release_date']
+        updates['release_year'] = data['release_year']
+        updates['date_source']  = 'aoty'
+    if data['type'] and (overwrite_type or not ex_type):
+        updates['type'] = data['type']
+        if data['type_secondary'] is not None:
+            updates['type_secondary'] = data['type_secondary']
+    if data['score_critic']   is not None: updates['aoty_score_critic']   = data['score_critic']
+    if data['score_user']     is not None: updates['aoty_score_user']     = data['score_user']
+    if data['ratings_critic'] is not None: updates['aoty_ratings_critic'] = data['ratings_critic']
+    if data['ratings_user']   is not None: updates['aoty_ratings_user']   = data['ratings_user']
+
+    if updates:
+        set_clause = ', '.join(f'{k} = ?' for k in updates)
+        conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?',
+                     (*updates.values(), release_id))
+
+    for aoty_id, name, slug, is_primary in data['genres']:
+        conn.execute(
+            'INSERT INTO genres (aoty_id, name, slug) VALUES (?, ?, ?)'
+            ' ON CONFLICT(aoty_id) DO UPDATE SET name = excluded.name, slug = excluded.slug',
+            (aoty_id, name, slug)
+        )
+        conn.execute(
+            'INSERT INTO release_genres (release_id, aoty_genre_id, is_primary) VALUES (?, ?, ?)'
+            ' ON CONFLICT(release_id, aoty_genre_id) DO UPDATE SET is_primary = excluded.is_primary',
+            (release_id, aoty_id, int(is_primary))
+        )
+
+    conn.commit()
+
+
+# ── Wikipedia ──────────────────────────────────────────────────────────────────
+
+def _wiki_get_html(wiki_url: str) -> 'str | None':
+    title   = urllib.parse.unquote(wiki_url.split('/wiki/')[-1])
+    api_url = ('https://en.wikipedia.org/w/api.php?'
+               + urllib.parse.urlencode({
+                   'action': 'parse', 'page': title,
+                   'prop': 'text', 'section': 0, 'format': 'json',
+               }))
+    _wiki_lim.wait()
+    req = urllib.request.Request(api_url, headers={'User-Agent': MB_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.loads(r.read())
+        return (d.get('parse') or {}).get('text', {}).get('*')
+    except Exception as e:
+        log.debug('Wikipedia error: %s', e)
+        return None
+
+
+def _date_from_cell(cell_html: str) -> 'str | None':
+    plain = re.sub(r'<[^>]+>', ' ', cell_html)
+    m = re.search(r'class="[^"]*bday[^"]*"[^>]*>(\d{4}-\d{2}-\d{2})<', cell_html)
+    if m: return m.group(1)
+    m = re.search(r'datetime="(\d{4}-\d{2}-\d{2})"', cell_html)
+    if m: return m.group(1)
+    m = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', cell_html)
+    if m: return m.group(1)
+    _mon = '|'.join(MONTHS)
+    m = re.search(rf'\b({_mon})\s+(\d{{1,2}}),?\s+(\d{{4}})\b', plain, re.IGNORECASE)
+    if m: return f'{m.group(3)}-{MONTHS[m.group(1).lower()]}-{m.group(2).zfill(2)}'
+    m = re.search(rf'\b(\d{{1,2}})\s+({_mon})\s+(\d{{4}})\b', plain, re.IGNORECASE)
+    if m: return f'{m.group(3)}-{MONTHS[m.group(2).lower()]}-{m.group(1).zfill(2)}'
+    m = re.search(rf'\b({_mon})\s+(\d{{4}})\b', plain, re.IGNORECASE)
+    if m: return f'{m.group(2)}-{MONTHS[m.group(1).lower()]}'
+    m = re.search(r'\b(\d{4}-\d{2})\b', cell_html)
+    return m.group(1) if m else None
+
+
+def fetch_wikipedia_date(wiki_url: str) -> 'str | None':
+    html = _wiki_get_html(wiki_url)
+    if not html:
+        return None
+    pattern = re.compile(
+        r'<th[^>]*class="[^"]*infobox-label[^"]*"[^>]*>.*?Released.*?</th>\s*'
+        r'<td[^>]*class="[^"]*infobox-data[^"]*"[^>]*>(.*?)</td>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    m = pattern.search(html)
+    return _date_from_cell(m.group(1)) if m else None
+
+
+def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[str | None, str | None]':
+    query = f'{release_name} {artist_name}'.strip() if artist_name else release_name
+    url   = ('https://en.wikipedia.org/w/api.php?'
+             + urllib.parse.urlencode({
+                 'action': 'query', 'list': 'search',
+                 'srsearch': query, 'srlimit': 5, 'format': 'json',
+             }))
+    _wiki_lim.wait()
+    req = urllib.request.Request(url, headers={'User-Agent': MB_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return None, None
+    for hit in (data.get('query') or {}).get('search') or []:
+        wiki_url = ('https://en.wikipedia.org/wiki/'
+                    + urllib.parse.quote(hit['title'].replace(' ', '_'), safe=':_'))
+        date = fetch_wikipedia_date(wiki_url)
+        if date:
+            return wiki_url, date
+    return None, None
+
+
+def fetch_date_candidates(mbid: str, release_name: str = None,
+                          artist_name: str = None) -> 'tuple[list, str | None]':
+    """Return (candidates, wiki_url). Each candidate is {'date', 'source', 'notes'}."""
+    release_date, rg_first, wiki_url = mb_fetch_release_data(mbid)
+    mb_dates, seen = [], set()
+    for date, label in [(rg_first, 'MusicBrainz (release group)'),
+                        (release_date, 'MusicBrainz (this release)')]:
+        if date and date not in seen:
+            seen.add(date)
+            mb_dates.append({'date': date, 'source': label, 'notes': ''})
+
+    wiki_date = None
+    if wiki_url:
+        wiki_date = fetch_wikipedia_date(wiki_url)
+    elif release_name:
+        wiki_url, wiki_date = search_wikipedia(release_name, artist_name)
+
+    candidates = []
+    if wiki_date:
+        candidates.append({'date': wiki_date, 'source': 'Wikipedia ★', 'notes': wiki_url or ''})
+    for c in mb_dates:
+        if c['date'] not in {x['date'] for x in candidates}:
+            candidates.append(c)
+    return candidates, wiki_url
+
+
+def _save_date(conn, release_id: str, date_str: str,
+               wiki_url: 'str | None' = None, source: str = 'wikipedia') -> bool:
+    """Write a date to releases, respecting precision and source priority.
+    source='manual' always wins (user explicitly confirmed)."""
+    if source != 'manual':
+        row = conn.execute(
+            'SELECT release_date, date_source FROM releases WHERE id = ?', (release_id,)
+        ).fetchone()
+        if row and not _should_update_date(row['release_date'], row['date_source'], date_str, source):
+            return False
+    year    = int(date_str[:4]) if date_str else None
+    updates = {'release_date': date_str, 'release_year': year,
+               'date_source': source, 'updated_at': int(time.time())}
+    if wiki_url:
+        updates['wikipedia_url'] = wiki_url
+    set_clause = ', '.join(f'{k} = ?' for k in updates)
+    conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?', (*updates.values(), release_id))
+    conn.commit()
+    return True

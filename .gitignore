@@ -1,7 +1,20 @@
 .DS_Store
+music/.env
 
 # Development documentation (context files)
 **/context.md
+
+# Python cache
+**/__pycache__/
+
+# Bulk operation working files
+music/*.csv
+music/bulk_*.py
+music/update_*.py
+
+# SQLite databases (local only)
+music/master.sqlite
+music/listening_history.sqlite
 
 # Music editor (private tool, not deployed)
 music_editor/listening_history.sqlite
