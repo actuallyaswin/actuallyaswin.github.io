@@ -740,7 +740,8 @@ a.stat-card:hover .stat-label::after {
     min-width: 0;
 }
 
-.two-column-layout h2 {
+.two-column-layout h2,
+.stats-row h2 {
     margin-bottom: 1.5rem;
     font-size: 1.5rem;
 }
@@ -1451,15 +1452,13 @@ a.stat-card:hover .stat-label::after {
     margin: 2rem 0;
     align-items: start;
 }
-.stats-row h2 {
-    margin-bottom: 1.5rem;
-    font-size: 1.5rem;
-}
 .stats-row > section[hidden] {
     display: none;
 }
 .stats-row > section:only-child,
-.stats-row > section:first-child:last-of-type {
+.stats-row > section:first-child:last-of-type,
+.stats-row > section:not([hidden]):first-child:has(~ section[hidden]),
+.stats-row > section[hidden] ~ section:not([hidden]):last-child {
     grid-column: 1 / -1;
 }
 @media (max-width: 700px) {

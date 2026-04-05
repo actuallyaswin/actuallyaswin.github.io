@@ -47,6 +47,17 @@ const ViewHome = (() => {
                 </div>
             </div>
 
+            <div class="stats-row">
+                <section id="weeklyReleasesSection" hidden>
+                    <h2>Top Releases This Week</h2>
+                    <div id="weeklyReleasesCollage"></div>
+                </section>
+                <section id="homeRecentPlaysSection" hidden>
+                    <h2>Recent Plays</h2>
+                    <div class="recent-plays-list" id="homeRecentPlaysList"></div>
+                </section>
+            </div>
+
             <footer>
                 <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
             </footer>
@@ -58,6 +69,8 @@ const ViewHome = (() => {
         loadStats();
         setupSearch();
         setupReleaseSearch();
+        loadWeeklyReleases();
+        loadHomeRecentPlays();
     }
 
     function unmount() {
@@ -240,6 +253,90 @@ const ViewHome = (() => {
         });
 
         searchResults.classList.add('active');
+    }
+
+    function loadWeeklyReleases() {
+        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
+        const result = _db.exec(`
+            SELECT r.id, r.title, r.album_art_url, a.name as artist_name, COUNT(l.id) as plays
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id
+            JOIN releases r ON t.release_id = r.id
+            LEFT JOIN artists a ON r.primary_artist_id = a.id
+            WHERE l.timestamp >= ${sevenDaysAgo}
+            AND t.hidden = 0 AND r.hidden = 0
+            GROUP BY r.id
+            ORDER BY plays DESC
+            LIMIT 9
+        `)[0];
+
+        const container = document.getElementById('weeklyReleasesCollage');
+        const section = document.getElementById('weeklyReleasesSection');
+        if (!container || !section || !result || result.values.length === 0) return;
+
+        const n = result.values.length <= 4 ? 2 : 3;
+        container.className = 'collage-grid';
+        container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+
+        result.values.forEach(([id, title, albumArtUrl, artistName]) => {
+            const card = document.createElement('a');
+            card.className = 'image-card';
+            card.href = `?view=release&id=${encodeURIComponent(id)}`;
+            card.title = title + (artistName ? ` · ${artistName}` : '');
+            const imgSrc = albumArtUrl || getFallbackImageUrl();
+            card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
+            container.appendChild(card);
+        });
+
+        section.removeAttribute('hidden');
+    }
+
+    function loadHomeRecentPlays() {
+        const result = _db.exec(`
+            SELECT
+                t.title,
+                r.album_art_url,
+                a.name as artist_name,
+                l.timestamp,
+                r.id as release_id
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id
+            LEFT JOIN releases r ON t.release_id = r.id
+            LEFT JOIN artists a ON r.primary_artist_id = a.id
+            WHERE t.hidden = 0
+            ORDER BY l.timestamp DESC
+            LIMIT 10
+        `)[0];
+
+        const section = document.getElementById('homeRecentPlaysSection');
+        const list = document.getElementById('homeRecentPlaysList');
+        if (!section || !list || !result || result.values.length === 0) return;
+
+        const now = Date.now() / 1000;
+        list.innerHTML = result.values.map(([trackTitle, albumArtUrl, artistName, timestamp, releaseId]) => {
+            const imgSrc = albumArtUrl || getFallbackImageUrl();
+            let dateStr;
+            const diff = now - timestamp;
+            if (diff < 3600)        dateStr = `${Math.floor(diff / 60)}m ago`;
+            else if (diff < 86400)  dateStr = `${Math.floor(diff / 3600)}h ago`;
+            else if (diff < 604800) dateStr = `${Math.floor(diff / 86400)}d ago`;
+            else {
+                const d = new Date(timestamp * 1000);
+                dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            }
+            return `
+                <div class="recent-play-row">
+                    <div class="recent-play-thumb" style="background-image: url('${imgSrc}')"></div>
+                    <div class="recent-play-info">
+                        <div class="recent-play-name">${escapeHtml(trackTitle)}</div>
+                        ${artistName ? `<div class="recent-play-album">${escapeHtml(artistName)}</div>` : ''}
+                    </div>
+                    <span class="recent-play-date">${dateStr}</span>
+                </div>
+            `;
+        }).join('');
+
+        section.removeAttribute('hidden');
     }
 
     return { mount, unmount };
