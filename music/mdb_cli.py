@@ -1,16 +1,20 @@
-"""
-mdb_cli — Rich UI helpers for the mdb interactive CLI.
+"""mdb_cli — Rich UI helpers for the mdb interactive CLI."""
 
-Provides: formatting helpers, interactive prompts.
-
-Dependency order: mdb_strings → mdb_apis → mdb_websources → mdb_cli
-"""
+__all__ = [
+    'render_diff',
+    '_fmt_dur', '_trunc',
+    '_format_mb_type', '_print_member',
+    '_aoty_prompt', '_dates_prompt', '_prompt_choice',
+]
 
 import logging
 
+from rich import box
 from rich.console import Console
+from rich.table   import Table
 
-from mdb_strings import detect_variant_types, _parse_user_date
+from mdb_apis     import compare_releases
+from mdb_strings  import detect_variant_types, _parse_user_date
 from mdb_websources import _has_aoty, _fmt_aoty
 
 console = Console(width=80, highlight=False)
@@ -151,19 +155,20 @@ def _dates_prompt(candidates: list, release_name: str,
 
 
 def _prompt_choice(label: str, options: list, current=None,
-                   allow_hide: bool = False, multi: bool = False):
+                   allow_hide: bool = False, allow_back: bool = False,
+                   multi: bool = False):
     """
     Display a numbered choice list and return the chosen value.
 
     Single-select (multi=False):
       Enter with no input keeps `current` (shown as default).
-      Returns (value, quit, hide).
+      Returns (value, quit, hide, back).
 
     Multi-select (multi=True):
       `current` is a list of currently-selected values.
       Input is space/comma-separated numbers.
       Enter keeps current selection.
-      Returns (list_of_values, quit, hide).
+      Returns (list_of_values, quit, hide, back).
     """
     if multi:
         current_list = current if isinstance(current, list) else ([current] if current else ['none'])
@@ -177,15 +182,18 @@ def _prompt_choice(label: str, options: list, current=None,
                 parts.append(f'[dim]{marker}[{j}][/dim] {opt:<{col_w}}')
             console.print('  ' + '  '.join(parts))
         current_str = ','.join(current_list)
-        hide_hint   = '  \\[h]ide' if allow_hide else ''
-        console.print(f'  [dim]Enter=keep ({current_str}){hide_hint}  q=quit:[/dim] ', end='')
+        hide_hint  = '  \\[h]ide' if allow_hide else ''
+        back_hint  = '  \\[b]ack' if allow_back else ''
+        console.print(f'  [dim]Enter=keep ({current_str}){hide_hint}{back_hint}  q=quit:[/dim] ', end='')
         raw = input().strip().lower()
         if raw == 'q':
-            return None, True, False
+            return None, True, False, False
+        if allow_back and raw == 'b':
+            return None, False, False, True
         if allow_hide and raw == 'h':
-            return None, False, True
+            return None, False, True, False
         if not raw:
-            return current_list, False, False
+            return current_list, False, False, False
         tokens = raw.replace(',', ' ').split()
         chosen = []
         for tok in tokens:
@@ -194,11 +202,11 @@ def _prompt_choice(label: str, options: list, current=None,
                 if 0 <= idx < len(options):
                     chosen.append(options[idx])
         if not chosen:
-            return current_list, False, False
+            return current_list, False, False, False
         # If 'none' is explicitly chosen alongside others, keep only 'none'
         if 'none' in chosen and len(chosen) > 1:
             chosen = ['none']
-        return chosen, False, False
+        return chosen, False, False, False
 
     default = current if current and current in options else options[0]
     console.print(f'\n  [bold]{label}[/bold]')
@@ -211,15 +219,162 @@ def _prompt_choice(label: str, options: list, current=None,
             parts.append(f'[dim]{marker}[{j}][/dim] {opt:<{col_w}}')
         console.print('  ' + '  '.join(parts))
     hide_hint = '  \\[h]ide' if allow_hide else ''
-    console.print(f'  [dim]Enter=keep ({default}){hide_hint}  q=quit:[/dim] ', end='')
+    back_hint = '  \\[b]ack' if allow_back else ''
+    console.print(f'  [dim]Enter=keep ({default}){hide_hint}{back_hint}  q=quit:[/dim] ', end='')
     raw = input().strip().lower()
     if raw == 'q':
-        return None, True, False
+        return None, True, False, False
+    if allow_back and raw == 'b':
+        return None, False, False, True
     if allow_hide and raw == 'h':
-        return None, False, True
+        return None, False, True, False
     if raw == '' or not raw.isdigit():
-        return default, False, False
+        return default, False, False, False
     idx = int(raw)
     if 0 <= idx < len(options):
-        return options[idx], False, False
-    return default, False, False
+        return options[idx], False, False, False
+    return default, False, False, False
+
+
+# ── Diff rendering ─────────────────────────────────────────────────────────────
+
+def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
+    """
+    Render a diff of two or more SpotifyRelease objects.
+
+    compact=False (default): full per-album tracklists + comparison table +
+        tracklist diff + canonical recommendation.  Used by `mdb diff`.
+    compact=True: comparison table + tracklist diff + recommendation only.
+        Used by `sync match` inline [d]iff.
+
+    Display mode is driven by Jaccard similarity over track title sets:
+      similarity == 0   → unrelated albums: table + warning only
+      0 < s < 0.7       → partial overlap: table + shared/unique tracks, no canonical
+      similarity >= 0.7 → variant mode: full diff + canonical recommendation
+    """
+    result        = compare_releases(*releases)
+    similarity    = result['similarity']
+    shared_titles = result['shared_titles']
+    same_titles   = result['same_titles']
+    dur_diffs     = result['dur_diffs']
+    unique_per    = result['unique_per']
+    ranked        = result['ranked']
+    canon         = result['canonical']
+    reasons       = result['reasons']
+
+    # -- artist mismatch warning -----------------------------------------------
+    artists = [r.artist for r in releases]
+    if len(set(artists)) > 1:
+        console.print(
+            f'  [yellow]Warning: different artists — '
+            + '  vs  '.join(f'[bold]{a}[/bold]' for a in artists)
+            + '[/yellow]'
+        )
+
+    # -- full tracklists (variant mode, non-compact only) ----------------------
+    if not compact and similarity >= 0.7:
+        for r in releases:
+            console.print()
+            console.print(
+                f'[bold]{r.name}[/bold]  '
+                f'[dim]{r.artist}  ·  {r.date}  ·  {r.album_type.capitalize()}  '
+                f'{r.track_count} tracks  ·  {_fmt_dur(r.total_ms)}  ·  '
+                f'label: {r.label}  id: {r.id}[/dim]'
+            )
+            console.print('─' * 78)
+            for i, t in enumerate(r.tracks, 1):
+                feat = [a['name'] for a in t.get('artists', []) if a['name'] != r.artist]
+                feat_str = f'  [dim](feat. {", ".join(feat)})[/dim]' if feat else ''
+                exp_str  = '  [yellow]E[/yellow]' if t.get('explicit') else ''
+                dur      = _fmt_dur(t.get('duration_ms'))
+                console.print(
+                    f'  [dim]{i:2}.[/dim]  {t["name"]}{feat_str}{exp_str}'
+                    f'  [dim]{dur}[/dim]'
+                )
+            console.print()
+
+    # -- comparison table ------------------------------------------------------
+    # For unrelated albums don't yellow the title/artist rows — it's noise.
+    # For variant mode, suppress edition-words row in compact display.
+    tbl = Table(box=box.SIMPLE_HEAD, show_header=True, header_style='bold')
+    tbl.add_column('', style='dim')
+    for r in releases:
+        tbl.add_column(r.id[:12] + '…', no_wrap=True)
+
+    rows_meta = [
+        ('Title',         lambda r: r.name,                              similarity >= 0.7),
+        ('Artist',        lambda r: r.artist,                            similarity >= 0.7),
+        ('Release date',  lambda r: r.date or '?',                       True),
+        ('Type',          lambda r: r.album_type.capitalize() or '?',    True),
+        ('Tracks',        lambda r: str(r.track_count),                  True),
+        ('Explicit',      lambda r: str(r.explicit_count),               True),
+        ('Duration',      lambda r: _fmt_dur(r.total_ms),                True),
+        ('Label',         lambda r: r.label or '?',                      True),
+        ('Edition words', lambda r: ', '.join(detect_variant_types(r.name)) or '—',
+                          similarity >= 0.7 and not compact),
+    ]
+    for label, fn, highlight in rows_meta:
+        vals  = [fn(r) for r in releases]
+        style = 'yellow' if highlight and len(set(vals)) > 1 else ''
+        tbl.add_row(label, *[f'[{style}]{v}[/{style}]' if style else v for v in vals])
+    console.print(tbl)
+
+    # -- unrelated: bail after table -------------------------------------------
+    if similarity == 0:
+        console.print(
+            '  [red]No shared tracks — these appear to be different albums, '
+            'not variants.[/red]'
+        )
+        console.print()
+        return
+
+    # -- partial overlap: show shared + unique, no canonical -------------------
+    if similarity < 0.7:
+        pct = int(similarity * 100)
+        total_unique = len(shared_titles) + sum(len(t) for _, t in unique_per)
+        console.print(
+            f'  [yellow]{pct}% track overlap '
+            f'({len(shared_titles)} shared / {total_unique} total unique) '
+            f'— likely different albums, not variants.[/yellow]'
+        )
+        if shared_titles:
+            console.print(f'  [dim]Shared tracks ({len(shared_titles)}):[/dim]')
+            for t in shared_titles:
+                console.print(f'    = {t}')
+        for sp_id, titles in unique_per:
+            console.print(f'  [bold]Only in {sp_id[:12]}…:[/bold]')
+            for t in titles:
+                console.print(f'    + {t}')
+        console.print()
+        return
+
+    # -- variant mode: tracklist diff + canonical recommendation ---------------
+    if same_titles:
+        console.print('  [dim]Track titles are identical across all editions.[/dim]')
+        if dur_diffs:
+            console.print(f'  [yellow]{len(dur_diffs)} track(s) differ in duration (>2s):[/yellow]')
+            for pos, name, durs_ms in dur_diffs:
+                dur_str = '  vs  '.join(_fmt_dur(d) for d in durs_ms)
+                console.print(f'    {pos:2}. {name}  —  {dur_str}')
+        else:
+            console.print('  [dim]All track durations are byte-for-byte identical.[/dim]')
+    else:
+        for sp_id, titles in unique_per:
+            console.print(f'  [bold]Tracks only in {sp_id[:12]}…:[/bold]')
+            for t in titles:
+                console.print(f'    + {t}')
+    console.print()
+
+    console.print('[bold]Recommendation[/bold]')
+    console.print('─' * 78)
+    console.print(
+        f'  [green]Canonical:[/green]  [bold]{canon.name}[/bold]  '
+        f'[dim]({canon.id[:12]}…)  {canon.date}  {canon.track_count} tracks[/dim]'
+    )
+    for alt in ranked[1:]:
+        reason_str = '; '.join(reasons.get(alt.id) or []) or 'lower canonical score'
+        console.print(
+            f'  [red]Hide:[/red]  [dim]{alt.name}  ({alt.id[:12]}…)  '
+            f'{alt.date or "?"}  {alt.track_count} tracks[/dim]  — {reason_str}'
+        )
+    console.print()

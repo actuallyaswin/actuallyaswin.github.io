@@ -1,11 +1,4 @@
-"""
-mdb_ops — Database infrastructure for master.sqlite.
-
-Provides: schema DDL, open_db, init_schema, ULID/slug generation,
-.env loading, and the core upsert functions (artist, release, tracks).
-
-Dependency order: mdb_strings → mdb_ops (no circular imports)
-"""
+"""mdb_ops — Database infrastructure for master.sqlite."""
 
 import os
 import random
@@ -271,6 +264,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE artists ADD COLUMN disambiguation TEXT",
         "ALTER TABLE artists ADD COLUMN is_supergroup INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE artists ADD COLUMN mb_attempted INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE artists ADD COLUMN cert TEXT",
         "ALTER TABLE release_aliases ADD COLUMN is_definitive INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE artist_aliases ADD COLUMN alias_type TEXT NOT NULL DEFAULT 'common'",
         "ALTER TABLE artist_aliases ADD COLUMN language TEXT",
@@ -505,4 +499,188 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
                     )
                 except sqlite3.IntegrityError:
                     pass
+    return created, updated
+
+
+# ── MusicBrainz upsert helpers ─────────────────────────────────────────────────
+
+def upsert_artist_mb(cur, mb_artist: dict) -> 'tuple[str, bool]':
+    """Insert or update an artist from a MusicBrainz artist-credit 'artist' sub-dict.
+    Returns (artist_id, created)."""
+    mbid = (mb_artist.get('id') or '').strip()
+    name = (mb_artist.get('name') or '').strip()
+    now  = int(time.time())
+
+    # Match by MBID first (most reliable)
+    if mbid:
+        row = cur.execute('SELECT id FROM artists WHERE mbid = ?', (mbid,)).fetchone()
+        if row:
+            cur.execute('UPDATE artists SET name = ?, updated_at = ? WHERE id = ?',
+                        (name, now, row[0]))
+            return row[0], False
+
+    # Match by name — artist may exist from a prior Spotify import with no MBID yet
+    row = cur.execute(
+        'SELECT id FROM artists WHERE lower(name) = lower(?)', (name,)
+    ).fetchone()
+    if row:
+        if mbid:
+            try:
+                cur.execute('UPDATE artists SET mbid = ?, updated_at = ? WHERE id = ?',
+                            (mbid, now, row[0]))
+            except sqlite3.IntegrityError:
+                pass  # MBID already on a different row — leave it
+        return row[0], False
+
+    # New artist
+    base     = slugify(name)
+    existing = {r[0] for r in cur.execute(
+        'SELECT slug FROM artists WHERE slug IS NOT NULL').fetchall()}
+    slug = unique_slug(base, existing)
+    aid  = new_ulid()
+    cur.execute(
+        'INSERT INTO artists (id, slug, name, mbid, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?)',
+        (aid, slug, name, mbid or None, now, now),
+    )
+    return aid, True
+
+
+def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
+                      image_url: 'str | None' = None) -> 'tuple[str, bool]':
+    """Insert or update a release from a MusicBrainz release data dict.
+    Returns (release_id, created)."""
+    mbid      = (mb_data.get('id') or '').strip()
+    title     = (mb_data.get('title') or '').strip()
+    date_raw  = (mb_data.get('date') or '').strip()
+    rel_year  = int(date_raw[:4]) if date_raw and date_raw[:4].isdigit() else None
+    rg        = mb_data.get('release-group') or {}
+    rg_mbid   = rg.get('id')
+    rg_type   = (rg.get('primary-type') or '').lower() or 'album'
+    now       = int(time.time())
+
+    label = ''
+    for info in (mb_data.get('label-info') or []):
+        lbl = (info.get('label') or {}).get('name', '')
+        if lbl:
+            label = lbl
+            break
+
+    total_tracks = sum(
+        len(m.get('tracks') or []) for m in (mb_data.get('media') or [])
+    )
+
+    row = cur.execute(
+        'SELECT id, release_date, date_source, album_art_url FROM releases WHERE mbid = ?',
+        (mbid,),
+    ).fetchone()
+
+    if row:
+        update_date = _should_update_date(row['release_date'], row['date_source'],
+                                          date_raw, 'musicbrainz')
+        date_fields = ', release_date = ?, release_year = ?, date_source = ?' if update_date else ''
+        date_vals   = (date_raw, rel_year, 'musicbrainz') if update_date else ()
+        cur.execute(
+            f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?{date_fields},'
+            f' label = ?, release_group_mbid = ?, total_tracks = ?, updated_at = ?'
+            f' WHERE id = ?',
+            (title, primary_artist_id, rg_type, *date_vals,
+             label or None, rg_mbid, total_tracks, now, row['id']),
+        )
+        if image_url and not row['album_art_url']:
+            cur.execute(
+                'UPDATE releases SET album_art_url = ?, album_art_source = ? WHERE id = ?',
+                (image_url, 'coverartarchive', row['id']),
+            )
+        return row['id'], False
+
+    base     = slugify(title)
+    existing = {r[0] for r in cur.execute(
+        'SELECT slug FROM releases WHERE primary_artist_id IS ?',
+        (primary_artist_id,),
+    ).fetchall()}
+    slug       = unique_slug(base, existing)
+    release_id = new_ulid()
+    cur.execute(
+        'INSERT INTO releases (id, slug, title, primary_artist_id, type, release_date,'
+        ' release_year, label, mbid, release_group_mbid, album_art_url, album_art_source,'
+        ' total_tracks, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (release_id, slug, title, primary_artist_id, rg_type,
+         date_raw or None, rel_year, label or None,
+         mbid or None, rg_mbid,
+         image_url, 'coverartarchive' if image_url else None,
+         total_tracks, 'musicbrainz' if date_raw else None,
+         now, now),
+    )
+    return release_id, True
+
+
+def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
+                     artist_map: dict) -> 'tuple[int, int]':
+    """Upsert tracks from a MusicBrainzRelease's .tracks list.
+    Each track dict has: name, duration_ms, _mb_recording_id, _isrcs,
+    _disc_number, _track_number, _artist_credit.
+    artist_map: {mb_artist_id: our_artist_id}.
+    Returns (created_count, updated_count)."""
+    created = updated = 0
+    now     = int(time.time())
+
+    for i, t in enumerate(mb_tracks):
+        rec_id  = t.get('_mb_recording_id')
+        isrcs   = t.get('_isrcs') or []
+        isrc    = isrcs[0] if isrcs else None
+        title   = t.get('name', '')
+        dur     = t.get('duration_ms')
+        disc    = t.get('_disc_number') or 1
+        tr_num  = t.get('_track_number') or (i + 1)
+
+        row = None
+        if rec_id:
+            row = cur.execute(
+                'SELECT id, title FROM tracks WHERE mbid = ?', (rec_id,)
+            ).fetchone()
+        if not row and isrc:
+            row = cur.execute(
+                'SELECT id, title FROM tracks WHERE isrc = ?', (isrc,)
+            ).fetchone()
+
+        if row:
+            track_id       = row[0]
+            title_to_store = resolve_title(title, row[1])
+            cur.execute(
+                'UPDATE tracks SET release_id = ?, title = ?, track_number = ?,'
+                ' disc_number = ?, duration_ms = ?, isrc = ?, mbid = ?, updated_at = ?'
+                ' WHERE id = ?',
+                (release_id, title_to_store, tr_num, disc, dur,
+                 isrc, rec_id, now, track_id),
+            )
+            updated += 1
+        else:
+            track_id       = new_ulid()
+            title_to_store = resolve_title(title)
+            cur.execute(
+                'INSERT INTO tracks (id, title, release_id, track_number, disc_number,'
+                ' duration_ms, mbid, isrc, created_at, updated_at)'
+                ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (track_id, title_to_store, release_id, tr_num, disc,
+                 dur, rec_id, isrc, now, now),
+            )
+            created += 1
+
+        cur.execute('DELETE FROM track_artists WHERE track_id = ?', (track_id,))
+        for j, credit in enumerate(t.get('_artist_credit') or []):
+            if not isinstance(credit, dict) or 'artist' not in credit:
+                continue
+            our_id = artist_map.get(credit['artist'].get('id', ''))
+            if our_id:
+                try:
+                    cur.execute(
+                        'INSERT INTO track_artists (track_id, artist_id, role)'
+                        ' VALUES (?, ?, ?)',
+                        (track_id, our_id, 'main' if j == 0 else 'featured'),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+
     return created, updated

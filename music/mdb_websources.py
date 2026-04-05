@@ -1,10 +1,4 @@
-"""
-mdb_websources — Web scrapers for AOTY and Wikipedia.
-
-Provides: AOTY URL finder + scraper, Wikipedia date fetcher, _save_date.
-
-Dependency order: mdb_strings → mdb_apis → mdb_websources
-"""
+"""mdb_websources — Web scrapers for AOTY and Wikipedia."""
 
 import difflib
 import json

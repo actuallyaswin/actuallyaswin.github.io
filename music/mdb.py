@@ -38,21 +38,26 @@ from datetime import datetime
 from rich.console import Console
 from mdb_strings import (
     resolve_title,
+    is_valid_mbid,
     detect_variant_type, detect_variant_types, _base_title, VARIANT_TYPES,
     _PRIMARY_TYPES, _SECONDARY_TYPES, _EDITION_TYPES,
     ascii_key as _norm,
     MONTHS, _SOURCE_PRIORITY, _date_prec, _should_update_date, _parse_user_date,
+    extract_mbid,
 )
 from mdb_ops import (
     new_ulid, slugify, unique_slug, load_dotenv,
     DB_PATH, open_db, init_schema,
     _best_image, _sp_type, _VARIOUS_ARTISTS_SPOTIFY_ID, _is_various_artists,
     upsert_artist, upsert_release, upsert_tracks,
+    upsert_artist_mb, upsert_release_mb, upsert_tracks_mb,
 )
 from mdb_apis import (
-    SpotifyClient,
-    MB_API, MB_UA, SP_TOKEN, SP_BASE,
+    SpotifyClient, SpotifyRelease,
+    MusicBrainzRelease,
+    MB_API, MB_UA, SP_TOKEN,
     AOTY_AHEAD, DATES_AHEAD,
+    caa_fetch_front_image_url,
     _mb_get, _mb_get_safe,
     mb_find_release, mb_fetch_recording_ids, mb_fetch_artist_data,
 )
@@ -66,6 +71,7 @@ from mdb_cli import (
     _fmt_dur, _trunc,
     _format_mb_type, _print_member,
     _aoty_prompt, _dates_prompt, _prompt_choice,
+    render_diff,
 )
 
 try:
@@ -99,10 +105,11 @@ def _parse_disc_annotation(text):
 def _parse_group_line(line):
     """Parse one import-file line into a list of album-entry dicts.
 
-    Each entry: {'url': str, 'album_id': str, 'discs': list[int]|None}
+    Each entry is either:
+      {'url': str, 'album_id': str, 'discs': list[int]|None}   — Spotify
+      {'url': str, 'mbid': str,     'discs': None}              — MusicBrainz
     A comma-separated line produces multiple entries (a variant group).
-    Prerelease URLs (open.spotify.com/prerelease/…) are skipped — the
-    Spotify public API returns 404 for unreleased content.
+    Prerelease URLs (open.spotify.com/prerelease/…) are skipped.
     """
     entries = []
     for token in re.split(r',\s*', line.strip()):
@@ -112,6 +119,16 @@ def _parse_group_line(line):
         if re.search(r'open\.spotify\.com/prerelease/', token, re.IGNORECASE):
             console.print(f'[dim]  skip prerelease  {token[:60]}[/dim]')
             continue
+        # MusicBrainz URL or bare MBID
+        mbid = extract_mbid(token)
+        if mbid:
+            entries.append({
+                'url':  token if 'musicbrainz.org' in token else f'https://musicbrainz.org/release/{mbid}',
+                'mbid': mbid,
+                'discs': None,
+            })
+            continue
+        # Spotify URL
         m = _RE_SP_URL.search(token)
         if not m:
             continue
@@ -417,13 +434,137 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
             console.print('  [dim]no date found[/dim]')
     conn.close()
 
+def cmd_diff(args):
+    """Compare two or more Spotify or MusicBrainz albums."""
+    load_dotenv()
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+
+    client   = None
+    releases = []
+    for album in args.albums:
+        mbid = extract_mbid(album)
+        if mbid:
+            releases.append(MusicBrainzRelease(mbid))
+        else:
+            if client is None:
+                if not (cid and csc):
+                    console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and'
+                                  ' SPOTIFY_CLIENT_SECRET must be set for Spotify entries.')
+                    sys.exit(1)
+                client = SpotifyClient(cid, csc)
+            releases.append(SpotifyRelease(album, client=client))
+    render_diff(*releases)
+
+
+def import_album_from_mb(db_path: str, mbid: str, *,
+                         use_aoty: bool = True,
+                         use_wiki: bool = True) -> 'tuple[str, str, str, str]':
+    """Import a MusicBrainz release into master.sqlite.
+    Returns (release_id, title, artist_name, release_date)."""
+    rel = MusicBrainzRelease(mbid)
+    rel._ensure_full()
+
+    console.print(f"[bold]{rel.name}[/bold]  "
+                  f"[dim]{rel.artist} · {rel.year} · {rel.track_count} tracks[/dim]")
+    console.print(f"  [dim]source: MusicBrainz  {mbid}[/dim]")
+
+    # Cover Art Archive
+    console.print('  [dim]Fetching cover art from Cover Art Archive…[/dim]')
+    try:
+        image_url = caa_fetch_front_image_url(mbid)
+    except Exception as e:
+        log.debug('CAA fetch failed: %s', e)
+        image_url = None
+    console.print(f'  [dim]cover art: {image_url[:70] if image_url else "not found"}[/dim]')
+
+    conn = open_db(db_path)
+    cur  = conn.cursor()
+    init_schema(conn)
+
+    try:
+        console.rule('[dim]Artists[/dim]', style='dim')
+
+        # Collect all unique MB artist IDs from release + track credits
+        artist_credits_seen: dict = {}  # {mb_artist_id: mb_artist_dict}
+        for credit in (rel._data.get('artist-credit') or []):
+            if isinstance(credit, dict) and 'artist' in credit:
+                mb_a = credit['artist']
+                artist_credits_seen[mb_a.get('id', '')] = mb_a
+        for t in rel.tracks:
+            for credit in (t.get('_artist_credit') or []):
+                if isinstance(credit, dict) and 'artist' in credit:
+                    mb_a   = credit['artist']
+                    mb_aid = mb_a.get('id', '')
+                    if mb_aid not in artist_credits_seen:
+                        artist_credits_seen[mb_aid] = mb_a
+
+        artist_map: dict = {}  # {mb_artist_id: our_artist_id}
+        for mb_aid, mb_a in artist_credits_seen.items():
+            our_id, created = upsert_artist_mb(cur, mb_a)
+            artist_map[mb_aid] = our_id
+            tag = '[green]new[/green]' if created else '[dim]upd[/dim]'
+            console.print(f"  {tag}  {mb_a.get('name', ''):<28} [dim]{our_id}[/dim]")
+
+        # Primary artist: first non-join credit on the release
+        primary_id = None
+        for credit in (rel._data.get('artist-credit') or []):
+            if isinstance(credit, dict) and 'artist' in credit:
+                primary_id = artist_map.get(credit['artist'].get('id', ''))
+                break
+
+        release_id, r_new = upsert_release_mb(cur, rel._data, primary_id, image_url)
+        tag = '[green]new[/green]' if r_new else '[dim]upd[/dim]'
+        console.print(f"\n  {tag}  [bold]{rel.name}[/bold] [dim]→ {release_id}[/dim]")
+
+        cur.execute('DELETE FROM release_artists WHERE release_id = ?', (release_id,))
+        for credit in (rel._data.get('artist-credit') or []):
+            if isinstance(credit, dict) and 'artist' in credit:
+                aid = artist_map.get(credit['artist'].get('id', ''))
+                if aid:
+                    try:
+                        cur.execute(
+                            'INSERT INTO release_artists (release_id, artist_id, role)'
+                            ' VALUES (?, ?, ?)',
+                            (release_id, aid, 'main'),
+                        )
+                    except sqlite3.IntegrityError:
+                        pass
+
+        console.rule('[dim]Tracks[/dim]', style='dim')
+        n_created, n_updated = upsert_tracks_mb(cur, release_id, rel.tracks, artist_map)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    # ── Tracklist display ────────────────────────────────────────────────────
+    max_disc = max((t.get('_disc_number') or 1) for t in rel.tracks) if rel.tracks else 1
+    any_isrc = any(t.get('_isrcs') for t in rel.tracks)
+    cur_disc = None
+    for t in rel.tracks:
+        disc  = t.get('_disc_number') or 1
+        num   = t.get('_track_number', '?')
+        title = t.get('name', '?')
+        dur   = _fmt_dur(t.get('duration_ms'))
+        isrcs = t.get('_isrcs') or []
+        isrc  = isrcs[0] if isrcs else ''
+        if max_disc > 1 and disc != cur_disc:
+            cur_disc = disc
+            console.print(f'\n  [bold dim]Disc {disc}[/bold dim]')
+        isrc_col = f'  [dim]{isrc:<12}[/dim]' if any_isrc else ''
+        console.print(f"  [dim]{num:>2}.[/dim]  {_trunc(title, 40):<40}  "
+                      f"[dim]{dur:>5}[/dim]{isrc_col}")
+    console.print(f'\n  [dim]{n_created} created · {n_updated} updated[/dim]  '
+                  f'[bold]{os.path.basename(db_path)}[/bold]')
+
+    return release_id, rel.name, rel.artist, rel.date
+
+
 def cmd_import(args):
     load_dotenv()
     cid = os.environ.get('SPOTIFY_CLIENT_ID')
     csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
-    if not cid or not csc:
-        console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set.')
-        sys.exit(1)
 
     use_aoty = not args.no_aoty
     use_wiki = not args.no_wiki
@@ -451,7 +592,8 @@ def cmd_import(args):
         console.print('[red]Error:[/red] No album IDs found.')
         sys.exit(1)
 
-    client  = SpotifyClient(cid, csc)
+    # Lazily init Spotify client only if any entry requires it
+    client  = None
     total   = sum(len(g) for g in groups)
     errors  = 0
     seq     = 0
@@ -463,15 +605,29 @@ def cmd_import(args):
             seq += 1
             if total > 1:
                 console.rule(f'[dim]{seq} / {total}[/dim]', style='dim')
-            disc_note = f'  [dim]discs {entry["discs"]}[/dim]' if entry['discs'] else ''
+            disc_note = f'  [dim]discs {entry["discs"]}[/dim]' if entry.get('discs') else ''
             if disc_note:
                 console.print(disc_note)
             try:
-                release_id, title, artist, rel_date = import_album(
-                    db_path, client, entry['url'],
-                    use_mb=not args.no_mb,
-                    discs=entry['discs'],
-                )
+                if entry.get('mbid'):
+                    # MusicBrainz import path — no Spotify credentials needed
+                    release_id, title, artist, rel_date = import_album_from_mb(
+                        db_path, entry['mbid'],
+                        use_aoty=use_aoty, use_wiki=use_wiki,
+                    )
+                else:
+                    # Spotify import path — credentials required
+                    if client is None:
+                        if not (cid and csc):
+                            console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and'
+                                          ' SPOTIFY_CLIENT_SECRET must be set for Spotify imports.')
+                            sys.exit(1)
+                        client = SpotifyClient(cid, csc)
+                    release_id, title, artist, rel_date = import_album(
+                        db_path, client, entry['url'],
+                        use_mb=not args.no_mb,
+                        discs=entry['discs'],
+                    )
                 group_results.append((release_id, title, rel_date))
                 if use_aoty and release_id:
                     _import_aoty_step(db_path, release_id, title, artist)
@@ -1909,52 +2065,75 @@ def cmd_release_variants(args):
                 style='dim',
             )
 
-            # Stage 1 — primary type
-            cur_type = m.get('type') or 'album'
-            chosen_type, quit_now, _ = _prompt_choice(
-                'Stage 1 — Primary type', _PRIMARY_TYPES, current=cur_type
-            )
-            if quit_now:
-                aborted  = True
-                quit_all = True
+            # Stages 1→2→3 with [b]ack support
+            chosen_type = None
+            chosen_sec  = None
+            stage       = 1
+            while stage <= (3 if not is_canonical else 2):
+                if stage == 1:
+                    cur_type = m.get('type') or 'album'
+                    chosen_type, quit_now, _, do_back = _prompt_choice(
+                        'Stage 1 — Primary type', _PRIMARY_TYPES, current=cur_type
+                    )
+                    if quit_now:
+                        aborted  = True
+                        quit_all = True
+                        break
+                    stage = 2
+
+                elif stage == 2:
+                    cur_sec = m.get('type_secondary') or 'none'
+                    if cur_sec == 'none':
+                        _sec_set = set(_SECONDARY_TYPES)
+                        for _vt in detect_variant_types(m['title']):
+                            if _vt in _sec_set:
+                                cur_sec = _vt
+                                break
+                    chosen_sec, quit_now, _, do_back = _prompt_choice(
+                        'Stage 2 — Secondary type', _SECONDARY_TYPES, current=cur_sec,
+                        allow_back=True,
+                    )
+                    if quit_now:
+                        aborted  = True
+                        quit_all = True
+                        break
+                    if do_back:
+                        stage = 1
+                        continue
+                    chosen_sec = None if chosen_sec == 'none' else chosen_sec
+                    type_updates[m['id']] = (chosen_type, chosen_sec)
+                    stage = 3
+
+                elif stage == 3:
+                    # Auto-detect from title; suppress live/remix (captured in stage 2)
+                    auto_eds = [t for t in detect_variant_types(m['title'])
+                                if t not in ('live', 'remix')]
+                    cur_eds = auto_eds if auto_eds else ['none']
+                    chosen_eds, quit_now, do_hide, do_back = _prompt_choice(
+                        'Stage 3 — Edition type', _EDITION_TYPES, current=cur_eds,
+                        allow_hide=True, allow_back=True, multi=True,
+                    )
+                    if quit_now:
+                        aborted  = True
+                        quit_all = True
+                        break
+                    if do_back:
+                        type_updates.pop(m['id'], None)
+                        stage = 2
+                        continue
+                    if do_hide:
+                        hide_ids.add(m['id'])
+                        type_updates.pop(m['id'], None)
+                    else:
+                        if chosen_eds == ['none']:
+                            edition_type = None
+                        else:
+                            edition_type = ','.join(t for t in chosen_eds if t != 'none') or None
+                        edition_links.append((m['id'], edition_type, sort_i))
+                    stage = 4  # done
+
+            if aborted:
                 break
-
-            # Stage 2 — secondary type
-            cur_sec = m.get('type_secondary') or 'none'
-            chosen_sec, quit_now, _ = _prompt_choice(
-                'Stage 2 — Secondary type', _SECONDARY_TYPES, current=cur_sec
-            )
-            if quit_now:
-                aborted  = True
-                quit_all = True
-                break
-            chosen_sec = None if chosen_sec == 'none' else chosen_sec
-
-            type_updates[m['id']] = (chosen_type, chosen_sec)
-
-            # Stage 3 — edition type (non-canonical only)
-            if not is_canonical:
-                # Auto-detect from title; suppress live/remix (captured in stage 2)
-                auto_eds = [t for t in detect_variant_types(m['title'])
-                            if t not in ('live', 'remix')]
-                cur_eds = auto_eds if auto_eds else ['none']
-                chosen_eds, quit_now, do_hide = _prompt_choice(
-                    'Stage 3 — Edition type', _EDITION_TYPES, current=cur_eds,
-                    allow_hide=True, multi=True,
-                )
-                if quit_now:
-                    aborted  = True
-                    quit_all = True
-                    break
-                if do_hide:
-                    hide_ids.add(m['id'])
-                    del type_updates[m['id']]  # don't update type on a hidden release
-                    continue
-                if chosen_eds == ['none']:
-                    edition_type = None
-                else:
-                    edition_type = ','.join(t for t in chosen_eds if t != 'none') or None
-                edition_links.append((m['id'], edition_type, sort_i))
 
         # ── write everything accumulated so far (even on partial abort) ────────
         _write_group(conn, canonical, type_updates, edition_links, hide_ids)
@@ -2006,6 +2185,66 @@ def _write_group(conn, canonical, type_updates, edition_links, hide_ids):
     conn.commit()
 
 
+# ── cmd: certs refresh ────────────────────────────────────────────────────────
+
+_CERT_THRESHOLDS = [
+    ('diamond',  1000),
+    ('platinum',  500),
+    ('gold',      250),
+]
+
+
+def cmd_certs_refresh(args):
+    """Recompute cert tiers for all artists based on all-time listen counts."""
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    rows = conn.execute('''
+        SELECT a.id, a.name, COUNT(l.id) AS total
+        FROM   artists a
+        JOIN   release_artists ra ON ra.artist_id = a.id AND ra.role = 'main'
+        JOIN   tracks t           ON t.release_id = ra.release_id AND (t.hidden IS NULL OR t.hidden = 0)
+        JOIN   listens l          ON l.track_id = t.id
+        WHERE  (a.hidden IS NULL OR a.hidden = 0)
+        GROUP  BY a.id
+    ''').fetchall()
+
+    counts = {r['id']: (r['name'], r['total']) for r in rows}
+
+    # Compute new cert for every artist (NULL if below gold threshold)
+    updates = {}
+    for artist_id, (name, total) in counts.items():
+        cert = None
+        for tier, threshold in _CERT_THRESHOLDS:
+            if total >= threshold:
+                cert = tier
+                break
+        updates[artist_id] = cert
+
+    # Also clear cert for artists with no listens (hidden releases, etc.)
+    all_artists = conn.execute('SELECT id FROM artists').fetchall()
+    for row in all_artists:
+        if row['id'] not in updates:
+            updates[row['id']] = None
+
+    conn.executemany('UPDATE artists SET cert = ? WHERE id = ?',
+                     [(cert, aid) for aid, cert in updates.items()])
+    conn.commit()
+    conn.close()
+
+    tier_counts = {}
+    for cert in updates.values():
+        if cert:
+            tier_counts[cert] = tier_counts.get(cert, 0) + 1
+
+    total_certified = sum(tier_counts.values())
+    console.print(f'[bold]Certs refreshed[/bold]  ({total_certified} artists certified)')
+    for tier, _ in _CERT_THRESHOLDS:
+        n = tier_counts.get(tier, 0)
+        if n:
+            console.print(f'  {tier:10s}  {n}')
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -2015,6 +2254,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest='cmd', required=True)
+
+    # diff
+    p_diff = sub.add_parser('diff', help='Compare two or more Spotify or MusicBrainz albums')
+    p_diff.add_argument('albums', nargs='+', metavar='ALBUM',
+                        help='Spotify URLs/IDs or MusicBrainz URLs/UUIDs (2 or more)')
+    p_diff.set_defaults(func=cmd_diff)
 
     # import
     p = sub.add_parser('import', help='Import Spotify album(s)')
@@ -2224,6 +2469,13 @@ def main():
     p_r_ls.add_argument('artist', metavar='ARTIST')
     p_r_ls.add_argument('--db', metavar='PATH')
     p_r_ls.set_defaults(func=cmd_relation)
+
+    # certs
+    p_certs  = sub.add_parser('certs', help='Manage certification tiers')
+    cs_      = p_certs.add_subparsers(dest='certs_cmd', required=True)
+    p_c_ref  = cs_.add_parser('refresh', help='Recompute gold/platinum/diamond tiers for all artists')
+    p_c_ref.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_c_ref.set_defaults(func=cmd_certs_refresh)
 
     args = parser.parse_args()
     try:

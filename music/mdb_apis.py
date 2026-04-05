@@ -1,22 +1,32 @@
-"""
-mdb_apis — HTTP clients for Spotify and MusicBrainz.
+"""mdb_apis — HTTP clients for Spotify and MusicBrainz."""
 
-Provides: RateLimiter, SpotifyClient, MB fetch helpers, MB query functions.
-Rate limiter instances (_mb_lim, _wiki_lim, _aoty_lim) are exported for use
-by mdb_websources.
-
-Dependency order: mdb_strings → mdb_ops → mdb_apis
-"""
+__all__ = [
+    'RateLimiter',
+    'SpotifyClient',
+    'SpotifyRelease',
+    'MusicBrainzRelease',
+    'compare_releases',
+    'MB_API', 'MB_UA', 'SP_TOKEN', 'SP_BASE',
+    'CAA_API',
+    'AOTY_SEARCH', 'AOTY_UA', 'AOTY_RETRY',
+    'AOTY_AHEAD', 'DATES_AHEAD',
+    '_extract_mbid',
+    'caa_fetch_front_image_url',
+    'mb_find_release', 'mb_fetch_recording_ids',
+    'mb_fetch_release_data', 'mb_fetch_artist_data',
+]
 
 import json
 import logging
+import os
+import re
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from mdb_strings import ascii_key as _norm
+from mdb_strings import ascii_key as _norm, extract_mbid as _extract_mbid_or_none
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +36,7 @@ MB_API  = 'https://musicbrainz.org/ws/2'
 MB_UA   = 'aswin-music-browser/1.0 (personal project)'
 SP_TOKEN = 'https://accounts.spotify.com/api/token'
 SP_BASE  = 'https://api.spotify.com/v1'
+CAA_API  = 'https://coverartarchive.org'
 
 AOTY_SEARCH   = 'https://www.albumoftheyear.org/search/'
 AOTY_UA       = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
@@ -128,6 +139,396 @@ class SpotifyClient:
             data  = self.get('/audio-features', {'ids': ','.join(chunk)})
             out.extend(data.get('audio_features') or [])
         return out
+
+
+# ── SpotifyRelease ─────────────────────────────────────────────────────────────
+
+_SP_ID_RE    = re.compile(r'[A-Za-z0-9]{22}')
+_EDITION_RE  = re.compile(
+    r'\b(deluxe|anniversary|expanded|special|bonus|remaster(?:ed)?|reissue)\b',
+    re.IGNORECASE,
+)
+_FEAT_RE = re.compile(
+    r'\s*[\(\[]\s*feat\..*?[\)\]]'   # (feat. ...) or [feat. ...]
+    r'|\s+[-–—]\s*feat\b.*$',        # - feat. ... or – feat. ...
+    re.IGNORECASE,
+)
+_TRACK_VERSION_RE = re.compile(
+    r'\s*[\(\[]\s*(?:\d{4}\s+)?remaster(?:ed)?\s*[\)\]]'           # (Remastered) / (2023 Remastered)
+    r'|\s*[\(\[]\s*\d+\s*(?:th|st|nd|rd)\s+anniversary\b[^\)\]]*[\)\]]'  # (10th Anniversary ...)
+    r'|\s+[-–—]\s*remaster(?:ed)?\b.*$',                           # - Remastered / – Remastered
+    re.IGNORECASE,
+)
+
+
+def _bare_track_title(title: str) -> str:
+    """Strip feat. credits and remaster/anniversary version tags for cross-edition comparison."""
+    t = _FEAT_RE.sub('', title)
+    t = _TRACK_VERSION_RE.sub('', t)
+    return t.strip()
+
+
+# ── MBID extraction ────────────────────────────────────────────────────────────
+
+def _extract_mbid(s: str) -> str:
+    """Extract a MusicBrainz UUID from a URL or bare UUID string. Raises on failure."""
+    result = _extract_mbid_or_none(s)
+    if result is None:
+        raise ValueError(f'Cannot parse MBID from: {s!r}')
+    return result
+
+
+# ── Cover Art Archive ──────────────────────────────────────────────────────────
+
+def caa_fetch_front_image_url(release_mbid: str) -> 'str | None':
+    """Fetch the front cover art URL from Cover Art Archive for a release MBID.
+    Uses the 'large' thumbnail when available (still high-res, faster than original).
+    Returns None on 404 or if no Front image is found."""
+    req = urllib.request.Request(
+        f'{CAA_API}/release/{release_mbid}',
+        headers={'User-Agent': MB_UA, 'Accept': 'application/json'},
+    )
+    _mb_lim.wait()
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    for image in data.get('images', []):
+        if 'Front' in (image.get('types') or []):
+            thumbs = image.get('thumbnails') or {}
+            return thumbs.get('large') or thumbs.get('small') or image.get('image')
+    return None
+
+
+# ── MusicBrainzRelease ────────────────────────────────────────────────────────
+
+class MusicBrainzRelease:
+    """
+    Lazy-loading wrapper around a MusicBrainz release.
+
+    Mirrors SpotifyRelease's interface (name, artist, year, date, tracks,
+    track_count, total_ms, label, album_type, canonical_score) so both can
+    be passed to compare_releases and the mdb import machinery.
+
+    The .tracks list matches SpotifyRelease shape: dicts with 'name' and
+    'duration_ms'.  MB-specific import fields are prefixed '_mb_' on each
+    track dict and consumed by import_album_from_mb in mdb.py.
+    """
+
+    def __init__(self, mbid: str):
+        from mdb_strings import is_valid_mbid
+        if not is_valid_mbid(mbid):
+            raise ValueError(f'Not a valid MBID: {mbid!r}')
+        self.id  = mbid.lower()
+        self.url = f'https://musicbrainz.org/release/{self.id}'
+        self._data: 'dict | None' = None
+
+    # -- lazy helpers --
+
+    def _ensure_full(self) -> None:
+        if self._data is not None:
+            return
+        data = _mb_get(f'/release/{self.id}', {
+            'inc': 'recordings isrcs artists release-groups labels media',
+        })
+        # Build flat track list once and cache it
+        tracks = []
+        for medium in (data.get('media') or []):
+            disc_num = medium.get('position') or 1
+            for t in (medium.get('tracks') or []):
+                rec    = t.get('recording') or {}
+                length = rec.get('length') or t.get('length')
+                tracks.append({
+                    'name':              rec.get('title') or t.get('title', ''),
+                    'duration_ms':       length,
+                    # MB extras for import
+                    '_mb_recording_id':  rec.get('id'),
+                    '_isrcs':            list(rec.get('isrcs') or []),
+                    '_disc_number':      disc_num,
+                    '_track_number':     t.get('position'),
+                    '_artist_credit':    rec.get('artist-credit') or t.get('artist-credit') or [],
+                })
+        data['_track_list'] = tracks
+        self._data = data
+
+    # -- properties --
+
+    @property
+    def name(self) -> str:
+        self._ensure_full()
+        return (self._data.get('title') or '').strip()
+
+    @property
+    def artist(self) -> str:
+        """Primary artist name (first credit)."""
+        self._ensure_full()
+        for credit in (self._data.get('artist-credit') or []):
+            if isinstance(credit, dict) and 'artist' in credit:
+                return credit['artist'].get('name', '')
+        return ''
+
+    @property
+    def year(self) -> str:
+        return (self.date or '')[:4]
+
+    @property
+    def date(self) -> str:
+        self._ensure_full()
+        return (self._data.get('date') or '').strip()
+
+    @property
+    def tracks(self) -> list:
+        self._ensure_full()
+        return self._data['_track_list']
+
+    @property
+    def track_count(self) -> int:
+        return len(self.tracks)
+
+    @property
+    def explicit_count(self) -> int:
+        return 0  # MB does not carry explicit flags
+
+    @property
+    def total_ms(self) -> int:
+        return sum(t.get('duration_ms') or 0 for t in self.tracks)
+
+    @property
+    def label(self) -> str:
+        self._ensure_full()
+        for info in (self._data.get('label-info') or []):
+            lbl = (info.get('label') or {}).get('name', '')
+            if lbl:
+                return lbl
+        return ''
+
+    @property
+    def album_type(self) -> str:
+        self._ensure_full()
+        rg = self._data.get('release-group') or {}
+        return (rg.get('primary-type') or '').lower()
+
+    @property
+    def release_group_mbid(self) -> 'str | None':
+        self._ensure_full()
+        return (self._data.get('release-group') or {}).get('id')
+
+    def canonical_score(self) -> tuple:
+        """Lower = more canonical: earliest full date, fewest tracks, no edition words."""
+        d    = self.date
+        prec = (3 if (len(d) == 10 and not d.endswith('-01-01'))
+                else (2 if len(d) == 7 else 1))
+        return (-prec, d, self.track_count,
+                1 if _EDITION_RE.search(self.name) else 0,
+                0)  # explicit_count always 0 for MB releases
+_sp_client_singleton: 'SpotifyClient | None' = None
+
+
+def _get_sp_client() -> SpotifyClient:
+    """Return a module-level SpotifyClient, lazily initialised from env/.env."""
+    global _sp_client_singleton
+    if _sp_client_singleton is None:
+        from mdb_ops import load_dotenv
+        load_dotenv()
+        cid = os.environ.get('SPOTIFY_CLIENT_ID')
+        csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+        if not (cid and csc):
+            raise RuntimeError('SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET not set')
+        _sp_client_singleton = SpotifyClient(cid, csc)
+    return _sp_client_singleton
+
+
+def _extract_sp_id(s: str) -> str:
+    m = _SP_ID_RE.search(s)
+    if not m:
+        raise ValueError(f'Cannot parse Spotify ID from: {s!r}')
+    return m.group()
+
+
+class SpotifyRelease:
+    """
+    Lazy-loading wrapper around a Spotify album.
+
+    Constructed from a URL or bare ID.  Optionally seeded with partial data
+    (name, artists, release_date) from a search result to avoid extra fetches
+    for display.  Full track/label data is fetched on first access of any
+    property that requires it (tracks, label, explicit_count, etc.).
+    """
+
+    def __init__(self, id_or_url: str, *,
+                 client: 'SpotifyClient | None' = None,
+                 _seed: 'dict | None' = None):
+        self.id      = _extract_sp_id(id_or_url)
+        self.url     = f'https://open.spotify.com/album/{self.id}'
+        self._cli    = client
+        self._data   = _seed   # may be partial (no _all_tracks key)
+
+    @classmethod
+    def from_search_item(cls, item: dict,
+                         client: 'SpotifyClient | None' = None) -> 'SpotifyRelease':
+        """Construct cheaply from a Spotify search-result item (no track fetch)."""
+        return cls(item['id'], client=client, _seed={
+            'id':           item['id'],
+            'name':         item.get('name', ''),
+            'artists':      item.get('artists', []),
+            'release_date': item.get('release_date', ''),
+            'album_type':   item.get('album_type', ''),
+        })
+
+    # -- lazy helpers --
+
+    def _client(self) -> SpotifyClient:
+        if self._cli is None:
+            self._cli = _get_sp_client()
+        return self._cli
+
+    def _ensure_full(self) -> None:
+        if self._data is not None and '_all_tracks' in self._data:
+            return
+        full = self._client().get_album(self.id)
+        self._data = {**(self._data or {}), **full}
+
+    # -- cheap properties (available from search seed) --
+
+    @property
+    def name(self) -> str:
+        return (self._data or {}).get('name', '')
+
+    @property
+    def artist(self) -> str:
+        artists = (self._data or {}).get('artists') or []
+        if artists and isinstance(artists[0], dict):
+            return artists[0].get('name', '')
+        return ''
+
+    @property
+    def year(self) -> str:
+        return ((self._data or {}).get('release_date') or '')[:4]
+
+    # -- full properties (trigger network fetch) --
+
+    @property
+    def date(self) -> str:
+        self._ensure_full()
+        return (self._data.get('release_date') or '').strip()
+
+    @property
+    def tracks(self) -> list:
+        self._ensure_full()
+        return self._data['_all_tracks']
+
+    @property
+    def track_count(self) -> int:
+        return len(self.tracks)
+
+    @property
+    def explicit_count(self) -> int:
+        return sum(1 for t in self.tracks if t.get('explicit'))
+
+    @property
+    def total_ms(self) -> int:
+        return sum(t.get('duration_ms') or 0 for t in self.tracks)
+
+    @property
+    def label(self) -> str:
+        self._ensure_full()
+        return (self._data.get('label') or '').strip()
+
+    @property
+    def album_type(self) -> str:
+        self._ensure_full()
+        return (self._data.get('album_type') or '').lower()
+
+    def canonical_score(self) -> tuple:
+        """Lower = more canonical: earliest full date, fewest tracks, no edition words."""
+        d    = self.date
+        prec = (3 if (len(d) == 10 and not d.endswith('-01-01'))
+                else (2 if len(d) == 7 else 1))
+        return (-prec, d, self.track_count,
+                1 if _EDITION_RE.search(self.name) else 0,
+                -self.explicit_count)
+
+
+# ── compare_releases ───────────────────────────────────────────────────────────
+
+def compare_releases(*releases: SpotifyRelease) -> dict:
+    """
+    Compare two or more SpotifyRelease objects.  Fetches full data as needed.
+    Returns a structured dict consumed by render_diff in mdb_cli.
+    """
+    track_lists = [
+        [(t['name'], t.get('duration_ms') or 0) for t in r.tracks]
+        for r in releases
+    ]
+    # Normalise titles for set operations: strip feat. credits so that
+    # "(feat. Lloyd)" and "- feat. Lloyd" variants of the same track are treated
+    # as identical.  Raw names are kept in track_lists for display/dur_diffs.
+    norm_lists = [
+        [(_bare_track_title(t).lower(), d) for t, d in tl]
+        for tl in track_lists
+    ]
+    same_titles = len({tuple(t for t, _ in nl) for nl in norm_lists}) == 1
+
+    dur_diffs = []
+    if same_titles:
+        n = len(track_lists[0])
+        for i in range(n):
+            durs = [tl[i][1] for tl in track_lists if i < len(tl)]
+            if max(durs) - min(durs) > 2000:
+                dur_diffs.append((
+                    i + 1,
+                    track_lists[0][i][0],
+                    [tl[i][1] if i < len(tl) else 0 for tl in track_lists],
+                ))
+
+    all_title_sets = [set(t for t, _ in nl) for nl in norm_lists]
+
+    union_set     = all_title_sets[0].union(*all_title_sets[1:])
+    shared_titles = sorted(all_title_sets[0].intersection(*all_title_sets[1:]))
+    similarity    = len(shared_titles) / len(union_set) if union_set else 0.0
+
+    unique_per = []
+    if not same_titles:
+        for i, (r, titles) in enumerate(zip(releases, all_title_sets)):
+            others = set().union(*(all_title_sets[j]
+                                   for j in range(len(releases)) if j != i))
+            unique = sorted(titles - others)
+            if unique:
+                unique_per.append((r.id, unique))
+
+    ranked   = sorted(releases, key=lambda r: r.canonical_score())
+    canon    = ranked[0]
+    can_date = canon.date
+    reasons  = {}
+    for alt in ranked[1:]:
+        rs = []
+        if alt.date and can_date and alt.date > can_date:
+            rs.append(f'later release ({alt.date} > {can_date})')
+        elif alt.date == can_date:
+            rs.append('same date — likely re-upload')
+        if alt.track_count > canon.track_count:
+            rs.append(f'{alt.track_count - canon.track_count} bonus track(s)')
+        if _EDITION_RE.search(alt.name) and not _EDITION_RE.search(canon.name):
+            words = _EDITION_RE.findall(alt.name)
+            rs.append(f'edition qualifier ({", ".join(words)})')
+        if same_titles and alt.date != can_date:
+            rs.append('same tracklist — re-upload artifact')
+        reasons[alt.id] = rs or ['lower canonical score']
+
+    return {
+        'releases':      list(releases),
+        'similarity':    similarity,      # Jaccard over track title sets
+        'shared_titles': shared_titles,   # titles present in all releases
+        'same_titles':   same_titles,
+        'dur_diffs':     dur_diffs,       # [(pos, title, [ms, ...]), ...]
+        'unique_per':    unique_per,      # [(sp_id, [title, ...]), ...]
+        'ranked':        ranked,
+        'canonical':     canon,
+        'reasons':       reasons,         # {sp_id: [reason, ...]} for non-canonical
+    }
 
 
 # ── MusicBrainz low-level ──────────────────────────────────────────────────────

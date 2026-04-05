@@ -1,25 +1,16 @@
 """
-mdb_strings.py — Pure string utilities: MB title case, ETI formatting,
+mdb_strings — Pure string utilities: MB title case, ETI formatting,
 MBID validation, text normalization, and variant-type detection.
-
-Public API
-----------
-  mb_guess_case_english(title)  -> str
-  format_eti(content)           -> str   (wraps in parens, lowercases descriptors)
-  parse_track_title(title)      -> TrackParseResult
 
 TrackParseResult fields:
   .clean_title   — title with feat groups + dash-ETI stripped and MB title-cased
   .feat_artists  — list of featured artist name strings (from "feat." / "ft." groups)
   .eti           — formatted ETI string such as "(Soulchild remix)", or None
 
-Design notes
-------------
-* Remixers are intentionally NOT extracted to feat_artists — they stay in ETI as
-  "(X remix)" to avoid a bare-title collision with the original recording.
-* Dash-suffix ETI (e.g. "Song - X Remix") is converted to parentheses before
-  paren-group classification runs, so paren ETI can follow consistently.
-* Follows MusicBrainz Style / Language / English and Style / Titles guidelines.
+Design notes:
+  Remixers stay in ETI (never extracted to feat_artists) to avoid bare-title collision.
+  Dash-suffix ETI (e.g. "Song - X Remix") is converted to parens before classification.
+  Follows MusicBrainz Style / Language / English and Style / Titles guidelines.
 """
 
 from __future__ import annotations
@@ -367,7 +358,8 @@ def resolve_title(incoming_raw: str, existing_db: Optional[str] = None) -> str:
     Return the title to store, respecting manual capitalisation corrections.
 
     Algorithm:
-    1. Sanitize *incoming_raw* via :func:`parse_track_title` to get a canonical title.
+    1. Sanitize *incoming_raw* via :func:`parse_track_title` to get a canonical title
+       (clean title + ETI if present, e.g. "In My Mind (Axwell mix)").
     2. If *existing_db* is set and differs from the sanitized title *only in
        capitalisation* (case-insensitive equal), the existing DB value is returned
        unchanged — it represents a deliberate human correction (e.g. "Plug In Baby"
@@ -375,13 +367,18 @@ def resolve_title(incoming_raw: str, existing_db: Optional[str] = None) -> str:
     3. Otherwise the sanitized title is returned (new track, or a genuine title change).
 
     Examples:
-      resolve_title("plug in baby", "Plug In Baby")   →  "Plug In Baby"   (defer to DB)
-      resolve_title("plug in baby", None)              →  "Plug in Baby"   (fresh insert)
-      resolve_title("Stylo (feat. Mos Def)", "Stylo")  →  "Stylo"          (sanitized, no change)
-      resolve_title("old name", "Old Name")            →  "Old Name"       (only-case diff → keep DB)
-      resolve_title("different title", "Old Name")     →  "Different Title" (genuine change → sanitize)
+      resolve_title("plug in baby", "Plug In Baby")              →  "Plug In Baby"      (defer to DB)
+      resolve_title("plug in baby", None)                        →  "Plug in Baby"      (fresh insert)
+      resolve_title("Stylo (feat. Mos Def)", "Stylo")            →  "Stylo"             (sanitized, no change)
+      resolve_title("old name", "Old Name")                      →  "Old Name"          (only-case diff → keep DB)
+      resolve_title("different title", "Old Name")               →  "Different Title"   (genuine change → sanitize)
+      resolve_title("In My Mind (Axwell Mix)", None)             →  "In My Mind (Axwell mix)"
+      resolve_title("In My Mind (Axwell Radio Edit)", None)      →  "In My Mind (Axwell radio edit)"
     """
-    sanitized = parse_track_title(incoming_raw).clean_title
+    parsed    = parse_track_title(incoming_raw)
+    sanitized = parsed.clean_title
+    if parsed.eti:
+        sanitized = f'{sanitized} {parsed.eti}'
     if existing_db is not None and existing_db.lower() == sanitized.lower():
         return existing_db
     return sanitized
@@ -622,4 +619,45 @@ def _parse_user_date(text: str) -> 'str | None':
     m = re.fullmatch(r'(\w+)\s+(\d{4})', t, re.IGNORECASE)
     if m and m.group(1).lower() in MONTHS:
         return f'{m.group(2)}-{MONTHS[m.group(1).lower()]}'
+    return None
+
+
+# -- URL / ID extraction ------------------------------------------------------
+
+_RE_MB_URL = re.compile(
+    r'musicbrainz\.org/release/'
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+    re.IGNORECASE,
+)
+_RE_SP_ALBUM_URL = re.compile(
+    r'spotify\.com/album/([A-Za-z0-9]+)',
+    re.IGNORECASE,
+)
+
+
+def extract_mbid(s: str) -> 'str | None':
+    """Extract a MusicBrainz UUID from a MB URL or bare UUID string.
+    Returns the UUID (lowercased) or None if not found."""
+    if not s:
+        return None
+    m = _RE_MB_URL.search(s)
+    if m:
+        return m.group(1).lower()
+    stripped = s.strip()
+    if is_valid_mbid(stripped):
+        return stripped.lower()
+    return None
+
+
+def extract_spotify_id(s: str) -> 'str | None':
+    """Extract a Spotify album ID from a URL, or return the string itself if
+    it looks like a bare ID (alphanumeric, no slashes).  Returns None if empty."""
+    if not s:
+        return None
+    m = _RE_SP_ALBUM_URL.search(s)
+    if m:
+        return m.group(1)
+    stripped = s.strip()
+    if re.fullmatch(r'[A-Za-z0-9]+', stripped):
+        return stripped
     return None
