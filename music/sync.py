@@ -14,6 +14,8 @@ Usage:
 
 import argparse
 import base64
+import concurrent.futures
+import difflib
 import json
 import math
 import os
@@ -33,9 +35,15 @@ from rich.rule import Rule
 from mdb_strings import (
     is_valid_mbid as _is_valid_mbid,
     normalize_text as _norm,
+    ascii_key as _ascii_key,
+    parse_track_title as _parse_track_title,
     detect_variant_type as _detect_variant_type,
     _PRIMARY_TYPES, _SECONDARY_TYPES, _EDITION_TYPES,
+    extract_mbid as _extract_mbid,
+    extract_spotify_id as _extract_spotify_id,
 )
+from mdb_apis import SpotifyRelease
+from mdb_cli  import render_diff
 
 console = Console(width=80, highlight=False)
 
@@ -171,7 +179,17 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     """
     Secondary match for tracks with no MBIDs (e.g. no MusicBrainz result).
     Scopes to listens whose raw_artist_name matches the queue entry (or any known
-    alias of the release's artists), then joins on lower(raw_track_name) = lower(tracks.title).
+    alias of the release's artists), then joins on normalised track title.
+
+    Normalisation is two-phase:
+      Phase 1 (SQL): handles apostrophe variants, feat. credits
+        1. Curly apostrophes (U+2019) in DB titles vs ASCII apostrophes in scrobbles.
+        2. Featuring artists present in scrobble but absent from the DB title.
+        3. Scrobble title = DB title + " - <mix>" (LIKE prefix match).
+      Phase 2 (Python): ETI-normalised matching via parse_track_title.
+        Strips version/mix suffixes from both sides so e.g. Last.fm's
+        "In My Mind - Axwell Radio Edit" matches Spotify's "In My Mind".
+
     Returns the count of newly matched listens.
     """
     if not release_ids:
@@ -198,17 +216,35 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     aph = ','.join('?' * len(artist_name_set))
     artist_names = list(artist_name_set)
 
+    # Normalise a column: lowercase + replace curly apostrophes with ASCII apostrophe.
+    def _n(col):
+        return f"REPLACE(lower({col}), char(8217), char(39))"
+
+    # Bare title: strip trailing " (feat. ...)" from a column after normalising.
+    def _bare(col):
+        nc = _n(col)
+        return (f"CASE WHEN instr({nc}, ' (feat.') > 0"
+                f" THEN trim(substr({col}, 1, instr({nc}, ' (feat.') - 1))"
+                f" ELSE {col} END")
+
+    # Match condition: normalised exact match, or either side stripped of feat.,
+    # or scrobble title = DB title + ' - <mix/version>' (Last.fm often appends
+    # the mix name with ' - ' when Spotify tracks omit it, e.g.
+    # scrobble: 'In My Mind - Axwell Radio Edit'  DB: 'In My Mind').
+    def _match(db_col, raw_col):
+        return (f"({_n(db_col)} = {_n(raw_col)}"
+                f" OR {_n(_bare(db_col))} = {_n(raw_col)}"
+                f" OR {_n(db_col)} = {_n(_bare(raw_col))}"
+                f" OR {_n(raw_col)} LIKE {_n(db_col)} || ' - %')")
+
+    title_match = _match('t.title', 'listens.raw_track_name')
+
     cur = conn.execute(f'''
         UPDATE listens
         SET track_id = (
             SELECT t.id FROM tracks t
             WHERE  t.release_id IN ({rph})
-              AND  (
-                lower(t.title) = lower(listens.raw_track_name)
-                OR lower(CASE WHEN instr(lower(t.title), ' (feat.') > 0
-                              THEN substr(t.title, 1, instr(lower(t.title), ' (feat.') - 1)
-                              ELSE t.title END) = lower(listens.raw_track_name)
-              )
+              AND  {title_match}
             LIMIT 1
         )
         WHERE track_id IS NULL
@@ -218,16 +254,87 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
           AND EXISTS (
               SELECT 1 FROM tracks t
               WHERE  t.release_id IN ({rph})
-                AND  (
-                  lower(t.title) = lower(listens.raw_track_name)
-                  OR lower(CASE WHEN instr(lower(t.title), ' (feat.') > 0
-                                THEN substr(t.title, 1, instr(lower(t.title), ' (feat.') - 1)
-                                ELSE t.title END) = lower(listens.raw_track_name)
-                )
+                AND  {title_match}
           )
     ''', [*release_ids, *artist_names, raw_album, *release_ids])
     conn.commit()
-    return cur.rowcount
+    sql_matched = cur.rowcount
+
+    # Phase 2: ETI-normalised matching — strips version/mix suffixes from both
+    # the DB title and the scrobble title using parse_track_title, then compares
+    # the clean base titles.  Handles cases like:
+    #   scrobble: "In My Mind - Axwell Radio Edit"  →  clean: "In My Mind"
+    #   DB track:  "In My Mind"                     →  clean: "In My Mind"  ✓
+    db_tracks = conn.execute(
+        f'SELECT id, title FROM tracks WHERE release_id IN ({rph})', release_ids
+    ).fetchall()
+    eti_map = {}
+    for t in db_tracks:
+        clean = _norm(_parse_track_title(t['title']).clean_title)
+        eti_map.setdefault(clean, t['id'])  # first match wins (prefer earlier track)
+
+    unmatched = conn.execute(f'''
+        SELECT id, raw_track_name FROM listens
+        WHERE  track_id IS NULL
+          AND  lower(raw_artist_name) IN ({aph})
+          AND  lower(raw_album_name)  = lower(?)
+          AND  raw_track_name IS NOT NULL
+    ''', [*artist_names, raw_album]).fetchall()
+
+    eti_matched = 0
+    for listen in unmatched:
+        clean_raw = _norm(_parse_track_title(listen['raw_track_name']).clean_title)
+        track_id  = eti_map.get(clean_raw)
+        if track_id:
+            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                         [track_id, listen['id']])
+            eti_matched += 1
+
+    if eti_matched:
+        conn.commit()
+
+    # Phase 3: fuzzy title matching — catches single-character typos/insertions
+    # like "Freezeey Peak" (DB) vs "Freezeezy Peak" (scrobble) where Phases 1/2
+    # both miss because the strings are close but not identical after normalisation.
+    # Uses ascii_key (strips all punctuation + lowercase) + SequenceMatcher ratio.
+    # Threshold 0.85 catches ~1-char edits on titles ≥6 chars while avoiding
+    # false positives on short or unrelated titles.
+    _FUZZY_THRESHOLD = 0.85
+
+    # Build ascii_key → track_id map for DB tracks not already covered by eti_map
+    fuzzy_map = {}  # ascii_key → track_id
+    for t in db_tracks:
+        clean = _parse_track_title(t['title']).clean_title
+        k = _ascii_key(clean)
+        fuzzy_map.setdefault(k, t['id'])
+
+    # Re-fetch still-unmatched listens (ETI may have resolved some)
+    still_unmatched = conn.execute(f'''
+        SELECT id, raw_track_name FROM listens
+        WHERE  track_id IS NULL
+          AND  lower(raw_artist_name) IN ({aph})
+          AND  lower(raw_album_name)  = lower(?)
+          AND  raw_track_name IS NOT NULL
+    ''', [*artist_names, raw_album]).fetchall()
+
+    fuzzy_matched = 0
+    for listen in still_unmatched:
+        raw_key = _ascii_key(_parse_track_title(listen['raw_track_name']).clean_title)
+        if not raw_key:
+            continue
+        best_ratio, best_id = 0.0, None
+        for db_key, tid in fuzzy_map.items():
+            ratio = difflib.SequenceMatcher(None, raw_key, db_key).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_id = ratio, tid
+        if best_ratio >= _FUZZY_THRESHOLD and best_id:
+            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                         [best_id, listen['id']])
+            fuzzy_matched += 1
+
+    if fuzzy_matched:
+        conn.commit()
+    return sql_matched + eti_matched + fuzzy_matched
 
 
 # ── Row normalisation ─────────────────────────────────────────────────────────
@@ -427,18 +534,65 @@ def _sp_search_album(token: str, artist: str, album: str) -> list:
     try:
         data = _sp_request(req)
         return [
-            {
-                'id':     item['id'],
-                'name':   item['name'],
-                'artist': item['artists'][0]['name'] if item.get('artists') else '',
-                'year':   (item.get('release_date') or '')[:4],
-                'url':    f"https://open.spotify.com/album/{item['id']}",
-            }
+            SpotifyRelease.from_search_item(item)
             for item in data.get('albums', {}).get('items', [])
         ]
     except Exception as e:
         console.print(f'  [dim yellow]Spotify search failed: {e}[/dim yellow]')
         return []
+
+
+def _db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> list:
+    """
+    Search master.sqlite for releases whose title and primary artist
+    roughly match the raw scrobble strings.  Uses ascii_key comparison
+    (strips all punctuation + lowercase) so hyphen variants, apostrophe
+    differences, and accent variations don't prevent a hit.
+    Returns a list of row dicts.
+    """
+    key_album  = _ascii_key(album)
+    key_artist = _ascii_key(artist)
+    rows = conn.execute('''
+        SELECT r.id, r.title, r.release_date, r.type, r.type_secondary,
+               a.name                                                AS artist_name,
+               COUNT(t.id)                                          AS track_count,
+               SUM(CASE WHEN t.is_explicit = 1 THEN 1 ELSE 0 END)  AS explicit_count
+        FROM   releases r
+        LEFT JOIN artists  a  ON a.id  = r.primary_artist_id
+        LEFT JOIN tracks   t  ON t.release_id = r.id AND t.hidden = 0
+        WHERE  r.hidden = 0
+        GROUP  BY r.id
+    ''').fetchall()
+
+    results = []
+    for row in rows:
+        row = dict(row)
+        row_key = _ascii_key(row['title'])
+        if row_key == key_album:
+            results.append(row)
+        elif key_album in row_key or row_key in key_album:
+            if row['artist_name'] and key_artist in _ascii_key(row['artist_name']):
+                results.append(row)
+    return results
+
+
+def _print_db_result(i: int, row: dict) -> None:
+    """Print one DB release candidate (mirrors _print_sp_result layout)."""
+    vtype     = _detect_variant_type(row['title'])
+    vtype_str = f'  [yellow]{vtype}[/yellow]' if vtype else ''
+    t = (row.get('type') or '').capitalize()
+    s = (row.get('type_secondary') or '').capitalize()
+    mb_type  = f'{t} · {s}' if t and s else t or s or ''
+    mb_str   = f'  [dim]{mb_type}[/dim]' if mb_type else ''
+    date_str = f'  [dim]{row["release_date"]}[/dim]' if row.get('release_date') else ''
+    console.print(
+        f'  [bold]{i}.[/bold]  [bold]{row["title"]}[/bold]'
+        f'{date_str}'
+        f'  [dim]{row["artist_name"] or ""}[/dim]'
+        f'{mb_str}'
+        f'{vtype_str}'
+    )
+    console.print(f'       [dim green]db:{row["id"]}[/dim green]')
 
 
 # ── Shared insert helper ──────────────────────────────────────────────────────
@@ -533,17 +687,17 @@ def cmd_fetch(args):
 
 # ── match ─────────────────────────────────────────────────────────────────────
 
-def _print_sp_result(i, r):
+def _print_sp_result(i, r: 'SpotifyRelease') -> None:
     """Print one Spotify search candidate, mirroring mdb.py _print_member layout."""
-    vtype     = _detect_variant_type(r['name'])
+    vtype     = _detect_variant_type(r.name)
     vtype_str = f'  [yellow]{vtype}[/yellow]' if vtype else ''
     console.print(
-        f'  [bold]{i}.[/bold]  [bold]{r["name"]}[/bold]'
-        f'  [dim]{r["year"] or "?"}[/dim]'
-        f'  [dim]{r["artist"]}[/dim]'
+        f'  [bold]{i}.[/bold]  [bold]{r.name}[/bold]'
+        f'  [dim]{r.year or "?"}[/dim]'
+        f'  [dim]{r.artist}[/dim]'
         f'{vtype_str}'
     )
-    console.print(f'       [dim cyan]sp:{r["id"]}[/dim cyan]')
+    console.print(f'       [dim cyan]sp:{r.id}[/dim cyan]')
 
 
 def _print_release_card(i, m):
@@ -583,6 +737,17 @@ def cmd_match(args):
         console.print('[yellow]No Spotify credentials found — auto-search disabled.[/yellow]')
 
     console.rule('[bold]SYNC MATCH[/bold]')
+
+    # Resolve any MBID-based listens that became matchable since last run
+    # (e.g. from a direct `mdb import` outside of sync match).
+    newly_matched = bulk_rematch(conn)
+    if newly_matched:
+        console.print(f'  [green]✓ {newly_matched} listens auto-matched via MBID[/green]\n')
+
+    # Thread pool for background prefetches (searches + full album data).
+    # Lives for the duration of cmd_match, shared across batches.
+    _pool = concurrent.futures.ThreadPoolExecutor(max_workers=5,
+                                                  thread_name_prefix='prefetch')
 
     while True:
         # Top unresolved albums, excluding permanently-hidden (and deferred unless --skipped)
@@ -649,6 +814,22 @@ def cmd_match(args):
             console.print('[green]All listens resolved (or skipped)![/green]')
             break
 
+        # Per-batch search cache: 0-based album index → Future[list[SpotifyRelease]]
+        search_cache: dict = {}
+
+        def _pre_search(idx: int) -> None:
+            if token and 0 <= idx < len(rows) and idx not in search_cache:
+                r = rows[idx]
+                search_cache[idx] = _pool.submit(
+                    _sp_search_album, token,
+                    r['raw_artist_name'], r['raw_album_name'],
+                )
+
+        # Kick off the first two albums' searches immediately so the first
+        # prompt is ready before the user has even read the header.
+        _pre_search(0)
+        _pre_search(1)
+
         total_unresolved = conn.execute(
             'SELECT COUNT(*) FROM listens WHERE track_id IS NULL'
         ).fetchone()[0]
@@ -668,28 +849,82 @@ def cmd_match(args):
             console.print(f'  [bold]{artist}[/bold]  [dim]—  {album}[/dim]')
             if sort_recent:
                 last_dt = datetime.fromtimestamp(row['last_listened'], tz=timezone.utc).strftime('%Y-%m-%d')
-                console.print(f'  [dim]{count:,} listens in session · last played {last_dt}[/dim]\n')
+                console.print(f'  [dim]{count:,} listen{"s" if count != 1 else ""} in session · last played {last_dt}[/dim]')
             else:
-                console.print(f'  [dim]{count:,} listens · {tracks} unique tracks[/dim]\n')
+                console.print(f'  [dim]{count:,} listens · {tracks} unique tracks[/dim]')
 
-            # Auto-search Spotify
+            # Raw scrobble preview — shows exact Last.fm field values so mismatches
+            # (artist name variants, feat. formatting, missing MBIDs) are visible.
+            preview_lim = min(count if sort_recent else tracks, 8)
+            ts_clause   = 'AND timestamp <= ?' if sort_recent else ''
+            ts_params   = [row['last_listened']] if sort_recent else []
+            preview = conn.execute(f'''
+                SELECT raw_artist_name, raw_track_name, raw_source_id, COUNT(*) AS cnt
+                FROM   listens
+                WHERE  track_id IS NULL
+                  AND  raw_artist_name = ?
+                  AND  raw_album_name  = ?
+                  {ts_clause}
+                GROUP  BY raw_artist_name, raw_track_name
+                ORDER  BY MAX(timestamp) DESC
+                LIMIT  ?
+            ''', [artist, album, *ts_params, preview_lim]).fetchall()
+            for p in preview:
+                src_tag = 'mbid' if _is_valid_mbid(p['raw_source_id']) else 'key'
+                cnt_s   = f' ×{p["cnt"]}' if p['cnt'] > 1 else ''
+                console.print(
+                    f'  [dim]"{p["raw_artist_name"]}"  ·  '
+                    f'"{p["raw_track_name"]}"  [{src_tag}]{cnt_s}[/dim]'
+                )
+            console.print()
+
+            # DB results first (already-imported releases that match this album)
+            db_results = _db_search_releases(conn, artist, album)
+            for idx, row in enumerate(db_results, 1):
+                _print_db_result(idx, row)
+            if db_results:
+                console.print()
+
+            # Auto-search Spotify (from prefetch cache if ready, else block)
+            sp_offset = len(db_results)
             sp_results = []
             if token and artist and album:
-                sp_results = _sp_search_album(token, artist, album)
-                for idx, r in enumerate(sp_results, 1):
+                fut = search_cache.get(album_i - 1)
+                if fut is not None:
+                    try:
+                        sp_results = fut.result()
+                    except Exception as e:
+                        console.print(f'  [dim yellow]Spotify search failed: {e}[/dim yellow]')
+                else:
+                    sp_results = _sp_search_album(token, artist, album)
+                for idx, r in enumerate(sp_results, sp_offset + 1):
                     _print_sp_result(idx, r)
                 if sp_results:
                     console.print()
 
+            total_results = len(db_results) + len(sp_results)
+
+            # While the user reads results and thinks, kick off background work:
+            # 1. Pre-fetch full track data for every displayed Spotify result so that
+            #    selecting any of them triggers no additional network wait.
+            for r in sp_results:
+                _pool.submit(r._ensure_full)
+            # 2. Pre-search the next two albums in the queue.
+            _pre_search(album_i)
+            _pre_search(album_i + 1)
+
             # Build hint (escape brackets so Rich doesn't consume them as markup)
-            if sp_results:
-                if len(sp_results) == 1:
-                    hint = '  [dim]Enter=import  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+            if total_results == 1:
+                if db_results:
+                    hint = '  [dim]Enter=match  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
                 else:
-                    hint = (
-                        f'  [dim]\\[1-{len(sp_results)}] import  \\[1 2] multi'
-                        f'  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
-                    )
+                    hint = '  [dim]Enter=import  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+            elif total_results > 1:
+                diff_hint = '  \\[d]iff' if len(sp_results) >= 2 else ''
+                hint = (
+                    f'  [dim]\\[1-{total_results}] select  \\[1 2] multi'
+                    f'{diff_hint}  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+                )
             else:
                 hint = '  [dim]\\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
 
@@ -733,25 +968,81 @@ def cmd_match(args):
                     console.print('  [dim]Skipped.[/dim]')
                     break
 
-                elif raw.startswith('http'):
-                    _do_import(conn, raw, raw_artist=artist, raw_album=album)
+                elif raw.startswith('http') or re.search(r'\b(sp:|mb:|musicbrainz\.org|[0-9a-f]{8}-[0-9a-f]{4})', raw):
+                    to_match, to_import = _parse_mixed_tokens(raw, db_results, sp_results)
+                    if to_match is None:
+                        console.print('  [yellow]Unrecognised input — paste URLs, sp:ID, UUIDs, or numbers[/yellow]')
+                        console.print(hint, end='')
+                        continue
+                    if to_match and not to_import:
+                        release_ids = [r['id'] for r in to_match]
+                        matched = bulk_rematch_by_name(conn, release_ids, artist, album)
+                        if matched:
+                            console.print(f'  [green]✓ {matched} listens matched[/green]')
+                        else:
+                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
+                    elif to_import:
+                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album)
+                        if to_match:
+                            # Also rematch against already-imported DB releases
+                            release_ids = [r['id'] for r in to_match]
+                            bulk_rematch_by_name(conn, release_ids, artist, album)
                     break
 
-                elif sp_results:
-                    # Enter with a single result → auto-import it
-                    if choice == '' and len(sp_results) == 1:
-                        indices = [0]
-                    else:
-                        indices = _parse_indices(choice, len(sp_results))
-                    if indices is not None:
-                        selected = [sp_results[i] for i in indices]
-                        _do_multi_import(conn, selected, raw_artist=artist, raw_album=album)
-                        break
-                    console.print(
-                        f'  [yellow]Enter 1–{len(sp_results)}, '
-                        f'multiple like "1 2", s, h, or q[/yellow]'
-                    )
+                elif choice == 'd' and len(sp_results) >= 2:
+                    render_diff(*sp_results, compact=True)
                     console.print(hint, end='')
+
+                elif total_results:
+                    # Enter with a single result → auto-select it
+                    if choice == '' and total_results == 1:
+                        indices_raw = '1'
+                    else:
+                        indices_raw = raw
+                    to_match, to_import = _parse_mixed_tokens(indices_raw, db_results, sp_results)
+                    if to_match is None:
+                        console.print(
+                            f'  [yellow]Enter 1–{total_results}, '
+                            f'multiple like "1 2", URLs, or s/h/q[/yellow]'
+                        )
+                        console.print(hint, end='')
+                        continue
+
+                    if to_match and not to_import:
+                        # All DB — just rematch
+                        release_ids = [r['id'] for r in to_match]
+                        matched = bulk_rematch_by_name(conn, release_ids, artist, album)
+                        if matched:
+                            console.print(f'  [green]✓ {matched} listens matched[/green]')
+                        else:
+                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
+                        break
+                    elif to_import:
+                        if len(to_import) > 1:
+                            sp_only = [x for x in to_import if isinstance(x, SpotifyRelease)]
+                            if len(sp_only) >= 2:
+                                render_diff(*sp_only, compact=True)
+                            console.print(
+                                f'  [dim]Import all {len(to_import)}? '
+                                f'\\[Y/n]:[/dim] ',
+                                end='',
+                            )
+                            try:
+                                confirm = input().strip().lower()
+                            except (KeyboardInterrupt, EOFError):
+                                console.print()
+                                break
+                            if confirm in ('n', 'no'):
+                                console.print(hint, end='')
+                                continue
+                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album)
+                        if to_match:
+                            release_ids = [r['id'] for r in to_match]
+                            bulk_rematch_by_name(conn, release_ids, artist, album)
+                        break
+                    else:
+                        console.print(hint, end='')
+                        continue
 
                 else:
                     console.print('  [yellow]Paste a URL, or enter s / h / q[/yellow]')
@@ -770,6 +1061,7 @@ def cmd_match(args):
         except (KeyboardInterrupt, EOFError):
             break
 
+    _pool.shutdown(wait=False)
     conn.close()
 
 
@@ -795,37 +1087,103 @@ def _parse_indices(s: str, max_n: int):
 def _do_import(conn: sqlite3.Connection, url: str,
                raw_artist: str = None, raw_album: str = None):
     """Import a single URL via mdb.py, then bulk-rematch."""
-    _do_multi_import(conn, [{'id': _sp_id_from_url(url), 'url': url, 'name': url}],
+    _do_multi_import(conn, [SpotifyRelease(url)],
                      raw_artist=raw_artist, raw_album=raw_album)
 
 
-def _sp_id_from_url(url: str) -> str:
-    """Extract Spotify album ID from a URL, or return the URL itself."""
-    m = re.search(r'spotify\.com/album/([A-Za-z0-9]+)', url)
-    return m.group(1) if m else url
+def _parse_mixed_tokens(raw: str, db_results: list, sp_results: list) -> 'tuple[list, list]':
+    """
+    Parse a raw input string into (to_match, to_import) where:
+      to_match  — list of DB release row dicts (already in DB, just need rematch)
+      to_import — list of items to import: SpotifyRelease or {'mbid': ..., 'url': ...}
+
+    Accepts any comma- or space-separated mix of:
+      - Numbers       → index into db_results + sp_results (1-based)
+      - Spotify URLs  → SpotifyRelease
+      - sp:ID         → SpotifyRelease (shorthand shown in display)
+      - MB URLs/UUIDs → MB dict
+    Returns (None, None) if any token is unrecognisable.
+    """
+    sp_offset = len(db_results)
+    tokens = [t.strip() for t in re.split(r'[\s,]+', raw.strip()) if t.strip()]
+    to_match, to_import = [], []
+
+    for token in tokens:
+        # Numbered result
+        if token.isdigit():
+            idx = int(token) - 1
+            if idx < sp_offset:
+                db_row = db_results[idx]
+                if db_row not in to_match:
+                    to_match.append(db_row)
+            elif idx < sp_offset + len(sp_results):
+                sp_item = sp_results[idx - sp_offset]
+                if sp_item not in to_import:
+                    to_import.append(sp_item)
+            else:
+                return None, None
+            continue
+
+        # sp:ID shorthand
+        sp_m = re.match(r'^sp:([A-Za-z0-9]+)$', token)
+        if sp_m:
+            to_import.append(SpotifyRelease(sp_m.group(1)))
+            continue
+
+        # mb:UUID shorthand
+        mb_m = re.match(r'^mb:(.+)$', token)
+        if mb_m:
+            mbid = _extract_mbid(mb_m.group(1))
+            if mbid:
+                to_import.append({'mbid': mbid, 'url': f'https://musicbrainz.org/release/{mbid}'})
+                continue
+            return None, None
+
+        # Spotify URL
+        if 'spotify.com/album/' in token:
+            to_import.append(SpotifyRelease(token))
+            continue
+
+        # MB URL or bare UUID
+        mbid = _extract_mbid(token)
+        if mbid:
+            to_import.append({'mbid': mbid, 'url': f'https://musicbrainz.org/release/{mbid}'})
+            continue
+
+        return None, None  # unrecognised token
+
+    return to_match, to_import
 
 
 def _do_multi_import(conn: sqlite3.Connection, selected: list,
                      raw_artist: str = None, raw_album: str = None):
     """
-    Import one or more Spotify albums via mdb.py.
+    Import one or more Spotify or MusicBrainz albums via mdb.py.
+    selected items are SpotifyRelease objects or {'mbid': ..., 'url': ...} dicts.
     After import, bulk-rematch all listens (MBID-based, then name-based if context given).
     If multiple albums imported, offer to link them as variants.
     """
-    imported = []  # list of (sp_item, release_row)
+    imported = []  # list of (item, release_row)
 
     for item in selected:
-        console.print(f'  Importing [dim]{item["url"]}[/dim]')
-        result = subprocess.run([PYTHON, MDB, 'import', item['url']])
+        is_mb  = isinstance(item, dict) and 'mbid' in item
+        url    = item['url'] if is_mb else item.url
+        console.print(f'  Importing [dim]{url}[/dim]')
+        result = subprocess.run([PYTHON, MDB, 'import', url])
         if result.returncode == 0:
-            sp_id = item.get('id') or _sp_id_from_url(item['url'])
-            rel = conn.execute(
-                'SELECT id, title FROM releases WHERE spotify_id = ?', [sp_id]
-            ).fetchone()
+            if is_mb:
+                rel = conn.execute(
+                    'SELECT id, title FROM releases WHERE mbid = ?', [item['mbid']]
+                ).fetchone()
+            else:
+                rel = conn.execute(
+                    'SELECT id, title FROM releases WHERE spotify_id = ?', [item.id]
+                ).fetchone()
             if rel:
                 imported.append((item, rel))
         else:
-            console.print(f'  [red]Import failed for {item.get("name", item["url"])}[/red]')
+            label = item['url'] if is_mb else (item.name or item.url)
+            console.print(f'  [red]Import failed for {label}[/red]')
 
     if not imported:
         console.print('  [red]All imports failed[/red]')
@@ -879,7 +1237,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list):
         console.print()
 
     _show_list()
-    console.print('  [dim]number / \\[s]kip / \\[q]uit / Spotify URL:[/dim] ', end='')
+    console.print('  [dim]number / \\[s]kip / \\[q]uit / Spotify or MB URL:[/dim] ', end='')
 
     canonical = None
     while True:
@@ -902,7 +1260,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list):
                 break
 
         elif 'spotify.com/album/' in raw:
-            sp_id = _sp_id_from_url(raw)
+            sp_id = _extract_spotify_id(raw)
             rel = conn.execute(
                 'SELECT id, title FROM releases WHERE spotify_id = ?', [sp_id]
             ).fetchone()
@@ -912,7 +1270,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list):
                 if result.returncode != 0:
                     console.print('  [red]Import failed — try again[/red]')
                     console.print(
-                        '  [dim]number / \\[s]kip / \\[q]uit / Spotify URL:[/dim] ', end=''
+                        '  [dim]number / \\[s]kip / \\[q]uit / Spotify or MB URL:[/dim] ', end=''
                     )
                     continue
                 rel = conn.execute(
@@ -936,10 +1294,44 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list):
                 break
             console.print('  [red]Could not find release — try again[/red]')
 
-        else:
-            console.print(f'  [yellow]Enter 1–{len(full_releases)}, s, q, or a Spotify URL[/yellow]')
+        elif _extract_mbid(raw):
+            mbid = _extract_mbid(raw)
+            rel = conn.execute(
+                'SELECT id, title FROM releases WHERE mbid = ?', [mbid]
+            ).fetchone()
+            if not rel:
+                console.print(f'  Importing [dim]{raw}[/dim]')
+                result = subprocess.run([PYTHON, MDB, 'import', raw])
+                if result.returncode != 0:
+                    console.print('  [red]Import failed — try again[/red]')
+                    console.print(
+                        '  [dim]number / \\[s]kip / \\[q]uit / Spotify or MB URL:[/dim] ', end=''
+                    )
+                    continue
+                rel = conn.execute(
+                    'SELECT id, title FROM releases WHERE mbid = ?', [mbid]
+                ).fetchone()
+            if rel:
+                if not any(m['id'] == rel['id'] for m in full_releases):
+                    row = conn.execute('''
+                        SELECT r.id, r.title, r.release_date, r.type, r.type_secondary,
+                               COUNT(t.id)                                    AS track_count,
+                               SUM(CASE WHEN t.is_explicit = 1 THEN 1 ELSE 0 END) AS explicit_count
+                        FROM   releases r
+                        LEFT JOIN tracks t ON t.release_id = r.id AND t.hidden = 0
+                        WHERE  r.id = ?
+                        GROUP  BY r.id
+                    ''', [rel['id']]).fetchone()
+                    if row:
+                        full_releases.append(dict(row))
+                canonical = next(m for m in full_releases if m['id'] == rel['id'])
+                break
+            console.print('  [red]Could not find release — try again[/red]')
 
-        console.print('  [dim]number / \\[s]kip / \\[q]uit / Spotify URL:[/dim] ', end='')
+        else:
+            console.print(f'  [yellow]Enter 1–{len(full_releases)}, s, q, or a Spotify/MB URL[/yellow]')
+
+        console.print('  [dim]number / \\[s]kip / \\[q]uit / Spotify or MB URL:[/dim] ', end='')
 
     if not canonical:
         return
