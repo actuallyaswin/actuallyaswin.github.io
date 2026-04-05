@@ -3,7 +3,14 @@ const ViewTopArtists = (() => {
     let sortBy = 'listens';
     let countLimit = 10;
     let viewMode = 'list';
+    let range = 'all';
     let cachedResults = [];
+
+    const CERT_LABELS = {
+        gold:     'Gold — 250+ plays',
+        platinum: 'Platinum — 500+ plays',
+        diamond:  'Diamond — 1,000+ plays',
+    };
 
     function mount(container, db, params) {
         _db = db;
@@ -35,14 +42,23 @@ const ViewTopArtists = (() => {
                     </div>
                 </div>
                 <div class="control-block">
+                    <span class="control-block-label">Range</span>
+                    <div class="sort-controls">
+                        <button class="sort-btn${range === 'week'  ? ' active' : ''}" data-range="week">Week</button>
+                        <button class="sort-btn${range === 'month' ? ' active' : ''}" data-range="month">Month</button>
+                        <button class="sort-btn${range === 'year'  ? ' active' : ''}" data-range="year">Year</button>
+                        <button class="sort-btn${range === 'all'   ? ' active' : ''}" data-range="all">All</button>
+                    </div>
+                </div>
+                <div class="control-block">
                     <span class="control-block-label">#</span>
                     <div class="sort-controls">${countBtns}</div>
                 </div>
                 <div class="control-block">
                     <span class="control-block-label">Display</span>
                     <div class="sort-controls">
-                        <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
-                        <button class="sort-btn${viewMode === 'tiles' ? ' active' : ''}" data-view="tiles" title="Tiles"><i data-lucide="layout-grid"></i></button>
+                        <button class="sort-btn${viewMode === 'list'    ? ' active' : ''}" data-view="list"    title="List"><i data-lucide="layout-list"></i></button>
+                        <button class="sort-btn${viewMode === 'tiles'   ? ' active' : ''}" data-view="tiles"   title="Tiles"><i data-lucide="layout-grid"></i></button>
                         <button class="sort-btn${viewMode === 'collage' ? ' active' : ''}" data-view="collage" title="Collage"><i data-lucide="grid-3x3"></i></button>
                     </div>
                 </div>
@@ -64,21 +80,33 @@ const ViewTopArtists = (() => {
 
     function unmount() {}
 
+    function _rangeStartTs() {
+        if (range === 'all') return null;
+        const now = Math.floor(Date.now() / 1000);
+        if (range === 'week')  return now - 7   * 86400;
+        if (range === 'month') return now - 30  * 86400;
+        if (range === 'year')  return now - 365 * 86400;
+        return null;
+    }
+
     function loadArtists() {
         const orderClause = sortBy === 'minutes' ? 'total_minutes DESC' : 'total_listens DESC';
+        const startTs = _rangeStartTs();
+        const tsFilter = startTs ? `AND l.timestamp >= ${startTs}` : '';
 
         const result = _db.exec(`
             SELECT
                 a.id,
                 a.name,
                 a.image_url,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN l.id END) as unique_tracks,
+                a.cert,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as unique_tracks,
                 COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
-                CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
             FROM artists a
             LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
             LEFT JOIN tracks t ON ta.track_id = t.id
-            LEFT JOIN listens l ON t.id = l.track_id
+            LEFT JOIN listens l ON t.id = l.track_id ${tsFilter}
             WHERE a.hidden = 0
             GROUP BY a.id
             HAVING total_listens > 0
@@ -89,19 +117,6 @@ const ViewTopArtists = (() => {
         cachedResults = result ? result.values : [];
         renderArtists();
     }
-
-    function getCertTier(totalListens) {
-        if (totalListens >= 1000) return 'diamond';
-        if (totalListens >= 500)  return 'platinum';
-        if (totalListens >= 250)  return 'gold';
-        return null;
-    }
-
-    const CERT_LABELS = {
-        gold: 'Gold — 250+ plays',
-        platinum: 'Platinum — 500+ plays',
-        diamond: 'Diamond — 1,000+ plays',
-    };
 
     function renderArtists() {
         const container = document.getElementById('artistsContainer');
@@ -127,7 +142,7 @@ const ViewTopArtists = (() => {
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedResults.forEach((row, i) => {
-                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes] = row;
                 const card = createWideCard({
                     href: `?view=artist&id=${encodeURIComponent(id)}`,
                     imageUrl,
@@ -137,7 +152,6 @@ const ViewTopArtists = (() => {
                     totalMinutes,
                     rounded: true
                 });
-                const cert = getCertTier(totalListens);
                 if (cert) card.classList.add(`release-card-cert-${cert}`);
                 if (i >= countLimit) card.style.display = 'none';
                 container.appendChild(card);
@@ -145,8 +159,7 @@ const ViewTopArtists = (() => {
         } else {
             container.className = 'image-grid';
             cachedResults.forEach((row, i) => {
-                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
-                const cert = getCertTier(totalListens);
+                const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes] = row;
                 const card = document.createElement('a');
                 card.className = 'image-card';
                 card.href = `?view=artist&id=${encodeURIComponent(id)}`;
@@ -195,6 +208,11 @@ const ViewTopArtists = (() => {
     function setupControls() {
         setupToggleGroup('[data-sort]', btn => {
             sortBy = btn.dataset.sort;
+            loadArtists();
+        });
+
+        setupToggleGroup('[data-range]', btn => {
+            range = btn.dataset.range;
             loadArtists();
         });
 
