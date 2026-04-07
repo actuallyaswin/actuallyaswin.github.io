@@ -1499,6 +1499,132 @@ a.stat-card:hover .stat-label::after {
     min-width: 1px;
 }
 
+/* === Genre Commit Graph === */
+#genreCommitsSection {
+    margin-bottom: 2.5rem;
+}
+.commits-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.commits-header h2 { margin-bottom: 0; }
+.commits-mode-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.7rem;
+    padding: 3px 9px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+    line-height: 1;
+}
+.commits-mode-btn svg { width: 11px; height: 11px; }
+.commits-mode-btn:hover {
+    border-color: var(--text-secondary);
+    color: var(--text-primary);
+}
+.commits-grid {
+    /* grid-template-columns set dynamically in JS */
+    display: grid;
+    gap: 3px;
+    user-select: none;
+}
+.commit-year-label {
+    font-size: 0.6rem;
+    color: var(--text-tertiary);
+    text-align: center;
+    padding-bottom: 2px;
+    line-height: 1;
+}
+.commit-month-label {
+    font-size: 0.6rem;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 4px;
+    line-height: 1;
+}
+.commit-cell {
+    width: 24px;
+    height: 16px;
+    border-radius: 2px;
+}
+.commit-has-data {
+    cursor: default;
+    transition: opacity 0.1s;
+}
+.commit-has-data:hover {
+    opacity: 0.75;
+    outline: 1.5px solid var(--text-secondary);
+    outline-offset: 1px;
+}
+.commit-empty {
+    background: var(--border);
+    opacity: 0.35;
+}
+.commit-future {
+    background: transparent;
+}
+
+/* Floating tooltip */
+.commit-tooltip {
+    position: fixed;
+    display: none;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 13px;
+    font-size: 0.8125rem;
+    z-index: 1000;
+    pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    min-width: 160px;
+    max-width: 220px;
+}
+.ctt-header {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+.ctt-count {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    margin-bottom: 7px;
+}
+.ctt-genres {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.ctt-genre {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+.ctt-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.ctt-name {
+    flex: 1;
+    color: var(--text-primary);
+}
+.ctt-pct {
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+}
+
 /* === Stats Row (Pulse + Recent Plays side-by-side) === */
 .stats-row {
     display: grid;

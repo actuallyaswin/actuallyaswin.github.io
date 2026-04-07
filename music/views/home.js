@@ -56,6 +56,13 @@ const ViewHome = (() => {
                     <h2>Recent Plays</h2>
                     <div class="recent-plays-list" id="homeRecentPlaysList"></div>
                 </section>
+                <section id="genreCommitsSection" hidden>
+                    <div class="commits-header">
+                        <h2>Taste Over Time</h2>
+                        <button id="colorModeToggle" class="commits-mode-btn"></button>
+                    </div>
+                    <div class="commits-grid" id="commitsGrid"></div>
+                </section>
             </div>
 
             <footer>
@@ -71,6 +78,7 @@ const ViewHome = (() => {
         setupReleaseSearch();
         loadWeeklyReleases();
         loadHomeRecentPlays();
+        loadGenreCommits();
     }
 
     function unmount() {
@@ -335,6 +343,164 @@ const ViewHome = (() => {
                 </div>
             `;
         }).join('');
+
+        section.removeAttribute('hidden');
+    }
+
+    function loadGenreCommits() {
+        let colorMode = 'top';
+
+        const result = _db.exec(`
+            SELECT year, month, listen_count, color_hex, top_genre_color_hex, dominant_genre, genres_json
+            FROM monthly_genre_profile
+            ORDER BY year, month
+        `)[0];
+
+        const section = document.getElementById('genreCommitsSection');
+        const grid    = document.getElementById('commitsGrid');
+        if (!section || !grid || !result || result.values.length === 0) return;
+
+        const profileMap = {};
+        result.values.forEach(([year, month, count, blendedColor, topColor, dominant, genresJson]) => {
+            profileMap[`${year}-${month}`] = {
+                year, month, count, dominant,
+                blendedColor, topColor,
+                genres: genresJson ? JSON.parse(genresJson) : [],
+            };
+        });
+
+        const allYears  = result.values.map(r => r[0]);
+        const minYear   = Math.min(...allYears);
+        const maxYear   = Math.max(...allYears);
+        const nYears    = maxYear - minYear + 1;
+        const now       = new Date();
+        const curYear   = now.getFullYear();
+        const curMonth  = now.getMonth() + 1;
+
+        // Transposed: months = rows (Y-axis), years = columns (X-axis)
+        // Columns: month-label + one per year
+        grid.style.gridTemplateColumns = `2rem repeat(${nYears}, 24px)`;
+
+        const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const MONTHS_LONG  = ['January','February','March','April','May','June',
+                              'July','August','September','October','November','December'];
+
+        // Header row: blank corner + year labels
+        const corner = document.createElement('div');
+        corner.className = 'commit-month-label';
+        grid.appendChild(corner);
+        for (let year = minYear; year <= maxYear; year++) {
+            const el = document.createElement('div');
+            el.className = 'commit-year-label';
+            el.textContent = '\u2019' + String(year).slice(2); // '11, '12, …
+            grid.appendChild(el);
+        }
+
+        // Month rows
+        for (let month = 1; month <= 12; month++) {
+            const mLabel = document.createElement('div');
+            mLabel.className = 'commit-month-label';
+            mLabel.textContent = MONTHS_SHORT[month - 1];
+            grid.appendChild(mLabel);
+
+            for (let year = minYear; year <= maxYear; year++) {
+                const cell     = document.createElement('div');
+                cell.className = 'commit-cell';
+                const isFuture = year > curYear || (year === curYear && month > curMonth);
+                const profile  = profileMap[`${year}-${month}`];
+
+                if (isFuture) {
+                    cell.classList.add('commit-future');
+                } else if (!profile || profile.count === 0) {
+                    cell.classList.add('commit-empty');
+                } else {
+                    cell.classList.add('commit-has-data');
+                    cell.dataset.year         = year;
+                    cell.dataset.month        = month;
+                    cell.dataset.count        = profile.count;
+                    cell.dataset.genres       = JSON.stringify(profile.genres);
+                    cell.dataset.blendedColor = profile.blendedColor;
+                    cell.dataset.topColor     = profile.topColor;
+                    cell.style.backgroundColor = profile.topColor;
+                }
+
+                grid.appendChild(cell);
+            }
+        }
+
+        // Floating tooltip
+        const tooltip = document.createElement('div');
+        tooltip.className = 'commit-tooltip';
+        document.body.appendChild(tooltip);
+
+        function showTooltip(cell, e) {
+            const year   = cell.dataset.year;
+            const month  = parseInt(cell.dataset.month);
+            const count  = parseInt(cell.dataset.count);
+            const genres = JSON.parse(cell.dataset.genres || '[]');
+
+            const genreRows = genres.slice(0, 5).map(g =>
+                `<div class="ctt-genre">` +
+                `<span class="ctt-dot" style="background:${escapeHtml(g.color)}"></span>` +
+                `<span class="ctt-name">${escapeHtml(g.genre)}</span>` +
+                `<span class="ctt-pct">${g.pct}%</span>` +
+                `</div>`
+            ).join('');
+
+            tooltip.innerHTML =
+                `<div class="ctt-header">${MONTHS_LONG[month - 1]} ${year}</div>` +
+                `<div class="ctt-count">${formatNumber(count)} listens</div>` +
+                (genreRows ? `<div class="ctt-genres">${genreRows}</div>` : '');
+
+            positionTooltip(e);
+            tooltip.style.display = 'block';
+        }
+
+        function positionTooltip(e) {
+            const x = e.clientX + 14;
+            const y = e.clientY - tooltip.offsetHeight / 2;
+            tooltip.style.left = Math.min(x, window.innerWidth  - tooltip.offsetWidth  - 12) + 'px';
+            tooltip.style.top  = Math.max(8, Math.min(y, window.innerHeight - tooltip.offsetHeight - 8)) + 'px';
+        }
+
+        grid.addEventListener('mouseover', e => {
+            const cell = e.target.closest('.commit-has-data');
+            if (!cell) { tooltip.style.display = 'none'; return; }
+            showTooltip(cell, e);
+        });
+        grid.addEventListener('mousemove', e => {
+            if (tooltip.style.display === 'none') return;
+            if (!e.target.closest('.commit-has-data')) { tooltip.style.display = 'none'; return; }
+            positionTooltip(e);
+        });
+        grid.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+
+        grid.addEventListener('touchstart', e => {
+            const cell = e.target.closest('.commit-has-data');
+            if (!cell) return;
+            e.preventDefault();
+            const touch = e.touches[0];
+            showTooltip(cell, { clientX: touch.clientX, clientY: touch.clientY });
+        }, { passive: false });
+        document.addEventListener('touchstart', e => {
+            if (!grid.contains(e.target)) tooltip.style.display = 'none';
+        });
+
+        // Color mode toggle
+        const toggleBtn = document.getElementById('colorModeToggle');
+        function applyColorMode(mode) {
+            colorMode = mode;
+            const isTop = mode === 'top';
+            toggleBtn.innerHTML = isTop
+                ? `<i data-lucide="circle-dot"></i> top`
+                : `<i data-lucide="layers"></i> blended`;
+            lucide.createIcons();
+            grid.querySelectorAll('.commit-has-data').forEach(cell => {
+                cell.style.backgroundColor = isTop ? cell.dataset.topColor : cell.dataset.blendedColor;
+            });
+        }
+        applyColorMode(colorMode);
+        toggleBtn.addEventListener('click', () => applyColorMode(colorMode === 'top' ? 'blended' : 'top'));
 
         section.removeAttribute('hidden');
     }
