@@ -268,6 +268,61 @@ header h1 {
     text-decoration: underline;
 }
 
+.genre-breadcrumb {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.125rem;
+    font-size: 0.8125rem;
+    color: var(--text-tertiary);
+    margin: 0 0 0.5rem;
+}
+
+.genre-breadcrumb svg {
+    width: 0.875rem;
+    height: 0.875rem;
+    flex-shrink: 0;
+    vertical-align: middle;
+}
+
+.bc-sep {
+    color: var(--text-tertiary);
+    opacity: 0.5;
+    margin: 0 0.15rem;
+}
+
+.bc-home {
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+}
+
+.bc-home:hover {
+    opacity: 1;
+}
+
+.bc-link {
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 0 0.1rem;
+    transition: color 0.15s;
+}
+
+.bc-link:hover {
+    color: var(--primary);
+}
+
+.bc-dot {
+    color: var(--text-tertiary);
+    margin: 0 0.1rem;
+}
+
+.bc-current {
+    color: var(--text-primary);
+}
+
 .genre-tag-secondary {
     color: var(--text-tertiary);
 }

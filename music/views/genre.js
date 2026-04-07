@@ -20,6 +20,7 @@ const ViewGenre = (() => {
             </div>
 
             <header>
+                <nav class="genre-breadcrumb" id="genreBreadcrumb"></nav>
                 <h1 id="genreName">Loading...</h1>
                 <p class="subtitle" id="genreSubtitle"></p>
             </header>
@@ -40,6 +41,36 @@ const ViewGenre = (() => {
     }
 
     function unmount() {}
+
+    function loadGenreBreadcrumb(genreName, safeId) {
+        const el = document.getElementById('genreBreadcrumb');
+        if (!el) return;
+
+        const result = _db.exec(`
+            SELECT p.aoty_id, p.name
+            FROM genre_relations gr
+            JOIN genres p ON p.aoty_id = gr.parent_aoty_id
+            WHERE gr.child_aoty_id = ${safeId}
+            ORDER BY p.name
+        `)[0];
+
+        const home = `<a href="?" class="bc-home"><i data-lucide="home"></i></a>`;
+        const sep  = `<i data-lucide="chevron-right" class="bc-sep"></i>`;
+        const cur  = `<span class="bc-current">${escapeHtml(genreName)}</span>`;
+
+        if (!result || result.values.length === 0) {
+            // Top-level genre: home > Current
+            el.innerHTML = `${home}${sep}${cur}`;
+        } else {
+            const parentLinks = result.values
+                .map(([id, name]) =>
+                    `<a href="?view=genre&id=${id}" class="bc-link">${escapeHtml(name)}</a>`)
+                .join(`<span class="bc-dot">·</span>`);
+            el.innerHTML = `${home}${sep}${parentLinks}${sep}${cur}`;
+        }
+
+        lucide.createIcons();
+    }
 
     function loadGenreInfo() {
         const safeId = parseInt(_genreId);
@@ -69,6 +100,7 @@ const ViewGenre = (() => {
         document.getElementById('genreSubtitle').textContent =
             `${formatNumber(releaseCount)} releases · ${formatNumber(totalPlays)} plays`;
         document.title = `aswin.db/music - ${name}`;
+        loadGenreBreadcrumb(name || 'Unknown Genre', safeId);
     }
 
     function loadGenreReleases() {
