@@ -7,8 +7,9 @@ into master.sqlite, then interactively resolves unmatched listens
 album-by-album.
 
 Usage:
-  sync fetch [--parquet FILE] [--sqlite FILE] [--live] [--since TIMESTAMP]
-  sync match [--limit N]
+  sync fetch [--parquet FILE] [--sqlite FILE] [--no-live] [--full] [--since N]
+             [--spotify [DIR]]
+  sync match [--limit N] [--skipped] [--recent]
   sync status
 """
 
@@ -52,6 +53,10 @@ DB_PATH    = os.path.join(_DIR, 'master.sqlite')
 OLD_SQLITE = os.path.join(_DIR, 'listening_history.sqlite')
 MDB        = os.path.join(_DIR, 'mdb.py')
 PYTHON     = sys.executable
+
+_SP_HISTORY_DEFAULT = os.path.join(
+    os.path.expanduser('~'), 'Downloads', 'Spotify Extended Streaming History'
+)
 
 LASTFM_API = 'https://ws.audioscrobbler.com/2.0/'
 SP_TOKEN   = 'https://accounts.spotify.com/api/token'
@@ -146,6 +151,12 @@ def _migrate(conn: sqlite3.Connection):
         CREATE UNIQUE INDEX IF NOT EXISTS listens_ts_src
             ON listens(timestamp, raw_source_id);
     ''')
+    # Spotify-sourced columns (added later; safe to run every open).
+    cols = {row[1] for row in conn.execute('PRAGMA table_info(listens)').fetchall()}
+    if 'ms_played' not in cols:
+        conn.execute('ALTER TABLE listens ADD COLUMN ms_played INTEGER')
+    if 'skipped' not in cols:
+        conn.execute('ALTER TABLE listens ADD COLUMN skipped INTEGER DEFAULT 0')
     conn.commit()
 
 
@@ -166,6 +177,35 @@ def bulk_rematch(conn: sqlite3.Connection) -> int:
           AND raw_source_id GLOB '????????-????-????-????-????????????'
           AND EXISTS (
               SELECT 1 FROM tracks t WHERE t.mbid = listens.raw_source_id
+          )
+    ''')
+    conn.commit()
+    return cur.rowcount
+
+
+def dedup_spotify_lastfm(conn: sqlite3.Connection) -> int:
+    """Remove Last.fm listens that duplicate a Spotify listen for the same track.
+
+    Called after bulk_rematch (which assigns track_ids to Last.fm rows). At that
+    point some Last.fm rows will share a track_id with a Spotify listen within
+    ±120 seconds — the same physical play captured by both sources.
+
+    We keep the Spotify listen (it has ms_played / skipped data) and delete the
+    Last.fm one. Only deletes Last.fm rows that have track_id already set;
+    unmatched Last.fm rows are left alone.
+
+    Returns the number of deleted rows.
+    """
+    cur = conn.execute('''
+        DELETE FROM listens
+        WHERE source = 'lastfm'
+          AND track_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM listens sp
+              WHERE sp.source = 'spotify'
+                AND sp.track_id = listens.track_id
+                AND sp.timestamp BETWEEN listens.timestamp - 120
+                                     AND listens.timestamp + 120
           )
     ''')
     conn.commit()
@@ -595,6 +635,46 @@ def _print_db_result(i: int, row: dict) -> None:
     console.print(f'       [dim green]db:{row["id"]}[/dim green]')
 
 
+_AUTO_MATCH_THRESHOLD = 0.90
+
+
+def _check_track_match_rate(
+    conn: sqlite3.Connection, release_id: str, artist: str, album: str
+) -> tuple[float, list[str]]:
+    """Return (match_rate, unmatched_names) for a candidate DB release.
+
+    match_rate = fraction of unique scrobbled track names (ETI-stripped) that
+    appear in the release's tracklist.  unmatched_names lists the raw names
+    that didn't match (capped at 5 for display).
+    """
+    scrobbled = conn.execute('''
+        SELECT DISTINCT raw_track_name FROM listens
+        WHERE  track_id IS NULL
+          AND  raw_artist_name = ?
+          AND  raw_album_name  = ?
+    ''', [artist, album]).fetchall()
+    scrobbled_names = [r[0] for r in scrobbled]
+    if not scrobbled_names:
+        return 0.0, []
+
+    db_tracks = conn.execute('''
+        SELECT title FROM tracks WHERE release_id = ? AND hidden = 0
+    ''', [release_id]).fetchall()
+    db_keys = {_ascii_key(_parse_track_title(r[0]).clean_title) for r in db_tracks}
+
+    unmatched = []
+    matched_count = 0
+    for name in scrobbled_names:
+        clean = _parse_track_title(name).clean_title
+        if _ascii_key(clean) in db_keys:
+            matched_count += 1
+        else:
+            unmatched.append(name)
+
+    rate = matched_count / len(scrobbled_names)
+    return rate, unmatched[:5]
+
+
 # ── Shared insert helper ──────────────────────────────────────────────────────
 
 _INSERT_SQL = '''
@@ -606,70 +686,247 @@ _INSERT_SQL = '''
          :raw_album_name, :raw_source_id, :source)
 '''
 
+_INSERT_SQL_SPOTIFY = '''
+    INSERT OR IGNORE INTO listens
+        (timestamp, year, month, raw_track_name, raw_artist_name,
+         raw_album_name, raw_source_id, source, track_id, ms_played, skipped)
+    VALUES
+        (:timestamp, :year, :month, :raw_track_name, :raw_artist_name,
+         :raw_album_name, :raw_source_id, :source, :track_id, :ms_played, :skipped)
+'''
+
 
 def _insert_rows(conn: sqlite3.Connection, rows: list) -> int:
+    """Insert rows, returning the number actually inserted (ignoring duplicates)."""
+    before = conn.total_changes
     conn.executemany(_INSERT_SQL, rows)
     conn.commit()
-    return len(rows)
+    return conn.total_changes - before
 
 
-# ── fetch ─────────────────────────────────────────────────────────────────────
+# ── spotify ────────────────────────────────────────────────────────────────────
+
+def _iter_spotify_history(history_dir: str):
+    """Yield qualifying play records from Spotify Extended Streaming History JSON files.
+
+    Qualifying: track (not podcast/audiobook), not incognito, ms_played >= 30s.
+    Files matched: Streaming_History_Audio_*.json
+    """
+    import glob
+    for path in sorted(glob.glob(os.path.join(history_dir, 'Streaming_History_Audio_*.json'))):
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        for r in data:
+            if r.get('episode_name') or r.get('audiobook_title'):
+                continue
+            if r.get('incognito_mode'):
+                continue
+            if not r.get('master_metadata_track_name'):
+                continue
+            if (r.get('ms_played') or 0) < 30_000:
+                continue
+            yield r
+
+
+def cmd_fetch_spotify(conn: sqlite3.Connection, history_dir: str) -> None:
+    """Import listens from Spotify Extended Streaming History into master.sqlite.
+
+    For plays whose Spotify track ID is already in the tracks table:
+      - Skip if a Last.fm scrobble for the same track exists within ±120s
+        (avoids double-counting the same physical listen)
+      - Otherwise insert with source='spotify', track_id pre-populated,
+        ms_played and skipped populated from Spotify metadata
+
+    After insertion, prints a ranked list of albums not yet imported so the
+    caller knows what to feed into `mdb import` next.
+    """
+    import glob
+
+    if not os.path.isdir(history_dir):
+        console.print(f'[red]Spotify history directory not found: {history_dir}[/red]')
+        console.print('[dim]Pass --spotify <DIR> to specify the location.[/dim]')
+        return
+
+    # Build spotify_track_id → ULID lookup from our catalog
+    track_lookup = {
+        row[0]: row[1]
+        for row in conn.execute(
+            'SELECT spotify_id, id FROM tracks WHERE spotify_id IS NOT NULL'
+        ).fetchall()
+    }
+
+    total = 0
+    matched = 0
+    skipped_dup = 0
+    batch: list = []
+    inserted = 0
+    unmatched: dict = {}  # (artist, album) → play count
+
+    console.print(f'[bold]Spotify history:[/bold] {history_dir}')
+
+    for r in _iter_spotify_history(history_dir):
+        total += 1
+        sp_id = r['spotify_track_uri'].split(':')[2]
+        ts    = int(datetime.fromisoformat(r['ts'].replace('Z', '+00:00')).timestamp())
+        dt    = datetime.fromtimestamp(ts, tz=timezone.utc)
+
+        if sp_id not in track_lookup:
+            key = (
+                r['master_metadata_album_artist_name'],
+                r['master_metadata_album_album_name'],
+            )
+            unmatched[key] = unmatched.get(key, 0) + 1
+            continue
+
+        track_id = track_lookup[sp_id]
+        matched += 1
+
+        # Skip if a Last.fm scrobble already covers this listen (±120s, same track)
+        dup = conn.execute(
+            "SELECT 1 FROM listens "
+            "WHERE track_id = ? AND timestamp BETWEEN ? AND ? AND source = 'lastfm' LIMIT 1",
+            (track_id, ts - 120, ts + 120),
+        ).fetchone()
+        if dup:
+            skipped_dup += 1
+            continue
+
+        batch.append({
+            'timestamp':      ts,
+            'year':           dt.year,
+            'month':          dt.month,
+            'raw_track_name': r['master_metadata_track_name'],
+            'raw_artist_name': r['master_metadata_album_artist_name'],
+            'raw_album_name': r['master_metadata_album_album_name'],
+            'raw_source_id':  r['spotify_track_uri'],
+            'source':         'spotify',
+            'track_id':       track_id,
+            'ms_played':      r['ms_played'],
+            'skipped':        1 if r.get('skipped') else 0,
+        })
+
+        if len(batch) >= 1_000:
+            before = conn.total_changes
+            conn.executemany(_INSERT_SQL_SPOTIFY, batch)
+            conn.commit()
+            inserted += conn.total_changes - before
+            batch.clear()
+            console.print(f'  {total:,} records scanned…', end='\r')
+
+    if batch:
+        before = conn.total_changes
+        conn.executemany(_INSERT_SQL_SPOTIFY, batch)
+        conn.commit()
+        inserted += conn.total_changes - before
+
+    console.print(f'  {total:,} qualifying plays scanned                   ')
+    console.print(f'  {matched:,} with tracks already in catalog')
+    console.print(f'  {skipped_dup:,} already covered by Last.fm scrobbles (skipped)')
+    console.print(f'  [green]{inserted:,} new Spotify listens inserted[/green]')
+
+    if unmatched:
+        sorted_albums = sorted(unmatched.items(), key=lambda x: -x[1])
+        console.print()
+        console.print(
+            f'[bold]{len(sorted_albums):,} albums not yet imported[/bold]'
+            f'  [dim]({sum(unmatched.values()):,} plays missing)[/dim]'
+            f'  — top candidates:'
+        )
+        for (artist, album), count in sorted_albums[:25]:
+            console.print(f'  {count:4d}  {artist} — {album}')
+        if len(sorted_albums) > 25:
+            console.print(f'  [dim]… {len(sorted_albums) - 25:,} more albums[/dim]')
+        console.print(
+            '  [dim]Run [bold]mdb import <url>[/bold] then re-run '
+            '[bold]sync fetch --spotify[/bold] to pick them up.[/dim]'
+        )
 
 def cmd_fetch(args):
     conn = open_db()
 
-    def _drain(label: str, source):
-        """Consume an iterator in batches, insert with progress display."""
+    def _drain(label: str, source, early_stop: bool = False):
+        """Consume an iterator in batches, insert with progress display.
+
+        If early_stop=True, halts as soon as a full batch yields zero new rows
+        (used for live fetch when paginating into already-imported history).
+        Returns total rows yielded from source.
+        """
         batch = []
         n = 0
         for row in source:
             batch.append(row)
             n += 1
             if len(batch) >= 5_000:
-                _insert_rows(conn, batch)
+                new = _insert_rows(conn, batch)
                 batch = []
                 console.print(f'  {n:,} rows…', end='\r')
+                if early_stop and new == 0:
+                    console.print(f'  [dim]reached already-imported scrobbles, stopping[/dim]      ')
+                    return n
         if batch:
             _insert_rows(conn, batch)
         console.print(f'  [green]{n:,} rows loaded from {label}[/green]      ')
+        return n
 
-    # 1 — Parquet (primary: has track names + mostly valid MBIDs)
+    # 1 — Parquet (legacy migration; skipped silently if file absent)
     parquet_path = args.parquet or os.path.join(
         os.path.expanduser('~'), 'Downloads', 'recenttracks.parquet'
     )
-    if os.path.exists(parquet_path):
+    if args.parquet or os.path.exists(parquet_path):
         console.print(f'[bold]Parquet:[/bold] {parquet_path}')
         _drain('parquet', _iter_parquet(parquet_path))
-    else:
-        console.print(f'[dim]Parquet not found at {parquet_path}, skipping[/dim]')
 
-    # 2 — Old sqlite (supplement: ~700 listens not in parquet + older data insurance)
+    # 2 — Old sqlite (legacy migration; skipped silently if file absent)
     old_path = args.sqlite or OLD_SQLITE
-    if os.path.exists(old_path):
+    if args.sqlite or os.path.exists(old_path):
         console.print(f'[bold]Old sqlite:[/bold] {old_path}')
         _drain('old sqlite', _iter_old_sqlite(old_path))
-    else:
-        console.print(f'[dim]Old sqlite not found at {old_path}, skipping[/dim]')
 
-    # 3 — Live Last.fm API (optional, for incremental syncs going forward)
-    if args.live:
+    # 3 — Live Last.fm API (default; skip with --no-live)
+    if not args.no_live:
         _load_env()
         api_key = os.environ.get('LASTFM_API_KEY')
         user    = os.environ.get('LASTFM_USER')
         if not (api_key and user):
             console.print('[red]Set LASTFM_API_KEY and LASTFM_USER in music/.env[/red]')
         else:
+            # Auto-calculate since from DB unless --full or --since explicitly given
+            if args.full:
+                since = 0
+            elif args.since is not None:
+                since = args.since
+            else:
+                row   = conn.execute(
+                    "SELECT MAX(timestamp) FROM listens WHERE source = 'lastfm'"
+                ).fetchone()
+                since = row[0] or 0
+
             console.print(f'[bold]Last.fm API:[/bold] {user}')
-            since = args.since or 0
             if since:
-                console.print(f'  fetching scrobbles after {datetime.fromtimestamp(since, tz=timezone.utc)}')
-            _drain('Last.fm API', _iter_lastfm_api(api_key, user, since=since))
+                console.print(
+                    f'  incremental fetch since '
+                    f'{datetime.fromtimestamp(since, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}'
+                )
+            _drain('Last.fm API', _iter_lastfm_api(api_key, user, since=since),
+                   early_stop=not since)
+
+    # 4 — Spotify Extended Streaming History (opt-in with --spotify)
+    if args.spotify is not None:
+        history_dir = args.spotify if args.spotify else _SP_HISTORY_DEFAULT
+        console.print()
+        cmd_fetch_spotify(conn, history_dir)
 
     # Auto-match whatever we can via track MBID
     console.print()
     console.print('[bold]Auto-matching by track MBID…[/bold]')
     matched = bulk_rematch(conn)
     console.print(f'  [green]{matched:,} listens matched to catalog tracks[/green]')
+
+    # Remove Last.fm listens that are now duplicated by a Spotify listen (same
+    # track_id, within ±120s). bulk_rematch must run first so track_ids are set.
+    removed = dedup_spotify_lastfm(conn)
+    if removed:
+        console.print(f'  [dim]{removed:,} Last.fm listens removed (covered by Spotify)[/dim]')
 
     # Final summary
     total    = conn.execute('SELECT COUNT(*) FROM listens').fetchone()[0]
@@ -748,6 +1005,9 @@ def cmd_match(args):
     # Lives for the duration of cmd_match, shared across batches.
     _pool = concurrent.futures.ThreadPoolExecutor(max_workers=5,
                                                   thread_name_prefix='prefetch')
+
+    auto_matched_albums   = 0
+    auto_matched_listens  = 0
 
     while True:
         # Top unresolved albums, excluding permanently-hidden (and deferred unless --skipped)
@@ -845,6 +1105,47 @@ def cmd_match(args):
             count  = row['listen_count']
             tracks = row['unique_tracks']
 
+            # DB search happens first so auto-match can skip the interactive prompt.
+            db_results = _db_search_releases(conn, artist, album)
+
+            # ── Auto-match check ─────────────────────────────────────────────
+            # Conditions: exactly 1 DB result, exact ascii_key title match, ≥90%
+            # of scrobbled track names found in that release's tracklist.
+            if (
+                len(db_results) == 1
+                and _ascii_key(db_results[0]['title']) == _ascii_key(album)
+            ):
+                release = db_results[0]
+                rate, unmatched_names = _check_track_match_rate(conn, release['id'], artist, album)
+                if rate >= _AUTO_MATCH_THRESHOLD:
+                    matched = bulk_rematch_by_name(conn, [release['id']], artist, album)
+                    if matched:
+                        pct = int(rate * 100)
+                        console.print(
+                            f'  [dim green]✓ auto[/dim green]  '
+                            f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
+                            f'[dim]({matched} listens, {pct}% track match)[/dim]'
+                        )
+                        auto_matched_albums  += 1
+                        auto_matched_listens += matched
+                        _pre_search(album_i)
+                        _pre_search(album_i + 1)
+                        continue
+                    # matched == 0 means bulk_rematch_by_name found nothing despite
+                    # the track-rate check passing — fall through to manual prompt.
+                else:
+                    # Rate below threshold — show manual prompt with rate hint
+                    pct = int(rate * 100)
+                    unmatched_str = ', '.join(f'"{n}"' for n in unmatched_names)
+                    console.print(
+                        f'  [dim yellow]~ partial match[/dim yellow]  '
+                        f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
+                        f'[dim]({pct}% track match)[/dim]'
+                    )
+                    if unmatched_names:
+                        console.print(f'  [dim yellow]  unmatched: {unmatched_str}[/dim yellow]')
+            # ── End auto-match check ─────────────────────────────────────────
+
             console.rule(f'[dim]{album_i}/{len(rows)}[/dim]', style='dim')
             console.print(f'  [bold]{artist}[/bold]  [dim]—  {album}[/dim]')
             if sort_recent:
@@ -878,10 +1179,9 @@ def cmd_match(args):
                 )
             console.print()
 
-            # DB results first (already-imported releases that match this album)
-            db_results = _db_search_releases(conn, artist, album)
-            for idx, row in enumerate(db_results, 1):
-                _print_db_result(idx, row)
+            # DB results (already-imported releases that match this album)
+            for idx, db_row in enumerate(db_results, 1):
+                _print_db_result(idx, db_row)
             if db_results:
                 console.print()
 
@@ -1062,6 +1362,12 @@ def cmd_match(args):
             break
 
     _pool.shutdown(wait=False)
+    if auto_matched_albums:
+        console.print(
+            f'\n  [dim green]Auto-matched {auto_matched_albums} album'
+            f'{"s" if auto_matched_albums != 1 else ""} '
+            f'({auto_matched_listens:,} listens)[/dim green]'
+        )
     conn.close()
 
 
@@ -1474,15 +1780,20 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     # fetch
-    pf = sub.add_parser('fetch', help='Load listens from parquet / old sqlite / Last.fm API')
+    pf = sub.add_parser('fetch', help='Sync listens from Last.fm API (and optionally legacy files)')
     pf.add_argument('--parquet', metavar='FILE',
-                    help='Path to recenttracks.parquet (default: ~/Downloads/recenttracks.parquet)')
+                    help='Force-load recenttracks.parquet (legacy migration)')
     pf.add_argument('--sqlite',  metavar='FILE',
-                    help='Path to listening_history.sqlite (default: music/listening_history.sqlite)')
-    pf.add_argument('--live',    action='store_true',
-                    help='Also fetch from Last.fm API (requires LASTFM_API_KEY + LASTFM_USER in .env)')
+                    help='Force-load listening_history.sqlite (legacy migration)')
+    pf.add_argument('--no-live', action='store_true',
+                    help='Skip Last.fm API fetch (offline / parquet-only run)')
+    pf.add_argument('--full',    action='store_true',
+                    help='Re-fetch all scrobbles from Last.fm (ignores incremental since)')
     pf.add_argument('--since',   type=int, metavar='TIMESTAMP',
-                    help='Unix timestamp — only fetch scrobbles after this point (for --live)')
+                    help='Override incremental since with an explicit Unix timestamp')
+    pf.add_argument('--spotify', nargs='?', const='', metavar='DIR',
+                    help='Import from Spotify Extended Streaming History '
+                         f'(default dir: {_SP_HISTORY_DEFAULT})')
 
     # match
     pm = sub.add_parser('match', help='Interactive album-by-album resolution')
