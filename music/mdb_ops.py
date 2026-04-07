@@ -194,6 +194,21 @@ CREATE TABLE IF NOT EXISTS release_genres (
     is_primary    INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (release_id, aoty_genre_id)
 );
+CREATE TABLE IF NOT EXISTS genre_relations (
+    parent_aoty_id INTEGER NOT NULL REFERENCES genres(aoty_id),
+    child_aoty_id  INTEGER NOT NULL REFERENCES genres(aoty_id),
+    PRIMARY KEY (parent_aoty_id, child_aoty_id)
+);
+CREATE TABLE IF NOT EXISTS monthly_genre_profile (
+    year               INTEGER NOT NULL,
+    month              INTEGER NOT NULL,
+    listen_count       INTEGER NOT NULL DEFAULT 0,
+    color_hex          TEXT    NOT NULL DEFAULT '#64748B',
+    top_genre_color_hex TEXT   NOT NULL DEFAULT '#64748B',
+    dominant_genre     TEXT,
+    genres_json        TEXT,
+    PRIMARY KEY (year, month)
+);
 CREATE TABLE IF NOT EXISTS listens (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp       INTEGER NOT NULL,
@@ -274,6 +289,28 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute(ddl)
         except Exception:
             pass  # column already exists
+
+    # Create genre_relations if it doesn't exist yet
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS genre_relations (
+            parent_aoty_id INTEGER NOT NULL REFERENCES genres(aoty_id),
+            child_aoty_id  INTEGER NOT NULL REFERENCES genres(aoty_id),
+            PRIMARY KEY (parent_aoty_id, child_aoty_id)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS monthly_genre_profile (
+            year               INTEGER NOT NULL,
+            month              INTEGER NOT NULL,
+            listen_count       INTEGER NOT NULL DEFAULT 0,
+            color_hex          TEXT    NOT NULL DEFAULT '#64748B',
+            top_genre_color_hex TEXT   NOT NULL DEFAULT '#64748B',
+            dominant_genre     TEXT,
+            genres_json        TEXT,
+            PRIMARY KEY (year, month)
+        )
+    ''')
+    conn.commit()
 
     # Migrate genres to use aoty_id as primary key (drop old auto-increment id)
     rg_cols = {row[1] for row in conn.execute('PRAGMA table_info(release_genres)').fetchall()}
@@ -684,3 +721,70 @@ def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
                     pass
 
     return created, updated
+
+
+def populate_genre_relations(conn: sqlite3.Connection, tree_path: str) -> tuple[int, int]:
+    """Parse a tab-indented genre tree file and populate genre_relations.
+
+    Each line's indentation level determines its depth; the immediate parent
+    is the nearest ancestor at depth-1.  A genre can appear multiple times
+    under different parents — each occurrence creates a distinct relation row.
+
+    Only inserts relations where both parent and child exist in the genres table.
+    Returns (inserted, skipped_unknown) counts.
+    """
+    # Build name → aoty_id lookup from DB
+    name_to_id = {
+        row[0]: row[1]
+        for row in conn.execute('SELECT name, aoty_id FROM genres').fetchall()
+    }
+
+    # Parse tree into (depth, name) pairs
+    entries = []
+    with open(tree_path, encoding='utf-8') as f:
+        for line in f:
+            stripped = line.rstrip('\n')
+            if not stripped.strip():
+                continue
+            depth = len(stripped) - len(stripped.lstrip('\t'))
+            name  = stripped.strip()
+            entries.append((depth, name))
+
+    # Walk entries, maintaining a parent-stack keyed by depth
+    inserted       = 0
+    skipped        = 0
+    parent_stack   = {}  # depth → name
+
+    for depth, name in entries:
+        parent_stack[depth] = name
+        # Remove any stale deeper entries
+        for d in list(parent_stack):
+            if d > depth:
+                del parent_stack[d]
+
+        if depth == 0:
+            continue  # top-level genre — no parent to link
+
+        parent_name = parent_stack.get(depth - 1)
+        if not parent_name:
+            continue
+
+        parent_id = name_to_id.get(parent_name)
+        child_id  = name_to_id.get(name)
+
+        if parent_id is None or child_id is None:
+            skipped += 1
+            continue
+
+        try:
+            conn.execute(
+                'INSERT OR IGNORE INTO genre_relations (parent_aoty_id, child_aoty_id)'
+                ' VALUES (?, ?)',
+                (parent_id, child_id),
+            )
+            inserted += 1
+        except sqlite3.IntegrityError:
+            pass
+
+    conn.commit()
+    return inserted, skipped
