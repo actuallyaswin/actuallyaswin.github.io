@@ -230,19 +230,21 @@ const ViewArtist = (() => {
         if (linksEl) {
             const links = [];
             if (spotifyId) {
-                links.push({ href: `https://open.spotify.com/artist/${spotifyId}`, img: 'images/spotify.svg', label: 'Spotify' });
+                links.push({ href: `https://open.spotify.com/artist/${spotifyId}`, service: 'spotify', label: 'Spotify' });
             }
             if (mbid) {
-                links.push({ href: `https://musicbrainz.org/artist/${mbid}`, img: 'images/musicbrainz.svg', label: 'MusicBrainz' });
+                links.push({ href: `https://musicbrainz.org/artist/${mbid}`, service: 'musicbrainz', label: 'MusicBrainz' });
             }
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/artist/${aotyId}/` : null);
             if (resolvedAotyUrl) {
-                links.push({ href: resolvedAotyUrl, img: 'images/aoty.png', label: 'Album of the Year' });
+                links.push({ href: resolvedAotyUrl, service: 'aoty', label: 'Album of the Year' });
             }
-            linksEl.innerHTML = links.map(({ href, img, label }) =>
-                `<a href="${href}" target="_blank" rel="noopener" class="release-link-icon" title="${label}">` +
-                `<img src="${img}" alt="${label}"></a>`
-            ).join('');
+            linksEl.innerHTML = links.map(({ href, service, label }) => {
+                const icon = service === 'aoty'
+                    ? `<img src="images/aoty.png" alt="${label}">`
+                    : `<span class="link-icon-mask" style="--icon-url: url('images/${service}.svg')"></span>`;
+                return `<a href="${href}" target="_blank" rel="noopener" class="release-link-icon" data-service="${service}" title="${label}">${icon}</a>`;
+            }).join('');
         }
 
         // Members of this group (supergroup display)

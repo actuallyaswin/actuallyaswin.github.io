@@ -258,6 +258,25 @@ header h1 {
     display: block;
 }
 
+/* SVG icons via CSS mask — allows brand color on hover */
+.link-icon-mask {
+    display: block;
+    width: 20px;
+    height: 20px;
+    background-color: var(--text-primary);
+    -webkit-mask: var(--icon-url) center / contain no-repeat;
+    mask: var(--icon-url) center / contain no-repeat;
+    transition: background-color 0.15s ease;
+}
+
+.release-link-icon[data-service="spotify"]:hover .link-icon-mask {
+    background-color: #1ED760;
+}
+
+.release-link-icon[data-service="musicbrainz"]:hover .link-icon-mask {
+    background-color: #BA478F;
+}
+
 .genre-tag {
     color: var(--text-secondary);
     text-decoration: none;

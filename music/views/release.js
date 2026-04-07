@@ -219,16 +219,16 @@ const ViewRelease = (() => {
         if (linksEl) {
             const iconLinks = [];
             if (spotifyId) {
-                iconLinks.push(`<a href="https://open.spotify.com/album/${spotifyId}" target="_blank" rel="noopener" class="release-link-icon" title="Spotify"><img src="images/spotify.svg" alt="Spotify"></a>`);
+                iconLinks.push(`<a href="https://open.spotify.com/album/${spotifyId}" target="_blank" rel="noopener" class="release-link-icon" data-service="spotify" title="Spotify"><span class="link-icon-mask" style="--icon-url: url('images/spotify.svg')"></span></a>`);
             }
             if (releaseGroupMbid) {
-                iconLinks.push(`<a href="https://musicbrainz.org/release-group/${releaseGroupMbid}" target="_blank" rel="noopener" class="release-link-icon" title="MusicBrainz"><img src="images/musicbrainz.svg" alt="MusicBrainz"></a>`);
+                iconLinks.push(`<a href="https://musicbrainz.org/release-group/${releaseGroupMbid}" target="_blank" rel="noopener" class="release-link-icon" data-service="musicbrainz" title="MusicBrainz"><span class="link-icon-mask" style="--icon-url: url('images/musicbrainz.svg')"></span></a>`);
             } else if (mbid) {
-                iconLinks.push(`<a href="https://musicbrainz.org/release/${mbid}" target="_blank" rel="noopener" class="release-link-icon" title="MusicBrainz"><img src="images/musicbrainz.svg" alt="MusicBrainz"></a>`);
+                iconLinks.push(`<a href="https://musicbrainz.org/release/${mbid}" target="_blank" rel="noopener" class="release-link-icon" data-service="musicbrainz" title="MusicBrainz"><span class="link-icon-mask" style="--icon-url: url('images/musicbrainz.svg')"></span></a>`);
             }
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/album/${aotyId}/` : null);
             if (resolvedAotyUrl) {
-                iconLinks.push(`<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" title="Album of the Year"><img src="images/aoty.png" alt="Album of the Year"></a>`);
+                iconLinks.push(`<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year"><img src="images/aoty.png" alt="Album of the Year"></a>`);
             }
 
             const scoreColor = n => `hsl(${Math.round(Math.min(n, 100) * 1.2)}, 65%, 40%)`;
