@@ -12,9 +12,9 @@ music/*.csv
 music/bulk_*.py
 music/update_*.py
 
-# SQLite databases (local only)
-music/master.sqlite
+# SQLite databases (local only — superseded by master.sqlite)
 music/listening_history.sqlite
+music/listening_history_overrides.sqlite
 
 # Music editor (private tool, not deployed)
 music_editor/listening_history.sqlite
