@@ -51,6 +51,7 @@ from mdb_ops import (
     _best_image, _sp_type, _VARIOUS_ARTISTS_SPOTIFY_ID, _is_various_artists,
     upsert_artist, upsert_release, upsert_tracks,
     upsert_artist_mb, upsert_release_mb, upsert_tracks_mb,
+    populate_genre_relations,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
@@ -2194,6 +2195,256 @@ _CERT_THRESHOLDS = [
 ]
 
 
+def cmd_genre_relations(args):
+    """Populate genre_relations from a tab-indented tree file."""
+    import os
+    tree_path = args.tree or os.path.join(os.path.expanduser('~'), 'genre_tree.txt')
+    if not os.path.exists(tree_path):
+        console.print(f'[red]Tree file not found: {tree_path}[/red]')
+        return
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+    # Clear existing relations so a re-run is idempotent
+    conn.execute('DELETE FROM genre_relations')
+    conn.commit()
+    inserted, skipped = populate_genre_relations(conn, tree_path)
+    conn.close()
+    console.print(f'  [green]✓ {inserted} genre relations inserted[/green]'
+                  f'  [dim]({skipped} tree entries not in DB)[/dim]')
+
+
+# -- Genre Commit Graph --
+
+_TOP_GENRE_HSL: dict[str, tuple[int, int, int]] = {
+    'Rock':                 ( 18, 78, 54),
+    'Electronic':           (191, 72, 50),
+    'Hip Hop':              ( 44, 82, 54),
+    'Pop':                  (323, 70, 61),
+    'R&B':                  (258, 57, 60),
+    'Metal':                (  4, 76, 49),
+    'Jazz':                 ( 33, 72, 54),
+    'Folk':                 ( 97, 55, 50),
+    'Experimental':         (233, 38, 52),  # blue-indigo (was 205, too close to Ambient)
+    'Punk':                 (160, 60, 50),
+    'Classical':            (283, 50, 57),
+    'Ambient':              (207, 58, 59),
+    'Dance':                (178, 67, 50),
+    'Funk':                 ( 28, 82, 55),  # boosted S to separate from Jazz/Rock
+    'Country':              ( 68, 62, 50),  # yellow-green/pastoral (was 38, too close to Jazz)
+    'Singer-Songwriter':    ( 35, 50, 63),  # muted warm (was 30,64,55 — too close to Marching Band)
+    'Psychedelia':          (292, 53, 58),
+    'Industrial':           (216, 28, 49),
+    'Reggae':               (145, 57, 48),
+    'Blues':                (223, 58, 54),
+    'Darkwave':             (248, 45, 44),
+    'Spoken Word':          (200, 18, 60),
+    'Glitch Pop':           (305, 68, 60),  # magenta (was 295, too close to Psychedelia)
+    'Hypnagogic Pop':       (310, 60, 63),
+    'Ambient Pop':          (217, 44, 68),  # periwinkle (was 200, too close to Ambient/Spoken Word)
+    'Sampledelia':          (188, 55, 54),
+    'Mashup':               (240, 52, 58),  # indigo (was 278, too close to Classical)
+    'Vapor':                (300, 50, 70),  # pastel magenta/lilac (was 228, too close to Blues)
+    'Field Recordings':     ( 28, 30, 48),
+    'Easy Listening':       (182, 42, 67),  # pastel teal (was 52, too close to warm cluster)
+    'New Age':              (168, 40, 59),
+    'Gospel':               ( 50, 60, 57),
+    'CCM':                  (265, 45, 67),  # soft lavender (was 48, too close to warm cluster)
+    'Ska':                  (132, 52, 50),
+    'Flamenco':             (348, 72, 44),  # wine-dark red (was 356, identical to Christmas)
+    'Regional':             ( 24, 42, 51),
+    'Standards':            ( 42, 46, 58),
+    'Comedy':               ( 58, 55, 62),
+    'Ragtime':              ( 35, 58, 52),
+    'Toypop':               (330, 65, 68),
+    'Polka':                ( 20, 55, 60),
+    'Marching Band':        ( 28, 52, 56),
+    'Chanson':              ( 14, 50, 58),
+    'MPB':                  (112, 48, 52),
+    'Hymns':                ( 50, 40, 60),
+    "Children's Music":     ( 55, 60, 68),
+    'Christmas':            (128, 65, 46),  # holly green (was 355, identical to Flamenco)
+    'ASMR':                 (190, 28, 68),  # very soft blue-gray (was 170, too close to New Age)
+    'Musical Parody':       ( 60, 48, 62),
+    'Musical Theatre & Entertainment': (45, 55, 63),
+}
+_DEFAULT_HSL = (210, 20, 60)  # fallback gray-blue for unmapped roots
+
+
+def _hsl_to_hex(h: float, s: float, l: float) -> str:
+    """Convert HSL (h 0-360, s 0-100, l 0-100) to '#rrggbb'."""
+    s /= 100.0
+    l /= 100.0
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = l - c / 2
+    if   0   <= h < 60:  r, g, b = c, x, 0
+    elif 60  <= h < 120: r, g, b = x, c, 0
+    elif 120 <= h < 180: r, g, b = 0, c, x
+    elif 180 <= h < 240: r, g, b = 0, x, c
+    elif 240 <= h < 300: r, g, b = x, 0, c
+    else:                r, g, b = c, 0, x
+    return f'#{int((r+m)*255):02x}{int((g+m)*255):02x}{int((b+m)*255):02x}'
+
+
+def _build_genre_root_map(tree_path: str) -> dict[str, dict[str, float]]:
+    """
+    Parse tab-indented genre tree and return {genre_name: {root_name: weight}}.
+    Weights sum to 1.0 per genre. Multi-parent genres split weight equally up
+    the hierarchy until reaching top-level (parentless) genres.
+    """
+    parents: dict[str, set[str]] = {}
+    stack: dict[int, str] = {}
+
+    with open(tree_path, encoding='utf-8') as f:
+        for line in f:
+            stripped = line.rstrip('\n')
+            if not stripped.strip():
+                continue
+            depth = len(stripped) - len(stripped.lstrip('\t'))
+            name  = stripped.strip()
+            # Prune stale deeper entries
+            for d in [d for d in stack if d > depth]:
+                del stack[d]
+            stack[depth] = name
+            parents.setdefault(name, set())
+            if depth > 0 and (parent := stack.get(depth - 1)):
+                parents[name].add(parent)
+
+    cache: dict[str, dict[str, float]] = {}
+
+    def find_roots(start: str) -> dict[str, float]:
+        if start in cache:
+            return cache[start]
+        current = {start: 1.0}
+        result: dict[str, float] = {}
+        for _ in range(25):  # max depth guard against cycles
+            if not current:
+                break
+            nxt: dict[str, float] = {}
+            for name, weight in current.items():
+                pars = parents.get(name, set())
+                if not pars:
+                    result[name] = result.get(name, 0.0) + weight
+                else:
+                    share = weight / len(pars)
+                    for p in pars:
+                        nxt[p] = nxt.get(p, 0.0) + share
+            current = nxt
+        cache[start] = result
+        return result
+
+    return {name: find_roots(name) for name in parents}
+
+
+def _blend_genres(
+    root_weights: dict[str, float],
+) -> tuple[str, list[dict]]:
+    """
+    Blend genre colors via circular mean of hue, arithmetic mean of S/L.
+    Returns (hex_color, top_genres_list) where each entry is
+    {'genre': str, 'pct': float, 'color': str}.
+    """
+    import math
+
+    total = sum(root_weights.values())
+    if total == 0:
+        return '#64748B', []
+
+    sin_sum = cos_sum = s_sum = l_sum = 0.0
+    for genre, weight in root_weights.items():
+        h, s, l = _TOP_GENRE_HSL.get(genre, _DEFAULT_HSL)
+        frac = weight / total
+        rad   = math.radians(h)
+        sin_sum += math.sin(rad) * frac
+        cos_sum += math.cos(rad) * frac
+        s_sum   += s * frac
+        l_sum   += l * frac
+
+    avg_h = math.degrees(math.atan2(sin_sum, cos_sum)) % 360
+    color = _hsl_to_hex(avg_h, s_sum, l_sum)
+
+    top = [
+        {
+            'genre': g,
+            'pct':   round(w / total * 100, 1),
+            'color': _hsl_to_hex(*_TOP_GENRE_HSL.get(g, _DEFAULT_HSL)),
+        }
+        for g, w in sorted(root_weights.items(), key=lambda x: x[1], reverse=True)
+        if w / total >= 0.02
+    ][:6]
+
+    return color, top
+
+
+def cmd_commits_refresh(args):
+    """Compute monthly genre profiles and cache to monthly_genre_profile table."""
+    import json
+    import os
+
+    tree_path = args.tree or os.path.join(os.path.expanduser('~'), 'genre_tree.txt')
+    if not os.path.exists(tree_path):
+        console.print(f'[red]Tree file not found: {tree_path}[/red]')
+        return
+
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    console.print('[dim]Building genre root map…[/dim]')
+    genre_root_map = _build_genre_root_map(tree_path)
+
+    months = conn.execute(
+        'SELECT DISTINCT year, month FROM listens ORDER BY year, month'
+    ).fetchall()
+    console.print(f'[dim]Processing {len(months)} months…[/dim]')
+
+    rows = []
+    for year, month in months:
+        listen_count = conn.execute(
+            'SELECT COUNT(*) FROM listens WHERE year=? AND month=?', (year, month)
+        ).fetchone()[0]
+
+        genre_rows = conn.execute('''
+            SELECT l.id, g.name
+            FROM listens l
+            JOIN tracks t          ON t.id = l.track_id AND t.hidden = 0
+            JOIN release_genres rg ON rg.release_id = t.release_id
+            JOIN genres g          ON g.aoty_id = rg.aoty_genre_id
+            WHERE l.year = ? AND l.month = ?
+        ''', (year, month)).fetchall()
+
+        if not genre_rows:
+            rows.append((year, month, listen_count, '#64748B', '#64748B', None, None))
+            continue
+
+        listen_genres: dict[int, list[str]] = {}
+        for lid, gname in genre_rows:
+            listen_genres.setdefault(lid, []).append(gname)
+
+        root_weights: dict[str, float] = {}
+        for genres in listen_genres.values():
+            genre_wt = 1.0 / len(genres)
+            for gname in genres:
+                for root, rw in genre_root_map.get(gname, {gname: 1.0}).items():
+                    root_weights[root] = root_weights.get(root, 0.0) + genre_wt * rw
+
+        color, top = _blend_genres(root_weights)
+        dominant    = top[0]['genre'] if top else None
+        top_genre_color = _hsl_to_hex(*_TOP_GENRE_HSL.get(dominant, _DEFAULT_HSL)) if dominant else '#64748B'
+        genres_json = json.dumps(top) if top else None
+        rows.append((year, month, listen_count, color, top_genre_color, dominant, genres_json))
+
+    conn.execute('DELETE FROM monthly_genre_profile')
+    conn.executemany(
+        'INSERT INTO monthly_genre_profile '
+        '(year, month, listen_count, color_hex, top_genre_color_hex, dominant_genre, genres_json) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    console.print(f'  [green]✓ {len(rows)} months cached[/green]')
+
+
 def cmd_certs_refresh(args):
     """Recompute cert tiers for all artists based on all-time listen counts."""
     conn = open_db(args.db or DB_PATH)
@@ -2476,6 +2727,20 @@ def main():
     p_c_ref  = cs_.add_parser('refresh', help='Recompute gold/platinum/diamond tiers for all artists')
     p_c_ref.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
     p_c_ref.set_defaults(func=cmd_certs_refresh)
+
+    # genre-relations
+    p_gr = sub.add_parser('genre-relations', help='Populate genre parent/child relations from tree file')
+    p_gr.add_argument('--tree', metavar='PATH', help='Path to tab-indented genre tree file')
+    p_gr.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
+    p_gr.set_defaults(func=cmd_genre_relations)
+
+    # commits
+    p_commits  = sub.add_parser('commits', help='Genre commit graph')
+    cs2_       = p_commits.add_subparsers(dest='commits_cmd', required=True)
+    p_c2_ref   = cs2_.add_parser('refresh', help='Compute monthly genre profiles and cache to DB')
+    p_c2_ref.add_argument('--tree', metavar='PATH', help='Path to tab-indented genre tree file')
+    p_c2_ref.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
+    p_c2_ref.set_defaults(func=cmd_commits_refresh)
 
     args = parser.parse_args()
     try:
