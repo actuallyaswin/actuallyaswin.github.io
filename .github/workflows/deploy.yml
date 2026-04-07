@@ -33,10 +33,9 @@ jobs:
       - name: Verify LFS files
         run: |
           echo "Checking LFS file sizes..."
-          ls -lh music/*.sqlite
-          echo "Checking if files are binary (not pointers)..."
-          file music/*.sqlite
-          head -c 50 music/listening_history.sqlite
+          ls -lh music/master.sqlite
+          echo "Checking if file is binary (not a pointer)..."
+          file music/master.sqlite
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
