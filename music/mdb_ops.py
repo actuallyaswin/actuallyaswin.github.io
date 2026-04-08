@@ -21,6 +21,20 @@ from mdb_strings import (
 _DIR    = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_DIR, 'master.sqlite')
 
+# ── external_links enum constants ─────────────────────────────────────────────
+
+EL_ARTIST  = 0  # entity_type: artist
+EL_RELEASE = 1  # entity_type: release
+
+EL_SVC_WIKIPEDIA   = 0
+EL_SVC_MUSICBRAINZ = 1
+EL_SVC_SPOTIFY     = 2
+EL_SVC_APPLE_MUSIC = 3
+EL_SVC_DEEZER      = 4
+EL_SVC_TIDAL       = 5
+EL_SVC_BANDCAMP    = 6
+EL_SVC_BEATPORT    = 7
+
 # ── ULID / slug ────────────────────────────────────────────────────────────────
 
 _ULID_CHARS = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
@@ -253,6 +267,13 @@ CREATE TABLE IF NOT EXISTS artist_members (
     sort_order       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (group_artist_id, member_artist_id)
 );
+CREATE TABLE IF NOT EXISTS external_links (
+    entity_type INTEGER NOT NULL,  -- 0=artist, 1=release
+    entity_id   TEXT    NOT NULL,  -- ULID
+    service     INTEGER NOT NULL,  -- 0=wikipedia 1=musicbrainz 2=spotify 3=apple_music 4=deezer 5=tidal 6=bandcamp 7=beatport
+    link_value  TEXT    NOT NULL,  -- Wikipedia: page_id str; Bandcamp: full URL; others: platform ID/slug
+    PRIMARY KEY (entity_type, entity_id, service)
+);
 """
 
 
@@ -374,6 +395,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
     conn.executescript(SCHEMA)
     conn.commit()
+
+
+def upsert_external_link(conn: sqlite3.Connection,
+                         entity_type: int, entity_id: str,
+                         service: int, link_value: str) -> None:
+    """Insert or update a single external link row."""
+    conn.execute(
+        'INSERT INTO external_links (entity_type, entity_id, service, link_value)'
+        ' VALUES (?, ?, ?, ?)'
+        ' ON CONFLICT(entity_type, entity_id, service)'
+        ' DO UPDATE SET link_value = excluded.link_value',
+        (entity_type, entity_id, service, link_value),
+    )
 
 
 # ── Import helpers ─────────────────────────────────────────────────────────────

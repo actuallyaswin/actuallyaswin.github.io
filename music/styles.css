@@ -285,6 +285,22 @@ header h1 {
     background-color: #FA243C;
 }
 
+.release-link-icon[data-service="deezer"]:hover .link-icon-mask {
+    background-color: #A238FF;
+}
+
+.release-link-icon[data-service="tidal"]:hover .link-icon-mask {
+    background-color: #000000;
+}
+
+.release-link-icon[data-service="bandcamp"]:hover .link-icon-mask {
+    background-color: #408294;
+}
+
+.release-link-icon[data-service="beatport"]:hover .link-icon-mask {
+    background-color: #01FF95;
+}
+
 .genre-tag {
     color: var(--text-secondary);
     text-decoration: none;

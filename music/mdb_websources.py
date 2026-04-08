@@ -22,6 +22,7 @@ from mdb_apis import (
     AOTY_SEARCH, AOTY_UA, AOTY_RETRY, MB_UA,
     mb_fetch_release_data,
 )
+from mdb_ops import upsert_external_link, EL_RELEASE, EL_SVC_WIKIPEDIA
 
 log = logging.getLogger(__name__)
 
@@ -300,13 +301,15 @@ def save_aoty_data(conn, release_id: str, aoty_url: str, data: dict,
 
 # ── Wikipedia ──────────────────────────────────────────────────────────────────
 
-def _wiki_get_html(wiki_url: str) -> 'str | None':
-    title   = urllib.parse.unquote(wiki_url.split('/wiki/')[-1])
-    api_url = ('https://en.wikipedia.org/w/api.php?'
-               + urllib.parse.urlencode({
-                   'action': 'parse', 'page': title,
-                   'prop': 'text', 'section': 0, 'format': 'json',
-               }))
+def _wiki_get_html(wiki_url: 'str | None' = None, page_id: 'int | None' = None) -> 'str | None':
+    if page_id:
+        params = {'action': 'parse', 'pageid': page_id,
+                  'prop': 'text', 'section': 0, 'format': 'json'}
+    else:
+        title  = urllib.parse.unquote((wiki_url or '').split('/wiki/')[-1])
+        params = {'action': 'parse', 'page': title,
+                  'prop': 'text', 'section': 0, 'format': 'json'}
+    api_url = 'https://en.wikipedia.org/w/api.php?' + urllib.parse.urlencode(params)
     _wiki_lim.wait()
     req = urllib.request.Request(api_url, headers={'User-Agent': MB_UA})
     try:
@@ -315,6 +318,27 @@ def _wiki_get_html(wiki_url: str) -> 'str | None':
         return (d.get('parse') or {}).get('text', {}).get('*')
     except Exception as e:
         log.debug('Wikipedia error: %s', e)
+        return None
+
+
+def _wiki_url_to_id(wiki_url: str) -> 'int | None':
+    """Resolve a Wikipedia URL to its permanent integer page ID."""
+    title   = urllib.parse.unquote(wiki_url.split('/wiki/')[-1])
+    api_url = ('https://en.wikipedia.org/w/api.php?'
+               + urllib.parse.urlencode({
+                   'action': 'query', 'titles': title,
+                   'redirects': '1', 'indexpageids': '1', 'format': 'json',
+               }))
+    _wiki_lim.wait()
+    req = urllib.request.Request(api_url, headers={'User-Agent': MB_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.loads(r.read())
+        ids = d.get('query', {}).get('pageids', [])
+        pid = int(ids[0]) if ids else None
+        return pid if pid and pid > 0 else None
+    except Exception as e:
+        log.debug('Wikipedia ID lookup error: %s', e)
         return None
 
 
@@ -337,8 +361,9 @@ def _date_from_cell(cell_html: str) -> 'str | None':
     return m.group(1) if m else None
 
 
-def fetch_wikipedia_date(wiki_url: str) -> 'str | None':
-    html = _wiki_get_html(wiki_url)
+def fetch_wikipedia_date(wiki_url: 'str | None' = None,
+                         page_id: 'int | None' = None) -> 'str | None':
+    html = _wiki_get_html(wiki_url=wiki_url, page_id=page_id)
     if not html:
         return None
     pattern = re.compile(
@@ -350,7 +375,8 @@ def fetch_wikipedia_date(wiki_url: str) -> 'str | None':
     return _date_from_cell(m.group(1)) if m else None
 
 
-def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[str | None, str | None]':
+def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[int | None, str | None]':
+    """Return (page_id, date). page_id is the permanent Wikipedia integer page ID."""
     query = f'{release_name} {artist_name}'.strip() if artist_name else release_name
     url   = ('https://en.wikipedia.org/w/api.php?'
              + urllib.parse.urlencode({
@@ -365,17 +391,16 @@ def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[str
     except Exception:
         return None, None
     for hit in (data.get('query') or {}).get('search') or []:
-        wiki_url = ('https://en.wikipedia.org/wiki/'
-                    + urllib.parse.quote(hit['title'].replace(' ', '_'), safe=':_'))
-        date = fetch_wikipedia_date(wiki_url)
+        pid  = hit.get('pageid')
+        date = fetch_wikipedia_date(page_id=pid) if pid else None
         if date:
-            return wiki_url, date
+            return pid, date
     return None, None
 
 
 def fetch_date_candidates(mbid: str, release_name: str = None,
-                          artist_name: str = None) -> 'tuple[list, str | None]':
-    """Return (candidates, wiki_url). Each candidate is {'date', 'source', 'notes'}."""
+                          artist_name: str = None) -> 'tuple[list, int | None]':
+    """Return (candidates, wiki_page_id). Each candidate is {'date', 'source', 'notes'}."""
     release_date, rg_first, wiki_url = mb_fetch_release_data(mbid)
     mb_dates, seen = [], set()
     for date, label in [(rg_first, 'MusicBrainz (release group)'),
@@ -384,23 +409,27 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
             seen.add(date)
             mb_dates.append({'date': date, 'source': label, 'notes': ''})
 
-    wiki_date = None
+    wiki_page_id = None
+    wiki_date    = None
     if wiki_url:
-        wiki_date = fetch_wikipedia_date(wiki_url)
+        wiki_page_id = _wiki_url_to_id(wiki_url)
+        if wiki_page_id:
+            wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
     elif release_name:
-        wiki_url, wiki_date = search_wikipedia(release_name, artist_name)
+        wiki_page_id, wiki_date = search_wikipedia(release_name, artist_name)
 
     candidates = []
     if wiki_date:
-        candidates.append({'date': wiki_date, 'source': 'Wikipedia ★', 'notes': wiki_url or ''})
+        notes_url = f'https://en.wikipedia.org/wiki/?curid={wiki_page_id}' if wiki_page_id else ''
+        candidates.append({'date': wiki_date, 'source': 'Wikipedia ★', 'notes': notes_url})
     for c in mb_dates:
         if c['date'] not in {x['date'] for x in candidates}:
             candidates.append(c)
-    return candidates, wiki_url
+    return candidates, wiki_page_id
 
 
 def _save_date(conn, release_id: str, date_str: str,
-               wiki_url: 'str | None' = None, source: str = 'wikipedia') -> bool:
+               wiki_page_id: 'int | None' = None, source: str = 'wikipedia') -> bool:
     """Write a date to releases, respecting precision and source priority.
     source='manual' always wins (user explicitly confirmed)."""
     if source != 'manual':
@@ -412,9 +441,9 @@ def _save_date(conn, release_id: str, date_str: str,
     year    = int(date_str[:4]) if date_str else None
     updates = {'release_date': date_str, 'release_year': year,
                'date_source': source, 'updated_at': int(time.time())}
-    if wiki_url:
-        updates['wikipedia_url'] = wiki_url
     set_clause = ', '.join(f'{k} = ?' for k in updates)
     conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?', (*updates.values(), release_id))
+    if wiki_page_id:
+        upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))
     conn.commit()
     return True

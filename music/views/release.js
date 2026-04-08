@@ -142,9 +142,7 @@ const ViewRelease = (() => {
                 r.aoty_score_user,
                 r.aoty_ratings_critic,
                 r.aoty_ratings_user,
-                r.primary_artist_id,
-                r.wikipedia_url,
-                r.apple_music_id
+                r.primary_artist_id
             FROM releases r
             LEFT JOIN tracks t ON t.release_id = r.id
             LEFT JOIN listens l ON l.track_id = t.id
@@ -161,7 +159,19 @@ const ViewRelease = (() => {
         const [title, year, type, typeSecondary, albumArtUrl, tracksListened, totalPlays,
                spotifyId, releaseGroupMbid, mbid, aotyUrl, aotyId,
                aotyScoreCritic, aotyScoreUser, aotyRatingsCritic, aotyRatingsUser,
-               primaryArtistId, wikipediaUrl, appleMusicId] = result.values[0];
+               primaryArtistId] = result.values[0];
+
+        const extLinks = new Map();
+        try {
+            const linksResult = _db.exec(`
+                SELECT service, link_value
+                FROM external_links
+                WHERE entity_type = 1 AND entity_id = '${safeId}'
+            `)[0];
+            if (linksResult) linksResult.values.forEach(([svc, val]) => extLinks.set(svc, val));
+        } catch (_) {}
+        const wikiPageId   = extLinks.get(0) || null;   // EL_SVC_WIKIPEDIA
+        const appleMusicId = extLinks.get(3) || null;   // EL_SVC_APPLE_MUSIC
         const typeLabel = [type, typeSecondary].filter(Boolean).join(' / ');
 
         _primaryArtistId = primaryArtistId || null;
@@ -232,8 +242,8 @@ const ViewRelease = (() => {
             if (resolvedAotyUrl) {
                 iconLinks.push(`<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year"><img src="images/aoty.png" alt="Album of the Year"></a>`);
             }
-            if (wikipediaUrl) {
-                iconLinks.push(`<a href="${wikipediaUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="wikipedia" title="Wikipedia"><span class="link-icon-mask" style="--icon-url: url('images/wikipedia.svg')"></span></a>`);
+            if (wikiPageId) {
+                iconLinks.push(`<a href="https://en.wikipedia.org/wiki/?curid=${wikiPageId}" target="_blank" rel="noopener" class="release-link-icon" data-service="wikipedia" title="Wikipedia"><span class="link-icon-mask" style="--icon-url: url('images/wikipedia.svg')"></span></a>`);
             }
             if (appleMusicId) {
                 iconLinks.push(`<a href="https://music.apple.com/album/${appleMusicId}" target="_blank" rel="noopener" class="release-link-icon" data-service="applemusic" title="Apple Music"><span class="link-icon-mask" style="--icon-url: url('images/applemusic.svg')"></span></a>`);

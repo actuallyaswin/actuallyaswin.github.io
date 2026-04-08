@@ -53,6 +53,7 @@ from mdb_ops import (
     upsert_artist_mb, upsert_release_mb, upsert_tracks_mb,
     populate_genre_relations,
     bulk_rematch, bulk_rematch_by_name,
+    upsert_external_link, EL_ARTIST, EL_RELEASE, EL_SVC_WIKIPEDIA,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
@@ -68,6 +69,7 @@ from mdb_websources import (
     find_aoty_url, scrape_aoty_page, fetch_aoty_data,
     _has_aoty, _fmt_aoty, save_aoty_data,
     fetch_wikipedia_date, search_wikipedia, fetch_date_candidates, _save_date,
+    _wiki_url_to_id,
 )
 from mdb_cli import (
     _fmt_dur, _trunc,
@@ -415,23 +417,24 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
     mbid        = row['mbid']
     ex_date     = row['release_date']
     ex_source   = row['date_source']
-    candidates, wiki_url = fetch_date_candidates(mbid, release_title, artist_name)
+    candidates, wiki_page_id = fetch_date_candidates(mbid, release_title, artist_name)
     if candidates:
         best     = candidates[0]
         src      = 'wikipedia' if 'Wikipedia' in best['source'] else 'musicbrainz'
-        saved    = _save_date(conn, release_id, best['date'], wiki_url, source=src)
+        saved    = _save_date(conn, release_id, best['date'], wiki_page_id, source=src)
+        wiki_disp = (f'  [dim]https://en.wikipedia.org/wiki/?curid={wiki_page_id}[/dim]'
+                     if wiki_page_id else '')
         if saved:
             console.print(f"  [green]✓[/green]  {best['date']}  [dim]{best['source']}[/dim]"
-                          + (f"  [dim]{wiki_url}[/dim]" if wiki_url else ""))
+                          + wiki_disp)
         else:
             console.print(f"  [dim]kept {ex_date} ({ex_source}) — "
                           f"{src} had {best['date']}[/dim]")
     else:
-        if wiki_url:
-            conn.execute('UPDATE releases SET wikipedia_url = ?, updated_at = ? WHERE id = ?',
-                         (wiki_url, int(time.time()), release_id))
+        if wiki_page_id:
+            upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))
             conn.commit()
-            console.print(f'  [dim]no date found — saved wiki URL[/dim]')
+            console.print(f'  [dim]no date found — saved wiki page ID {wiki_page_id}[/dim]')
         else:
             console.print('  [dim]no date found[/dim]')
     conn.close()
@@ -945,7 +948,7 @@ def cmd_enrich_dates(args):
         futures = deque(submit(queue[j]) for j in range(min(DATES_AHEAD, len(queue))))
 
         for i, (release_id, release_name, release_year, artist_name) in enumerate(queue):
-            candidates, wiki_url = futures.popleft().result()
+            candidates, wiki_page_id = futures.popleft().result()
 
             nxt = i + DATES_AHEAD
             if nxt < len(queue):
@@ -954,9 +957,8 @@ def cmd_enrich_dates(args):
             console.print(f'[dim][{i+1}/{len(queue)}][/dim]  ', end='')
 
             if not candidates:
-                if wiki_url:
-                    conn.execute('UPDATE releases SET wikipedia_url = ?, updated_at = ? WHERE id = ?',
-                                 (wiki_url, int(time.time()), release_id))
+                if wiki_page_id:
+                    upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))
                     conn.commit()
                 console.print(f'[dim]{release_name}  — no date found[/dim]')
                 skipped += 1
@@ -971,7 +973,7 @@ def cmd_enrich_dates(args):
                 console.print('  [dim]Skipped.[/dim]')
                 skipped += 1
             else:
-                _save_date(conn, release_id, choice, wiki_url, source='manual')
+                _save_date(conn, release_id, choice, wiki_page_id, source='manual')
                 console.print(f'  [green]Saved:[/green] {choice}')
                 updated += 1
 
@@ -1146,7 +1148,6 @@ def cmd_enrich_artists(args):
         'disambiguation': 'disambiguation',
         'formed_year':    'formed_year',
         'disbanded_year': 'disbanded_year',
-        'wikipedia_url':  'wikipedia_url',
     }
     updated = skipped = 0
     now     = int(time.time())
@@ -1185,7 +1186,12 @@ def cmd_enrich_artists(args):
             console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]no MB data[/dim]')
             skipped += 1
             continue
+        wiki_url = data.pop('wikipedia_url', None)
         updates = {col: data[key] for key, col in _MB_COL_MAP.items() if key in data}
+        if wiki_url:
+            wiki_page_id = _wiki_url_to_id(wiki_url)
+            if wiki_page_id:
+                upsert_external_link(conn, EL_ARTIST, artist['id'], EL_SVC_WIKIPEDIA, str(wiki_page_id))
         if not updates:
             skipped += 1
             continue
@@ -1471,7 +1477,7 @@ def cmd_artist_merge(args):
         'sort_name', 'spotify_id', 'mbid', 'lastfm_url',
         'image_url', 'image_source', 'image_position', 'hero_image_url',
         'country', 'formed_year', 'disbanded_year', 'bio',
-        'aoty_id', 'aoty_url', 'wikipedia_url', 'type', 'gender', 'disambiguation',
+        'aoty_id', 'aoty_url', 'type', 'gender', 'disambiguation',
     ]
     from_row = conn.execute(f'SELECT * FROM artists WHERE id = ?', [from_id]).fetchone()
     to_row   = conn.execute(f'SELECT * FROM artists WHERE id = ?', [to_id]).fetchone()
@@ -1484,6 +1490,13 @@ def cmd_artist_merge(args):
                 transferred.append(field)
         except IndexError:
             pass  # column might not exist on older schema
+    # Transfer external_links from FROM → TO (INSERT OR IGNORE to not overwrite TO's links)
+    conn.execute(
+        'INSERT OR IGNORE INTO external_links (entity_type, entity_id, service, link_value)'
+        ' SELECT entity_type, ?, service, link_value FROM external_links'
+        ' WHERE entity_type = ? AND entity_id = ?',
+        [to_id, EL_ARTIST, from_id],
+    )
     if transferred:
         console.print(f'  [dim]Transferred metadata: {", ".join(transferred)}[/dim]')
 

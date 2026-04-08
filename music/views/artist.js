@@ -148,8 +148,7 @@ const ViewArtist = (() => {
                 a.spotify_id,
                 a.mbid,
                 a.aoty_id,
-                a.aoty_url,
-                a.wikipedia_url
+                a.aoty_url
             FROM artists a
             LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
             LEFT JOIN tracks t ON ta.track_id = t.id
@@ -165,7 +164,18 @@ const ViewArtist = (() => {
         }
 
         const [name, imageUrl, heroImageUrl, uniqueTracks, totalPlays, totalReleases,
-               spotifyId, mbid, aotyId, aotyUrl, wikipediaUrl] = result.values[0];
+               spotifyId, mbid, aotyId, aotyUrl] = result.values[0];
+
+        const extLinks = new Map();
+        try {
+            const linksResult = _db.exec(`
+                SELECT service, link_value
+                FROM external_links
+                WHERE entity_type = 0 AND entity_id = '${safeId}'
+            `)[0];
+            if (linksResult) linksResult.values.forEach(([svc, val]) => extLinks.set(svc, val));
+        } catch (_) {}
+        const wikiPageId = extLinks.get(0) || null;  // EL_SVC_WIKIPEDIA
 
         // Load aliases and update name display
         const aliasResult = _db.exec(`
@@ -240,8 +250,8 @@ const ViewArtist = (() => {
             if (resolvedAotyUrl) {
                 links.push({ href: resolvedAotyUrl, service: 'aoty', label: 'Album of the Year' });
             }
-            if (wikipediaUrl) {
-                links.push({ href: wikipediaUrl, service: 'wikipedia', label: 'Wikipedia' });
+            if (wikiPageId) {
+                links.push({ href: `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, service: 'wikipedia', label: 'Wikipedia' });
             }
             linksEl.innerHTML = links.map(({ href, service, label }) => {
                 const icon = service === 'aoty'
