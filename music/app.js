@@ -33,6 +33,20 @@ function navigate(params, pushState = true) {
     _currentView.mount(container, _db, params);
 }
 
+// Auto-process Lucide icons on any DOM mutation — replaces per-section lucide.createIcons() calls
+let _lucideTimer = null;
+new MutationObserver(mutations => {
+    if (mutations.some(m =>
+        [...m.addedNodes].some(n =>
+            n.nodeType === 1 &&
+            (n.matches('i[data-lucide]') || n.querySelector('i[data-lucide]'))
+        )
+    )) {
+        clearTimeout(_lucideTimer);
+        _lucideTimer = setTimeout(() => lucide.createIcons(), 0);
+    }
+}).observe(document.body, { subtree: true, childList: true });
+
 // Intercept SPA-style links (href starting with ?)
 document.addEventListener('click', e => {
     const a = e.target.closest('a[href]');

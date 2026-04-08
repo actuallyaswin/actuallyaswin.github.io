@@ -57,7 +57,6 @@ const ViewTopAlbums = (() => {
             </footer>
         `;
 
-        lucide.createIcons();
         setupControls();
         loadAlbums();
     }
@@ -169,7 +168,6 @@ const ViewTopAlbums = (() => {
             });
         }
 
-        lucide.createIcons();
     }
 
     function applyCount() {

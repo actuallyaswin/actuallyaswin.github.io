@@ -73,7 +73,6 @@ const ViewTopArtists = (() => {
             </footer>
         `;
 
-        lucide.createIcons();
         setupControls();
         loadArtists();
     }
@@ -185,7 +184,6 @@ const ViewTopArtists = (() => {
             });
         }
 
-        lucide.createIcons();
     }
 
     function applyCount() {

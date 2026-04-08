@@ -34,7 +34,6 @@ const ViewYear = (() => {
         document.title = `aswin.db/music - ${currentYear}`;
 
         container.innerHTML = buildTemplate();
-        lucide.createIcons();
 
         populateYearSelector();
         setupControls();
@@ -341,7 +340,6 @@ const ViewYear = (() => {
             });
         }
 
-        lucide.createIcons();
     }
 
     function renderArtists() {
@@ -416,7 +414,6 @@ const ViewYear = (() => {
             });
         }
 
-        lucide.createIcons();
     }
 
     function applyCount() {

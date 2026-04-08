@@ -70,8 +70,6 @@ const ViewHome = (() => {
             </footer>
         `;
 
-        lucide.createIcons();
-
         loadYearRange();
         loadStats();
         setupSearch();
@@ -306,7 +304,8 @@ const ViewHome = (() => {
                 r.album_art_url,
                 a.name as artist_name,
                 l.timestamp,
-                r.id as release_id
+                r.id as release_id,
+                r.title as release_title
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             LEFT JOIN releases r ON t.release_id = r.id
@@ -321,7 +320,7 @@ const ViewHome = (() => {
         if (!section || !list || !result || result.values.length === 0) return;
 
         const now = Date.now() / 1000;
-        list.innerHTML = result.values.map(([trackTitle, albumArtUrl, artistName, timestamp, releaseId]) => {
+        list.innerHTML = result.values.map(([trackTitle, albumArtUrl, artistName, timestamp, releaseId, releaseTitle]) => {
             const imgSrc = albumArtUrl || getFallbackImageUrl();
             let dateStr;
             const diff = now - timestamp;
@@ -332,12 +331,16 @@ const ViewHome = (() => {
                 const d = new Date(timestamp * 1000);
                 dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
             }
+            const subtitleParts = [
+                artistName   ? `<i data-lucide="user" style="width: 12px; height: 12px;"></i> ${escapeHtml(artistName)}` : null,
+                releaseTitle ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(releaseTitle)}` : null,
+            ].filter(Boolean).join(' · ');
             return `
                 <div class="recent-play-row">
                     <div class="recent-play-thumb" style="background-image: url('${imgSrc}')"></div>
                     <div class="recent-play-info">
                         <div class="recent-play-name">${escapeHtml(trackTitle)}</div>
-                        ${artistName ? `<div class="recent-play-album">${escapeHtml(artistName)}</div>` : ''}
+                        ${subtitleParts ? `<div class="recent-play-album">${subtitleParts}</div>` : ''}
                     </div>
                     <span class="recent-play-date">${dateStr}</span>
                 </div>
@@ -494,7 +497,6 @@ const ViewHome = (() => {
             toggleBtn.innerHTML = isTop
                 ? `<i data-lucide="circle-dot"></i> top`
                 : `<i data-lucide="layers"></i> blended`;
-            lucide.createIcons();
             grid.querySelectorAll('.commit-has-data').forEach(cell => {
                 cell.style.backgroundColor = isTop ? cell.dataset.topColor : cell.dataset.blendedColor;
             });

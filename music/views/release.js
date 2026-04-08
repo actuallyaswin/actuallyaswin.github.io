@@ -98,8 +98,6 @@ const ViewRelease = (() => {
             </footer>
         `;
 
-        lucide.createIcons();
-
         loadReleaseInfo();
         loadReleaseAliases();
         loadTracks();
@@ -262,7 +260,6 @@ const ViewRelease = (() => {
             if (iconLinks.length > 0 && scores.length > 0) html += `<span class="release-links-sep">·</span>`;
             html += scores.join(`<span class="release-links-sep">·</span>`);
             linksEl.innerHTML = html;
-            lucide.createIcons();
         }
     }
 
@@ -401,7 +398,6 @@ const ViewRelease = (() => {
             `;
             container.appendChild(row);
         });
-        lucide.createIcons();
     }
 
     // ── Main tracklist ──────────────────────────────────────────────────────────
@@ -546,8 +542,6 @@ const ViewRelease = (() => {
                 _renderTracklist(trackContainer, exclusive, false);
             }
         }
-
-        lucide.createIcons();
     }
 
     // ── Compilation sources ─────────────────────────────────────────────────────
@@ -601,7 +595,6 @@ const ViewRelease = (() => {
         }
 
         section.appendChild(grid);
-        lucide.createIcons();
     }
 
     // ── Canonical backlink ──────────────────────────────────────────────────────

@@ -112,8 +112,6 @@ const ViewArtist = (() => {
             </footer>
         `;
 
-        lucide.createIcons();
-
         loadArtistInfo();
         loadArtistBadges();
         loadTopTracks();
@@ -348,7 +346,6 @@ const ViewArtist = (() => {
             container.appendChild(card);
         });
 
-        lucide.createIcons();
     }
 
     function loadReleases() {
@@ -447,7 +444,6 @@ const ViewArtist = (() => {
             container.appendChild(card);
         });
 
-        lucide.createIcons();
     }
 
     function loadRecentPlays() {
@@ -486,12 +482,15 @@ const ViewArtist = (() => {
                 const d = new Date(timestamp * 1000);
                 dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
             }
+            const subtitle = releaseTitle
+                ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(releaseTitle)}`
+                : null;
             return `
                 <div class="recent-play-row">
                     <div class="recent-play-thumb" style="background-image: url('${imgSrc}')"></div>
                     <div class="recent-play-info">
                         <div class="recent-play-name">${escapeHtml(trackTitle)}</div>
-                        ${releaseTitle ? `<div class="recent-play-album">${escapeHtml(releaseTitle)}</div>` : ''}
+                        ${subtitle ? `<div class="recent-play-album">${subtitle}</div>` : ''}
                     </div>
                     <span class="recent-play-date">${dateStr}</span>
                 </div>

@@ -69,7 +69,6 @@ const ViewGenre = (() => {
             el.innerHTML = `${home}${sep}${parentLinks}${sep}${cur}`;
         }
 
-        lucide.createIcons();
     }
 
     function loadGenreInfo() {
@@ -153,7 +152,6 @@ const ViewGenre = (() => {
             container.appendChild(card);
         });
 
-        lucide.createIcons();
     }
 
     return { mount, unmount };

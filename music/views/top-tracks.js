@@ -47,7 +47,6 @@ const ViewTopTracks = (() => {
             </footer>
         `;
 
-        lucide.createIcons();
         setupControls();
         loadTracks();
     }
@@ -114,7 +113,6 @@ const ViewTopTracks = (() => {
             container.appendChild(card);
         });
 
-        lucide.createIcons();
     }
 
     function applyCount() {

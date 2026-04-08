@@ -137,7 +137,8 @@ function setupToggleGroup(selector, onChange) {
     });
 }
 
-function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes, rounded = false }) {
+function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes,
+                          rounded = false, cert = null, viaArtist = null }) {
     const card = document.createElement('a');
     card.className = 'release-card';
     card.href = href;
@@ -148,21 +149,32 @@ function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes
         `<span class="${i === 0 ? 'release-year' : 'release-type-label'}">${p}</span>`
     ).join('');
 
+    const certLabels = { gold: '50+ plays', platinum: '100+ plays', diamond: '250+ plays' };
+    const certDot = cert
+        ? `<span class="release-cert-dot release-cert-dot-${cert}" title="${certLabels[cert]}"></span>`
+        : '';
+
+    const statsHtml = totalListens != null ? `
+        <div class="release-stats">
+            <span class="stat-item">
+                <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
+                ${formatNumber(totalListens)}
+            </span>
+            <span class="stat-item">
+                <i data-lucide="clock" style="width: 13px; height: 13px;"></i>
+                ${formatNumber(totalMinutes)} min
+            </span>
+        </div>
+    ` : '';
+
+    const viaHtml = viaArtist ? `<span class="release-via-artist">${escapeHtml(viaArtist)}</span>` : '';
+
     card.innerHTML = `
-        <div class="release-card-thumb${rounded ? ' rounded' : ''}" style="background-image: url('${imgSrc}')"></div>
+        <div class="release-card-thumb${rounded ? ' rounded' : ''}" style="background-image: url('${imgSrc}')">${certDot}</div>
         <div class="release-card-body">
             <div class="release-name">${escapeHtml(name)}</div>
-            <div class="release-stats">
-                <span class="stat-item">
-                    <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
-                    ${formatNumber(totalListens)}
-                </span>
-                <span class="stat-item">
-                    <i data-lucide="clock" style="width: 13px; height: 13px;"></i>
-                    ${formatNumber(totalMinutes)} min
-                </span>
-            </div>
-            ${metaHtml ? `<div class="release-meta">${metaHtml}</div>` : ''}
+            ${statsHtml}
+            ${metaHtml || viaHtml ? `<div class="release-meta">${metaHtml}${viaHtml}</div>` : ''}
         </div>
     `;
     return card;

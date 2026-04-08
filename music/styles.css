@@ -1758,6 +1758,9 @@ a.stat-card:hover .stat-label::after {
     color: var(--text);
 }
 .recent-play-album {
+    display: flex;
+    align-items: center;
+    gap: 0.25em;
     font-size: 0.7rem;
     color: var(--text-tertiary);
     white-space: nowrap;
