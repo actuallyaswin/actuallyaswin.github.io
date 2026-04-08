@@ -277,6 +277,14 @@ header h1 {
     background-color: #BA478F;
 }
 
+.release-link-icon[data-service="wikipedia"]:hover .link-icon-mask {
+    background-color: #000000;
+}
+
+.release-link-icon[data-service="applemusic"]:hover .link-icon-mask {
+    background-color: #FA243C;
+}
+
 .genre-tag {
     color: var(--text-secondary);
     text-decoration: none;
@@ -1066,7 +1074,7 @@ a.stat-card:hover .stat-label::after {
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    padding: 0.45rem 0;
+    padding: 0.45rem 1.5rem 0.45rem 0;
     border-bottom: 1px solid var(--border);
     min-width: 0;
 }
@@ -1088,17 +1096,44 @@ a.stat-card:hover .stat-label::after {
     min-width: 0;
 }
 
+.tracklist-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
 .tracklist-name {
     font-size: 0.875rem;
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
+    min-width: 0;
 }
 
 .tracklist-duration {
     font-size: 0.75rem;
     color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.tracklist-col-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding-bottom: 0.3rem;
+    padding-right: 1.5rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.1rem;
+}
+.tracklist-col-header .tracklist-plays {
+    color: var(--text-tertiary, var(--text-secondary));
+}
+.tracklist-col-header .tracklist-plays svg {
+    width: 0.85rem;
+    height: 0.85rem;
 }
 
 .tracklist-plays {
@@ -1444,6 +1479,9 @@ a.stat-card:hover .stat-label::after {
 /* === Pulse Section === */
 .pulse-section h2 {
     margin-bottom: 0.75rem;
+}
+.tracks-section h2 {
+    margin-bottom: 0;
 }
 .pulse-rows {
     display: flex;

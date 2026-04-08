@@ -148,7 +148,8 @@ const ViewArtist = (() => {
                 a.spotify_id,
                 a.mbid,
                 a.aoty_id,
-                a.aoty_url
+                a.aoty_url,
+                a.wikipedia_url
             FROM artists a
             LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
             LEFT JOIN tracks t ON ta.track_id = t.id
@@ -164,7 +165,7 @@ const ViewArtist = (() => {
         }
 
         const [name, imageUrl, heroImageUrl, uniqueTracks, totalPlays, totalReleases,
-               spotifyId, mbid, aotyId, aotyUrl] = result.values[0];
+               spotifyId, mbid, aotyId, aotyUrl, wikipediaUrl] = result.values[0];
 
         // Load aliases and update name display
         const aliasResult = _db.exec(`
@@ -238,6 +239,9 @@ const ViewArtist = (() => {
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/artist/${aotyId}/` : null);
             if (resolvedAotyUrl) {
                 links.push({ href: resolvedAotyUrl, service: 'aoty', label: 'Album of the Year' });
+            }
+            if (wikipediaUrl) {
+                links.push({ href: wikipediaUrl, service: 'wikipedia', label: 'Wikipedia' });
             }
             linksEl.innerHTML = links.map(({ href, service, label }) => {
                 const icon = service === 'aoty'

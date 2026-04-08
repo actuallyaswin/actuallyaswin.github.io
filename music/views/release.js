@@ -82,7 +82,7 @@ const ViewRelease = (() => {
                     <div class="pulse-rows" id="pulseRows"></div>
                 </section>
 
-                <section>
+                <section class="tracks-section">
                     <h2>Tracks</h2>
                     <div class="tracklist" id="trackList">
                         <div class="loading">Loading tracks...</div>
@@ -142,7 +142,9 @@ const ViewRelease = (() => {
                 r.aoty_score_user,
                 r.aoty_ratings_critic,
                 r.aoty_ratings_user,
-                r.primary_artist_id
+                r.primary_artist_id,
+                r.wikipedia_url,
+                r.apple_music_id
             FROM releases r
             LEFT JOIN tracks t ON t.release_id = r.id
             LEFT JOIN listens l ON l.track_id = t.id
@@ -159,7 +161,7 @@ const ViewRelease = (() => {
         const [title, year, type, typeSecondary, albumArtUrl, tracksListened, totalPlays,
                spotifyId, releaseGroupMbid, mbid, aotyUrl, aotyId,
                aotyScoreCritic, aotyScoreUser, aotyRatingsCritic, aotyRatingsUser,
-               primaryArtistId] = result.values[0];
+               primaryArtistId, wikipediaUrl, appleMusicId] = result.values[0];
         const typeLabel = [type, typeSecondary].filter(Boolean).join(' / ');
 
         _primaryArtistId = primaryArtistId || null;
@@ -230,6 +232,12 @@ const ViewRelease = (() => {
             if (resolvedAotyUrl) {
                 iconLinks.push(`<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year"><img src="images/aoty.png" alt="Album of the Year"></a>`);
             }
+            if (wikipediaUrl) {
+                iconLinks.push(`<a href="${wikipediaUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="wikipedia" title="Wikipedia"><span class="link-icon-mask" style="--icon-url: url('images/wikipedia.svg')"></span></a>`);
+            }
+            if (appleMusicId) {
+                iconLinks.push(`<a href="https://music.apple.com/album/${appleMusicId}" target="_blank" rel="noopener" class="release-link-icon" data-service="applemusic" title="Apple Music"><span class="link-icon-mask" style="--icon-url: url('images/applemusic.svg')"></span></a>`);
+            }
 
             const scoreColor = n => `hsl(${Math.round(Math.min(n, 100) * 1.2)}, 65%, 40%)`;
             const scores = [];
@@ -291,6 +299,17 @@ const ViewRelease = (() => {
             return;
         }
 
+        if (showPlayCounts) {
+            const colHeader = document.createElement('div');
+            colHeader.className = 'tracklist-col-header';
+            colHeader.innerHTML = `
+                <span class="tracklist-num"></span>
+                <div class="tracklist-info"></div>
+                <div class="tracklist-plays"><i data-lucide="headphones"></i></div>
+            `;
+            container.appendChild(colHeader);
+        }
+
         const maxDisc   = Math.max(...tracks.map(t => t.discNumber || 1));
         const multiDisc = maxDisc > 1;
         let currentDisc = null;
@@ -326,24 +345,31 @@ const ViewRelease = (() => {
 
             const bpmHtml = t.tempoBpm != null ? `<span class="track-bpm">♩ ${Math.round(t.tempoBpm)}</span>` : '';
 
-            // Per-track artist credits (for compilations / Various Artists)
+            // Per-track artist credits
             let trackArtistsHtml = '';
-            if (showTrackArtists && artistsByTrack.has(t.id)) {
+            if (artistsByTrack.has(t.id)) {
                 const artists = artistsByTrack.get(t.id);
-                const mainArtists = artists.filter(a => a.role === 'main' && a.id !== primaryArtistId);
+                const mainArtists = showTrackArtists ? artists.filter(a => a.role === 'main' && a.id !== primaryArtistId) : [];
                 const featArtists = artists.filter(a => a.role === 'featured');
 
                 const parts = [];
                 if (mainArtists.length > 0) {
-                    parts.push(mainArtists.map(a =>
+                    const mainLinks = mainArtists.map(a =>
                         `<a href="?view=artist&id=${encodeURIComponent(a.id)}" class="tracklist-artist-link">${escapeHtml(a.name)}</a>`
-                    ).join(', '));
+                    );
+                    const mainStr = mainLinks.length <= 2
+                        ? mainLinks.join(' and ')
+                        : mainLinks.slice(0, -1).join(', ') + ', and ' + mainLinks[mainLinks.length - 1];
+                    parts.push(mainStr);
                 }
                 if (featArtists.length > 0) {
                     const featLinks = featArtists.map(a =>
                         `<a href="?view=artist&id=${encodeURIComponent(a.id)}" class="tracklist-artist-link">${escapeHtml(a.name)}</a>`
-                    ).join(', ');
-                    parts.push(`<span class="tracklist-feat">feat. ${featLinks}</span>`);
+                    );
+                    const featStr = featLinks.length <= 2
+                        ? featLinks.join(' and ')
+                        : featLinks.slice(0, -1).join(', ') + ', and ' + featLinks[featLinks.length - 1];
+                    parts.push(`<span class="tracklist-feat">feat. ${featStr}</span>`);
                 }
                 if (parts.length > 0) {
                     trackArtistsHtml = `<div class="tracklist-track-artists">${parts.join(' · ')}</div>`;
@@ -354,15 +380,18 @@ const ViewRelease = (() => {
             row.innerHTML = `
                 <span class="tracklist-num">${displayNum}</span>
                 <div class="tracklist-info">
-                    <div class="tracklist-name">${escapeHtml(t.title)}</div>
+                    <div class="tracklist-title-row">
+                        <div class="tracklist-name">${escapeHtml(t.title)}</div>
+                        <div class="tracklist-duration">${formatDuration(t.durationMs)}</div>
+                    </div>
                     ${trackArtistsHtml}
-                    <div class="tracklist-duration">${formatDuration(t.durationMs)}</div>
                     ${afHtml}
                 </div>
                 <div class="tracklist-plays">${bpmHtml}${(showPlayCounts && t.playCount > 0) ? formatNumber(t.playCount) : '—'}</div>
             `;
             container.appendChild(row);
         });
+        lucide.createIcons();
     }
 
     // ── Main tracklist ──────────────────────────────────────────────────────────
@@ -391,7 +420,7 @@ const ViewRelease = (() => {
         const showTrackArtists = (_releaseType === 'compilation' || _primaryArtistId === null);
 
         let artistsByTrack = new Map();
-        if (showTrackArtists && tracks.length > 0) {
+        if (tracks.length > 0) {
             const taResult = _db.exec(`
                 SELECT ta.track_id, a.id, a.name, ta.role
                 FROM track_artists ta
@@ -424,7 +453,7 @@ const ViewRelease = (() => {
             SELECT rv.variant_id, rv.variant_type, r.title, r.album_art_url, r.release_year
             FROM release_variants rv
             JOIN releases r ON r.id = rv.variant_id
-            WHERE rv.canonical_id = '${safeId}'
+            WHERE rv.canonical_id = '${safeId}' AND r.hidden = 0
             ORDER BY rv.sort_order, r.release_year
         `)[0];
 
