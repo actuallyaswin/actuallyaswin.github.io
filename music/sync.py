@@ -16,7 +16,6 @@ Usage:
 import argparse
 import base64
 import concurrent.futures
-import difflib
 import json
 import math
 import os
@@ -45,6 +44,7 @@ from mdb_strings import (
 )
 from mdb_apis import SpotifyRelease
 from mdb_cli  import render_diff
+from mdb_ops  import bulk_rematch, bulk_rematch_by_name, db_search_releases as _db_search_releases
 
 console = Console(width=80, highlight=False)
 
@@ -160,29 +160,6 @@ def _migrate(conn: sqlite3.Connection):
     conn.commit()
 
 
-def bulk_rematch(conn: sqlite3.Connection) -> int:
-    """
-    Match unresolved listens to catalog tracks via MBID.
-    raw_source_id holds the track MBID for 76% of scrobbles; the rest use
-    artist|||track keys which require name-based matching (see match command).
-    Returns the count of newly matched listens.
-    """
-    cur = conn.execute('''
-        UPDATE listens
-        SET track_id = (
-            SELECT t.id FROM tracks t
-            WHERE t.mbid = listens.raw_source_id
-        )
-        WHERE track_id IS NULL
-          AND raw_source_id GLOB '????????-????-????-????-????????????'
-          AND EXISTS (
-              SELECT 1 FROM tracks t WHERE t.mbid = listens.raw_source_id
-          )
-    ''')
-    conn.commit()
-    return cur.rowcount
-
-
 def dedup_spotify_lastfm(conn: sqlite3.Connection) -> int:
     """Remove Last.fm listens that duplicate a Spotify listen for the same track.
 
@@ -210,171 +187,6 @@ def dedup_spotify_lastfm(conn: sqlite3.Connection) -> int:
     ''')
     conn.commit()
     return cur.rowcount
-
-
-def bulk_rematch_by_name(conn: sqlite3.Connection,
-                         release_ids: list,
-                         raw_artist: str,
-                         raw_album: str) -> int:
-    """
-    Secondary match for tracks with no MBIDs (e.g. no MusicBrainz result).
-    Scopes to listens whose raw_artist_name matches the queue entry (or any known
-    alias of the release's artists), then joins on normalised track title.
-
-    Normalisation is two-phase:
-      Phase 1 (SQL): handles apostrophe variants, feat. credits
-        1. Curly apostrophes (U+2019) in DB titles vs ASCII apostrophes in scrobbles.
-        2. Featuring artists present in scrobble but absent from the DB title.
-        3. Scrobble title = DB title + " - <mix>" (LIKE prefix match).
-      Phase 2 (Python): ETI-normalised matching via parse_track_title.
-        Strips version/mix suffixes from both sides so e.g. Last.fm's
-        "In My Mind - Axwell Radio Edit" matches Spotify's "In My Mind".
-
-    Returns the count of newly matched listens.
-    """
-    if not release_ids:
-        return 0
-
-    rph = ','.join('?' * len(release_ids))
-
-    # Collect canonical artist names + all known aliases for artists on these releases
-    artist_name_set = {raw_artist.lower()}
-    rows = conn.execute(f'''
-        SELECT DISTINCT a.name, aa.alias
-        FROM   artists a
-        JOIN   track_artists ta ON ta.artist_id = a.id
-        JOIN   tracks t         ON t.id = ta.track_id
-        LEFT   JOIN artist_aliases aa ON aa.artist_id = a.id
-        WHERE  t.release_id IN ({rph})
-    ''', release_ids).fetchall()
-    for r in rows:
-        if r['name']:
-            artist_name_set.add(r['name'].lower())
-        if r['alias']:
-            artist_name_set.add(r['alias'].lower())
-
-    aph = ','.join('?' * len(artist_name_set))
-    artist_names = list(artist_name_set)
-
-    # Normalise a column: lowercase + replace curly apostrophes with ASCII apostrophe.
-    def _n(col):
-        return f"REPLACE(lower({col}), char(8217), char(39))"
-
-    # Bare title: strip trailing " (feat. ...)" from a column after normalising.
-    def _bare(col):
-        nc = _n(col)
-        return (f"CASE WHEN instr({nc}, ' (feat.') > 0"
-                f" THEN trim(substr({col}, 1, instr({nc}, ' (feat.') - 1))"
-                f" ELSE {col} END")
-
-    # Match condition: normalised exact match, or either side stripped of feat.,
-    # or scrobble title = DB title + ' - <mix/version>' (Last.fm often appends
-    # the mix name with ' - ' when Spotify tracks omit it, e.g.
-    # scrobble: 'In My Mind - Axwell Radio Edit'  DB: 'In My Mind').
-    def _match(db_col, raw_col):
-        return (f"({_n(db_col)} = {_n(raw_col)}"
-                f" OR {_n(_bare(db_col))} = {_n(raw_col)}"
-                f" OR {_n(db_col)} = {_n(_bare(raw_col))}"
-                f" OR {_n(raw_col)} LIKE {_n(db_col)} || ' - %')")
-
-    title_match = _match('t.title', 'listens.raw_track_name')
-
-    cur = conn.execute(f'''
-        UPDATE listens
-        SET track_id = (
-            SELECT t.id FROM tracks t
-            WHERE  t.release_id IN ({rph})
-              AND  {title_match}
-            LIMIT 1
-        )
-        WHERE track_id IS NULL
-          AND lower(raw_artist_name) IN ({aph})
-          AND lower(raw_album_name)  = lower(?)
-          AND raw_track_name IS NOT NULL
-          AND EXISTS (
-              SELECT 1 FROM tracks t
-              WHERE  t.release_id IN ({rph})
-                AND  {title_match}
-          )
-    ''', [*release_ids, *artist_names, raw_album, *release_ids])
-    conn.commit()
-    sql_matched = cur.rowcount
-
-    # Phase 2: ETI-normalised matching — strips version/mix suffixes from both
-    # the DB title and the scrobble title using parse_track_title, then compares
-    # the clean base titles.  Handles cases like:
-    #   scrobble: "In My Mind - Axwell Radio Edit"  →  clean: "In My Mind"
-    #   DB track:  "In My Mind"                     →  clean: "In My Mind"  ✓
-    db_tracks = conn.execute(
-        f'SELECT id, title FROM tracks WHERE release_id IN ({rph})', release_ids
-    ).fetchall()
-    eti_map = {}
-    for t in db_tracks:
-        clean = _norm(_parse_track_title(t['title']).clean_title)
-        eti_map.setdefault(clean, t['id'])  # first match wins (prefer earlier track)
-
-    unmatched = conn.execute(f'''
-        SELECT id, raw_track_name FROM listens
-        WHERE  track_id IS NULL
-          AND  lower(raw_artist_name) IN ({aph})
-          AND  lower(raw_album_name)  = lower(?)
-          AND  raw_track_name IS NOT NULL
-    ''', [*artist_names, raw_album]).fetchall()
-
-    eti_matched = 0
-    for listen in unmatched:
-        clean_raw = _norm(_parse_track_title(listen['raw_track_name']).clean_title)
-        track_id  = eti_map.get(clean_raw)
-        if track_id:
-            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
-                         [track_id, listen['id']])
-            eti_matched += 1
-
-    if eti_matched:
-        conn.commit()
-
-    # Phase 3: fuzzy title matching — catches single-character typos/insertions
-    # like "Freezeey Peak" (DB) vs "Freezeezy Peak" (scrobble) where Phases 1/2
-    # both miss because the strings are close but not identical after normalisation.
-    # Uses ascii_key (strips all punctuation + lowercase) + SequenceMatcher ratio.
-    # Threshold 0.85 catches ~1-char edits on titles ≥6 chars while avoiding
-    # false positives on short or unrelated titles.
-    _FUZZY_THRESHOLD = 0.85
-
-    # Build ascii_key → track_id map for DB tracks not already covered by eti_map
-    fuzzy_map = {}  # ascii_key → track_id
-    for t in db_tracks:
-        clean = _parse_track_title(t['title']).clean_title
-        k = _ascii_key(clean)
-        fuzzy_map.setdefault(k, t['id'])
-
-    # Re-fetch still-unmatched listens (ETI may have resolved some)
-    still_unmatched = conn.execute(f'''
-        SELECT id, raw_track_name FROM listens
-        WHERE  track_id IS NULL
-          AND  lower(raw_artist_name) IN ({aph})
-          AND  lower(raw_album_name)  = lower(?)
-          AND  raw_track_name IS NOT NULL
-    ''', [*artist_names, raw_album]).fetchall()
-
-    fuzzy_matched = 0
-    for listen in still_unmatched:
-        raw_key = _ascii_key(_parse_track_title(listen['raw_track_name']).clean_title)
-        if not raw_key:
-            continue
-        best_ratio, best_id = 0.0, None
-        for db_key, tid in fuzzy_map.items():
-            ratio = difflib.SequenceMatcher(None, raw_key, db_key).ratio()
-            if ratio > best_ratio:
-                best_ratio, best_id = ratio, tid
-        if best_ratio >= _FUZZY_THRESHOLD and best_id:
-            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
-                         [best_id, listen['id']])
-            fuzzy_matched += 1
-
-    if fuzzy_matched:
-        conn.commit()
-    return sql_matched + eti_matched + fuzzy_matched
 
 
 # ── Row normalisation ─────────────────────────────────────────────────────────
@@ -580,40 +392,6 @@ def _sp_search_album(token: str, artist: str, album: str) -> list:
     except Exception as e:
         console.print(f'  [dim yellow]Spotify search failed: {e}[/dim yellow]')
         return []
-
-
-def _db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> list:
-    """
-    Search master.sqlite for releases whose title and primary artist
-    roughly match the raw scrobble strings.  Uses ascii_key comparison
-    (strips all punctuation + lowercase) so hyphen variants, apostrophe
-    differences, and accent variations don't prevent a hit.
-    Returns a list of row dicts.
-    """
-    key_album  = _ascii_key(album)
-    key_artist = _ascii_key(artist)
-    rows = conn.execute('''
-        SELECT r.id, r.title, r.release_date, r.type, r.type_secondary,
-               a.name                                                AS artist_name,
-               COUNT(t.id)                                          AS track_count,
-               SUM(CASE WHEN t.is_explicit = 1 THEN 1 ELSE 0 END)  AS explicit_count
-        FROM   releases r
-        LEFT JOIN artists  a  ON a.id  = r.primary_artist_id
-        LEFT JOIN tracks   t  ON t.release_id = r.id AND t.hidden = 0
-        WHERE  r.hidden = 0
-        GROUP  BY r.id
-    ''').fetchall()
-
-    results = []
-    for row in rows:
-        row = dict(row)
-        row_key = _ascii_key(row['title'])
-        if row_key == key_album:
-            results.append(row)
-        elif key_album in row_key or row_key in key_album:
-            if row['artist_name'] and key_artist in _ascii_key(row['artist_name']):
-                results.append(row)
-    return results
 
 
 def _print_db_result(i: int, row: dict) -> None:
@@ -1226,7 +1004,7 @@ def cmd_match(args):
                     f'{diff_hint}  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
                 )
             else:
-                hint = '  [dim]\\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+                hint = '  [dim]URL / db:ULID  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
 
             console.print(hint, end='')
 
@@ -1343,6 +1121,22 @@ def cmd_match(args):
                     else:
                         console.print(hint, end='')
                         continue
+
+                elif raw.lower().startswith('db:') or re.match(r'^[0-9A-Z]{26}$', raw):
+                    ulid = raw[3:] if raw.lower().startswith('db:') else raw
+                    rel = conn.execute(
+                        'SELECT id, title FROM releases WHERE id = ?', [ulid]
+                    ).fetchone()
+                    if rel:
+                        matched = bulk_rematch_by_name(conn, [rel['id']], artist, album)
+                        if matched:
+                            console.print(f'  [green]✓ {matched} listens matched[/green]')
+                        else:
+                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
+                        break
+                    else:
+                        console.print(f'  [red]Release {ulid!r} not found in DB[/red]')
+                        console.print(hint, end='')
 
                 else:
                     console.print('  [yellow]Paste a URL, or enter s / h / q[/yellow]')

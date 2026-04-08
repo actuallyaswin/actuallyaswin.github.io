@@ -52,6 +52,7 @@ from mdb_ops import (
     upsert_artist, upsert_release, upsert_tracks,
     upsert_artist_mb, upsert_release_mb, upsert_tracks_mb,
     populate_genre_relations,
+    bulk_rematch, bulk_rematch_by_name,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
@@ -562,6 +563,43 @@ def import_album_from_mb(db_path: str, mbid: str, *,
     return release_id, rel.name, rel.artist, rel.date
 
 
+def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title: str) -> None:
+    """Run listen matching for a freshly imported release.
+
+    1. MBID sweep — matches any unmatched listen whose raw_source_id is a
+       track MBID now present in the catalog.
+    2. Name sweep — filters unmatched listens to groups whose album name
+       ascii_key-matches this release's title, then runs bulk_rematch_by_name.
+    """
+    conn = open_db(db_path)
+    try:
+        mbid_n = bulk_rematch(conn)
+
+        # Filter candidate groups cheaply in Python using ascii_key comparison,
+        # avoiding a full catalog scan (db_search_releases) per group.
+        target_key = _norm(release_title)
+        groups = conn.execute('''
+            SELECT DISTINCT raw_artist_name, raw_album_name
+            FROM   listens
+            WHERE  track_id IS NULL
+              AND  raw_artist_name IS NOT NULL
+              AND  raw_album_name  IS NOT NULL
+        ''').fetchall()
+
+        name_n = 0
+        for raw_artist, raw_album in groups:
+            k = _norm(raw_album)
+            if k == target_key or target_key in k or k in target_key:
+                name_n += bulk_rematch_by_name(conn, [release_id], raw_artist, raw_album)
+
+        total = mbid_n + name_n
+        if total:
+            console.print(f'  [green]auto-matched {total:,} listen{"s" if total != 1 else ""}[/green]'
+                          + (f'  [dim]({mbid_n} mbid, {name_n} name)[/dim]' if mbid_n and name_n else ''))
+    finally:
+        conn.close()
+
+
 def cmd_import(args):
     load_dotenv()
     cid = os.environ.get('SPOTIFY_CLIENT_ID')
@@ -634,6 +672,8 @@ def cmd_import(args):
                     _import_aoty_step(db_path, release_id, title, artist)
                 if use_wiki and release_id and not args.no_mb:
                     _import_wiki_step(db_path, release_id, title, artist)
+                if release_id:
+                    _auto_rematch(db_path, release_id, artist, title)
             except urllib.error.HTTPError as e:
                 console.print(f'[red]HTTP {e.code}:[/red] {e.reason}')
                 errors += 1

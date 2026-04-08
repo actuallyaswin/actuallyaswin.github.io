@@ -1,5 +1,6 @@
 """mdb_ops — Database infrastructure for master.sqlite."""
 
+import difflib
 import os
 import random
 import re
@@ -7,7 +8,13 @@ import sqlite3
 import time
 import unicodedata
 
-from mdb_strings import resolve_title, ascii_key as _norm, _should_update_date
+from mdb_strings import (
+    resolve_title,
+    ascii_key,
+    normalize_text as _normalize_text,
+    parse_track_title as _parse_track_title,
+    _should_update_date,
+)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -477,7 +484,7 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
         isrc       = (sp.get('external_ids') or {}).get('isrc')
         track_mbid = mb_by_isrc.get(isrc) if isrc else None
         if not track_mbid:
-            track_mbid = mb_by_title.get(_norm(sp.get('name', '')))
+            track_mbid = mb_by_title.get(ascii_key(sp.get('name', '')))
         row = cur.execute('SELECT id, title FROM tracks WHERE spotify_id = ?', (sid,)).fetchone()
         if row:
             track_id, existing_title = row[0], row[1]
@@ -788,3 +795,201 @@ def populate_genre_relations(conn: sqlite3.Connection, tree_path: str) -> tuple[
 
     conn.commit()
     return inserted, skipped
+
+
+# ── Listen matching ────────────────────────────────────────────────────────────
+
+def bulk_rematch(conn: sqlite3.Connection) -> int:
+    """Match unresolved listens to catalog tracks via MBID.
+
+    raw_source_id holds the track MBID for ~76% of scrobbles; the rest use
+    artist|||track keys which require name-based matching.
+    Returns the count of newly matched listens.
+    """
+    cur = conn.execute('''
+        UPDATE listens
+        SET track_id = (
+            SELECT t.id FROM tracks t
+            WHERE t.mbid = listens.raw_source_id
+        )
+        WHERE track_id IS NULL
+          AND raw_source_id GLOB '????????-????-????-????-????????????'
+          AND EXISTS (
+              SELECT 1 FROM tracks t WHERE t.mbid = listens.raw_source_id
+          )
+    ''')
+    conn.commit()
+    return cur.rowcount
+
+
+def bulk_rematch_by_name(conn: sqlite3.Connection,
+                         release_ids: list,
+                         raw_artist: str,
+                         raw_album: str) -> int:
+    """Name-based listen matching for tracks without MBIDs.
+
+    Scopes to listens whose raw_artist_name matches the release's artists (or
+    any known alias), then joins on normalised track title using three phases:
+      Phase 1 (SQL): apostrophe variants, feat. credits, mix suffixes.
+      Phase 2 (Python): ETI-normalised clean-title comparison.
+      Phase 3 (Python): fuzzy ascii_key ratio (threshold 0.85).
+
+    Returns the count of newly matched listens.
+    """
+    if not release_ids:
+        return 0
+
+    rph = ','.join('?' * len(release_ids))
+
+    # Collect canonical artist names + all known aliases for artists on these releases
+    artist_name_set = {raw_artist.lower()}
+    rows = conn.execute(f'''
+        SELECT DISTINCT a.name, aa.alias
+        FROM   artists a
+        JOIN   track_artists ta ON ta.artist_id = a.id
+        JOIN   tracks t         ON t.id = ta.track_id
+        LEFT   JOIN artist_aliases aa ON aa.artist_id = a.id
+        WHERE  t.release_id IN ({rph})
+    ''', release_ids).fetchall()
+    for r in rows:
+        if r['name']:
+            artist_name_set.add(r['name'].lower())
+        if r['alias']:
+            artist_name_set.add(r['alias'].lower())
+
+    aph = ','.join('?' * len(artist_name_set))
+    artist_names = list(artist_name_set)
+
+    def _n(col):
+        return f"REPLACE(lower({col}), char(8217), char(39))"
+
+    def _bare(col):
+        nc = _n(col)
+        return (f"CASE WHEN instr({nc}, ' (feat.') > 0"
+                f" THEN trim(substr({col}, 1, instr({nc}, ' (feat.') - 1))"
+                f" ELSE {col} END")
+
+    def _match(db_col, raw_col):
+        return (f"({_n(db_col)} = {_n(raw_col)}"
+                f" OR {_n(_bare(db_col))} = {_n(raw_col)}"
+                f" OR {_n(db_col)} = {_n(_bare(raw_col))}"
+                f" OR {_n(raw_col)} LIKE {_n(db_col)} || ' - %')")
+
+    title_match = _match('t.title', 'listens.raw_track_name')
+
+    cur = conn.execute(f'''
+        UPDATE listens
+        SET track_id = (
+            SELECT t.id FROM tracks t
+            WHERE  t.release_id IN ({rph})
+              AND  {title_match}
+            LIMIT 1
+        )
+        WHERE track_id IS NULL
+          AND lower(raw_artist_name) IN ({aph})
+          AND lower(raw_album_name)  = lower(?)
+          AND raw_track_name IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM tracks t
+              WHERE  t.release_id IN ({rph})
+                AND  {title_match}
+          )
+    ''', [*release_ids, *artist_names, raw_album, *release_ids])
+    conn.commit()
+    sql_matched = cur.rowcount
+
+    # Phase 2: ETI-normalised matching
+    db_tracks = conn.execute(
+        f'SELECT id, title FROM tracks WHERE release_id IN ({rph})', release_ids
+    ).fetchall()
+    eti_map = {}
+    for t in db_tracks:
+        clean = _normalize_text(_parse_track_title(t['title']).clean_title)
+        eti_map.setdefault(clean, t['id'])
+
+    unmatched = conn.execute(f'''
+        SELECT id, raw_track_name FROM listens
+        WHERE  track_id IS NULL
+          AND  lower(raw_artist_name) IN ({aph})
+          AND  lower(raw_album_name)  = lower(?)
+          AND  raw_track_name IS NOT NULL
+    ''', [*artist_names, raw_album]).fetchall()
+
+    eti_matched = 0
+    for listen in unmatched:
+        clean_raw = _normalize_text(_parse_track_title(listen['raw_track_name']).clean_title)
+        track_id  = eti_map.get(clean_raw)
+        if track_id:
+            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                         [track_id, listen['id']])
+            eti_matched += 1
+    if eti_matched:
+        conn.commit()
+
+    # Phase 3: fuzzy ascii_key matching
+    _FUZZY_THRESHOLD = 0.85
+    fuzzy_map = {}
+    for t in db_tracks:
+        clean = _parse_track_title(t['title']).clean_title
+        k = ascii_key(clean)
+        fuzzy_map.setdefault(k, t['id'])
+
+    still_unmatched = conn.execute(f'''
+        SELECT id, raw_track_name FROM listens
+        WHERE  track_id IS NULL
+          AND  lower(raw_artist_name) IN ({aph})
+          AND  lower(raw_album_name)  = lower(?)
+          AND  raw_track_name IS NOT NULL
+    ''', [*artist_names, raw_album]).fetchall()
+
+    fuzzy_matched = 0
+    for listen in still_unmatched:
+        raw_key = ascii_key(_parse_track_title(listen['raw_track_name']).clean_title)
+        if not raw_key:
+            continue
+        best_ratio, best_id = 0.0, None
+        for db_key, tid in fuzzy_map.items():
+            ratio = difflib.SequenceMatcher(None, raw_key, db_key).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_id = ratio, tid
+        if best_ratio >= _FUZZY_THRESHOLD and best_id:
+            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                         [best_id, listen['id']])
+            fuzzy_matched += 1
+    if fuzzy_matched:
+        conn.commit()
+
+    return sql_matched + eti_matched + fuzzy_matched
+
+
+def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> list:
+    """Search the catalog for releases matching raw scrobble artist/album strings.
+
+    Uses ascii_key comparison (strips all punctuation + lowercase) so hyphen
+    variants, apostrophe differences, and accent variations don't block a hit.
+    Returns a list of row dicts.
+    """
+    key_album  = ascii_key(album)
+    key_artist = ascii_key(artist)
+    rows = conn.execute('''
+        SELECT r.id, r.title, r.release_date, r.type, r.type_secondary,
+               a.name                                                AS artist_name,
+               COUNT(t.id)                                          AS track_count,
+               SUM(CASE WHEN t.is_explicit = 1 THEN 1 ELSE 0 END)  AS explicit_count
+        FROM   releases r
+        LEFT JOIN artists  a  ON a.id  = r.primary_artist_id
+        LEFT JOIN tracks   t  ON t.release_id = r.id AND t.hidden = 0
+        WHERE  r.hidden = 0
+        GROUP  BY r.id
+    ''').fetchall()
+
+    results = []
+    for row in rows:
+        row = dict(row)
+        row_key = ascii_key(row['title'])
+        if row_key == key_album:
+            results.append(row)
+        elif key_album in row_key or row_key in key_album:
+            if row['artist_name'] and key_artist in ascii_key(row['artist_name']):
+                results.append(row)
+    return results
