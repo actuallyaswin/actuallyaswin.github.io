@@ -9,7 +9,7 @@ album-by-album.
 Usage:
   sync fetch [--parquet FILE] [--sqlite FILE] [--no-live] [--full] [--since N]
              [--spotify [DIR]]
-  sync match [--limit N] [--skipped] [--recent] [--release-id ULID]
+  sync match [--limit N] [--skipped] [--recent] [--release-id ULID] [--artist NAME [--interactive]]
   sync status
 """
 
@@ -848,6 +848,11 @@ def cmd_match(args):
     limit  = args.limit or 50
     include_deferred = getattr(args, 'skipped', False)
     sort_recent      = getattr(args, 'recent',  False)
+    artist_filter    = getattr(args, 'artist',      None)
+    interactive_flag = getattr(args, 'interactive', False)
+    artist_norm      = _norm(artist_filter) if artist_filter else None
+    # Artist sweep uses a high limit so the whole artist fits in one pass
+    eff_limit        = 9999 if artist_norm else limit
 
     if not token:
         console.print('[yellow]No Spotify credentials found — auto-search disabled.[/yellow]')
@@ -867,6 +872,7 @@ def cmd_match(args):
 
     auto_matched_albums   = 0
     auto_matched_listens  = 0
+    needs_manual: list    = []
 
     while True:
         # Top unresolved albums, excluding permanently-hidden (and deferred unless --skipped)
@@ -906,7 +912,7 @@ def cmd_match(args):
                 GROUP BY run_id, raw_artist_name, raw_album_name
                 ORDER BY last_listened DESC
                 LIMIT    ?
-            ''', [limit]).fetchall()
+            ''', [eff_limit]).fetchall()
         else:
             rows = conn.execute(f'''
                 SELECT   l.raw_album_name,
@@ -927,7 +933,10 @@ def cmd_match(args):
                 GROUP BY l.raw_album_name, l.raw_artist_name
                 ORDER BY listen_count DESC
                 LIMIT    ?
-            ''', [limit]).fetchall()
+            ''', [eff_limit]).fetchall()
+
+        if artist_norm:
+            rows = [r for r in rows if _norm(r['raw_artist_name']) == artist_norm]
 
         if not rows:
             console.print('[green]All listens resolved (or skipped)![/green]')
@@ -952,7 +961,12 @@ def cmd_match(args):
         total_unresolved = conn.execute(
             'SELECT COUNT(*) FROM listens WHERE track_id IS NULL'
         ).fetchone()[0]
-        mode_label = 'most recent session' if sort_recent else 'play count'
+        if artist_norm:
+            mode_label = f'artist sweep: {artist_filter}'
+        elif sort_recent:
+            mode_label = 'most recent session'
+        else:
+            mode_label = 'play count'
         console.print(
             f'  [dim]{total_unresolved:,} unresolved listens — '
             f'showing top {len(rows)} albums by {mode_label}[/dim]\n'
@@ -1004,6 +1018,58 @@ def cmd_match(args):
                     if unmatched_names:
                         console.print(f'  [dim yellow]  unmatched: {unmatched_str}[/dim yellow]')
             # ── End auto-match check ─────────────────────────────────────────
+
+            # ── Artist sweep: non-interactive auto-import ─────────────────────
+            if artist_norm:
+                fut = search_cache.get(album_i - 1)
+                if fut is not None:
+                    try:
+                        sp_auto = fut.result()
+                    except Exception:
+                        sp_auto = []
+                elif token:
+                    sp_auto = _sp_search_album(token, artist, album)
+                else:
+                    sp_auto = []
+
+                if (
+                    not db_results
+                    and len(sp_auto) == 1
+                    and _ascii_key(sp_auto[0].name) == _ascii_key(album)
+                ):
+                    console.print(
+                        f'  [dim green]✓ import[/dim green]  '
+                        f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
+                        f'[dim]({count} listens)[/dim]'
+                    )
+                    _do_multi_import(conn, [sp_auto[0]], raw_artist=artist, raw_album=album)
+                    auto_matched_albums += 1
+                    _pre_search(album_i)
+                    _pre_search(album_i + 1)
+                    console.print()
+                    continue
+
+                if not interactive_flag:
+                    sp_hint = (
+                        f'{len(sp_auto)} Spotify result{"s" if len(sp_auto) != 1 else ""}'
+                        if sp_auto else 'no Spotify results'
+                    )
+                    db_hint = f', {len(db_results)} DB' if db_results else ''
+                    console.print(
+                        f'  [dim yellow]? manual[/dim yellow]  '
+                        f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
+                        f'[dim]({count} listens, {sp_hint}{db_hint})[/dim]'
+                    )
+                    needs_manual.append({
+                        'artist': artist, 'album': album, 'count': count,
+                        'db': db_results, 'sp': sp_auto,
+                    })
+                    _pre_search(album_i)
+                    _pre_search(album_i + 1)
+                    console.print()
+                    continue
+                # --interactive: fall through to normal prompt
+            # ── End artist sweep ──────────────────────────────────────────────
 
             console.rule(f'[dim]{album_i}/{len(rows)}[/dim]', style='dim')
             console.print(f'  [bold]{artist}[/bold]  [dim]—  {album}[/dim]')
@@ -1152,6 +1218,22 @@ def cmd_match(args):
                     render_diff(*sp_results, compact=True)
                     console.print(hint, end='')
 
+                elif raw.lower().startswith('db:') or re.match(r'^[0-9A-Z]{26}$', raw):
+                    ulid = raw[3:] if raw.lower().startswith('db:') else raw
+                    rel = conn.execute(
+                        'SELECT id, title FROM releases WHERE id = ?', [ulid]
+                    ).fetchone()
+                    if rel:
+                        matched = bulk_rematch_by_name(conn, [rel['id']], artist, album)
+                        if matched:
+                            console.print(f'  [green]✓ {matched} listens matched[/green]')
+                        else:
+                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
+                        break
+                    else:
+                        console.print(f'  [red]Release {ulid!r} not found in DB[/red]')
+                        console.print(hint, end='')
+
                 elif total_results:
                     # Enter with a single result → auto-select it
                     if choice == '' and total_results == 1:
@@ -1203,31 +1285,15 @@ def cmd_match(args):
                         console.print(hint, end='')
                         continue
 
-                elif raw.lower().startswith('db:') or re.match(r'^[0-9A-Z]{26}$', raw):
-                    ulid = raw[3:] if raw.lower().startswith('db:') else raw
-                    rel = conn.execute(
-                        'SELECT id, title FROM releases WHERE id = ?', [ulid]
-                    ).fetchone()
-                    if rel:
-                        matched = bulk_rematch_by_name(conn, [rel['id']], artist, album)
-                        if matched:
-                            console.print(f'  [green]✓ {matched} listens matched[/green]')
-                        else:
-                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
-                        break
-                    else:
-                        console.print(f'  [red]Release {ulid!r} not found in DB[/red]')
-                        console.print(hint, end='')
-
                 else:
                     console.print('  [yellow]Paste a URL, or enter s / h / q[/yellow]')
                     console.print(hint, end='')
 
             console.print()
 
-        # End of batch — offer to continue or stop
-        if len(rows) < limit:
-            break  # no more albums to show
+        # End of batch — break immediately in --artist mode, else offer to continue
+        if artist_norm or len(rows) < limit:
+            break
         console.rule(style='dim')
         console.print('  [dim]Press Enter for next batch, or \\[q]uit:[/dim] ', end='')
         try:
@@ -1237,6 +1303,27 @@ def cmd_match(args):
             break
 
     _pool.shutdown(wait=False)
+    if artist_norm and needs_manual:
+        console.print()
+        console.rule('[dim]Needs manual review[/dim]', style='dim')
+        console.print(
+            f'  [dim]{len(needs_manual)} album'
+            f'{"s" if len(needs_manual) != 1 else ""} '
+            f'could not be auto-resolved:[/dim]\n'
+        )
+        for item in needs_manual:
+            console.print(
+                f'  [yellow]{item["count"]:3d}x[/yellow]  '
+                f'[bold]{item["artist"]}[/bold]  —  {item["album"]}'
+            )
+            for db_row in item['db'][:2]:
+                console.print(
+                    f'       [dim green]db:{db_row["id"]}[/dim green]  {db_row["title"]}'
+                )
+            for sp in item['sp'][:3]:
+                console.print(f'       [dim cyan]sp:{sp.id}[/dim cyan]  {sp.name}')
+        console.print()
+        console.print('  [dim]Run [bold]sync match[/bold] to resolve interactively.[/dim]')
     if auto_matched_albums:
         console.print(
             f'\n  [dim green]Auto-matched {auto_matched_albums} album'
@@ -1681,6 +1768,13 @@ def main():
     pm.add_argument('--release-id', metavar='ULID',
                     help='Force-match all unmatched listens against a specific DB release '
                          '(accepts db:ULID or bare ULID)')
+    pm.add_argument('--artist',     metavar='NAME',
+                    help='Non-interactive sweep: auto-import + match all unmatched albums '
+                         'for a single artist (accent-insensitive)')
+    pm.add_argument('--interactive', action='store_true',
+                    help='With --artist: fall through to interactive prompt for albums '
+                         'that cannot be auto-resolved (instead of collecting them in a '
+                         'needs-manual summary)')
 
     # status
     sub.add_parser('status', help='Show matched / unmatched breakdown')
