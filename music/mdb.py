@@ -7,6 +7,7 @@ Consolidated import and enrichment tool for master.sqlite.
 Usage:
   mdb import  <album…|file>               Import Spotify album(s) + MB + AOTY + Wikipedia
   mdb enrich  aoty  [options]             Scrape AOTY for genres, dates, and types
+  mdb enrich  art   [options]             Fill in missing album art (CAA → Spotify → manual)
   mdb enrich  dates [options]             Look up release dates via Wikipedia + MusicBrainz
   mdb enrich  tracks [options]            Fetch track MBIDs from MusicBrainz
   mdb hide    <artists|tracks|releases>   <csv>  Bulk hide/unhide
@@ -44,6 +45,7 @@ from mdb_strings import (
     ascii_key as _norm,
     MONTHS, _SOURCE_PRIORITY, _date_prec, _should_update_date, _parse_user_date,
     extract_mbid,
+    extract_spotify_id,
 )
 from mdb_ops import (
     new_ulid, slugify, unique_slug, load_dotenv,
@@ -712,6 +714,220 @@ def cmd_import(args):
         ok = total - errors
         console.print(f'  [dim]Batch:[/dim] {ok}/{total} succeeded'
                       + (f'  [red]{errors} failed[/red]' if errors else ''))
+
+# ── cmd: enrich art ──────────────────────────────────────────────────────────
+
+def cmd_enrich_art(args):
+    """Fill in missing album art, or interactively replace existing art.
+
+    Auto mode (default): tries Cover Art Archive then Spotify for each release
+    with no album_art_url; auto-applies the first found URL without prompting.
+
+    Interactive mode (--interactive): for every release in the queue, displays
+    found URLs and prompts for confirmation or a custom URL.  Useful for
+    reviewing and replacing art on already-populated releases (combine with
+    --overwrite or --release-id).
+    """
+    load_dotenv()
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+
+    conn = open_db(args.db or DB_PATH)
+    init_schema(conn)
+
+    # ── Build query ──────────────────────────────────────────────────────────
+    params = []
+
+    if args.release_id:
+        # Targeting a specific release always processes it regardless of art status
+        where = 'WHERE r.id = ? AND r.hidden = 0'
+        params = [args.release_id]
+    else:
+        art_clause    = '' if args.overwrite else "AND (r.album_art_url IS NULL OR r.album_art_url = '')"
+        artist_clause = ''
+        if args.artist:
+            artist_clause = 'AND (ra.artist_id = ? OR LOWER(a.name) = LOWER(?))'
+            params        = [args.artist, args.artist]
+        where = f'WHERE r.hidden = 0 {art_clause} {artist_clause}'
+
+    rows = conn.execute(f'''
+        SELECT DISTINCT r.id, r.title, r.release_year, r.mbid, r.spotify_id,
+               r.album_art_url, a.name AS artist_name
+        FROM releases r
+        LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+        LEFT JOIN artists a ON ra.artist_id = a.id
+        {where}
+        ORDER BY r.release_year DESC NULLS LAST, r.title
+    ''', params).fetchall()
+
+    queue = rows[args.skip:]
+    if args.limit:
+        queue = queue[:args.limit]
+
+    if not queue:
+        console.print('[dim]Nothing to process.[/dim]')
+        conn.close()
+        return
+
+    console.print(f'[dim]{len(queue)} release{"s" if len(queue) != 1 else ""} to process'
+                  + ('  (interactive)' if args.interactive else '') + '[/dim]\n')
+
+    # ── Lazy Spotify client ──────────────────────────────────────────────────
+    _sp_client = None
+    def _get_sp():
+        nonlocal _sp_client
+        if _sp_client is None and cid and csc:
+            _sp_client = SpotifyClient(cid, csc)
+        return _sp_client
+
+    updated = skipped = 0
+    now     = int(time.time())
+
+    for i, row in enumerate(queue):
+        release_id  = row['id']
+        title       = row['title']
+        year        = row['release_year'] or '?'
+        mbid        = row['mbid']
+        spotify_id  = row['spotify_id']
+        artist_name = row['artist_name'] or ''
+        current_url = row['album_art_url']
+
+        prefix = f'[dim][{i+1}/{len(queue)}][/dim]  '
+        console.print(f'{prefix}[bold]{_trunc(title, 40)}[/bold]  [dim]{artist_name} · {year}[/dim]')
+
+        # ── Fetch candidates ─────────────────────────────────────────────────
+        caa_url = sp_url = None
+
+        if mbid:
+            try:
+                caa_url = caa_fetch_front_image_url(mbid)
+            except Exception as e:
+                console.print(f'  [yellow]CAA error:[/yellow] {e}')
+
+        if spotify_id:
+            try:
+                client = _get_sp()
+                if client:
+                    album  = client.get_album(spotify_id)
+                    images = album.get('images') or []
+                    if images:
+                        sp_url = max(images, key=lambda x: (x.get('width') or 0))['url']
+            except Exception as e:
+                console.print(f'  [yellow]Spotify error:[/yellow] {e}')
+
+        # CAA preferred over Spotify
+        auto_url    = caa_url or sp_url
+        auto_source = ('musicbrainz' if caa_url else 'spotify') if auto_url else None
+
+        if not args.interactive:
+            # ── Auto mode ────────────────────────────────────────────────────
+            if auto_url:
+                conn.execute(
+                    'UPDATE releases SET album_art_url=?, album_art_source=?, updated_at=? WHERE id=?',
+                    (auto_url, auto_source, now, release_id),
+                )
+                conn.commit()
+                console.print(f'  [green]✓[/green]  [dim]{auto_source}[/dim]  [dim]{auto_url[:65]}[/dim]')
+                updated += 1
+            else:
+                console.print('  [dim]no art found[/dim]')
+                skipped += 1
+        else:
+            # ── Interactive mode ─────────────────────────────────────────────
+            if caa_url:
+                console.print(f'  [dim]CAA:[/dim]     {caa_url[:70]}')
+            if sp_url:
+                console.print(f'  [dim]Spotify:[/dim] {sp_url[:70]}')
+            if current_url:
+                console.print(f'  [dim]current:[/dim] {current_url[:70]}')
+            if not caa_url and not sp_url:
+                console.print('  [dim]no art sources found[/dim]')
+
+            # Build keys based on what's available
+            both    = caa_url and sp_url
+            hint    = '[a] CAA  [b] Spotify' if both else '[a] accept' if auto_url else ''
+            prompt  = '  ' + ('  '.join(filter(None, [hint, '[u]rl', '[s]kip', '[q]uit']))) + ': '
+
+            chosen_url = chosen_source = None
+            while True:
+                try:
+                    raw = input(prompt).strip()
+                except EOFError:
+                    raw = 'q'
+
+                lo = raw.lower()
+                if lo == 'q':
+                    conn.close()
+                    console.rule(style='dim')
+                    console.print(f'  [dim]Updated: {updated}  Skipped: {skipped}[/dim]')
+                    return
+                elif lo in ('s', ''):
+                    skipped += 1
+                    break
+                elif lo == 'a' and auto_url:
+                    chosen_url    = caa_url if caa_url else sp_url
+                    chosen_source = 'musicbrainz' if caa_url else 'spotify'
+                    break
+                elif lo == 'b' and sp_url:
+                    chosen_url, chosen_source = sp_url, 'spotify'
+                    break
+                elif lo == 'u' or raw.startswith('http') or raw.startswith('spotify:'):
+                    url_in = raw if (raw.startswith('http') or raw.startswith('spotify:')) else input('  URL: ').strip()
+                    # Detect Spotify album URL/URI → resolve to actual image
+                    sp_id = extract_spotify_id(url_in) if 'spotify' in url_in.lower() else None
+                    if sp_id:
+                        try:
+                            client = _get_sp()
+                            if client:
+                                album  = client.get_album(sp_id)
+                                images = album.get('images') or []
+                                if images:
+                                    fetched = max(images, key=lambda x: (x.get('width') or 0))['url']
+                                    chosen_url, chosen_source = fetched, 'spotify'
+                                    break
+                                else:
+                                    console.print('  [yellow]No images on that Spotify album[/yellow]')
+                            else:
+                                console.print('  [yellow]Spotify credentials not configured[/yellow]')
+                        except Exception as e:
+                            console.print(f'  [yellow]Spotify error:[/yellow] {e}')
+                    elif url_in.startswith('http'):
+                        # Validate the URL resolves to an image via HEAD request
+                        try:
+                            req = urllib.request.Request(
+                                url_in, method='HEAD',
+                                headers={'User-Agent': 'actuallyaswin-music/1.0'},
+                            )
+                            with urllib.request.urlopen(req, timeout=8) as resp:
+                                ct = resp.headers.get('Content-Type', '')
+                            if ct.startswith('image/'):
+                                chosen_url, chosen_source = url_in, 'manual'
+                                break
+                            else:
+                                console.print(f'  [yellow]Not an image URL (Content-Type: {ct or "unknown"})[/yellow]')
+                        except Exception as e:
+                            console.print(f'  [yellow]Could not validate URL ({e}) — saved anyway[/yellow]')
+                            chosen_url, chosen_source = url_in, 'manual'
+                            break
+                    else:
+                        console.print('  [dim]invalid URL[/dim]')
+                else:
+                    console.print('  [dim]?[/dim]')
+
+            if chosen_url:
+                conn.execute(
+                    'UPDATE releases SET album_art_url=?, album_art_source=?, updated_at=? WHERE id=?',
+                    (chosen_url, chosen_source, now, release_id),
+                )
+                conn.commit()
+                tag = '[yellow]replaced[/yellow]' if current_url else '[green]set[/green]'
+                console.print(f'  {tag}  [dim]{chosen_source}[/dim]')
+                updated += 1
+
+    conn.close()
+    console.rule(style='dim')
+    console.print(f'  [dim]Updated: {updated}  Skipped: {skipped}[/dim]')
+
 
 # ── cmd: enrich aoty ─────────────────────────────────────────────────────────
 
@@ -2215,6 +2431,32 @@ def cmd_release_variants(args):
     conn.close()
 
 
+def _merge_variant_tracks(conn, canonical_id, variant_id):
+    """Move listens from shared variant tracks → canonical tracks (by ISRC, title fallback),
+    then hide the shared tracks on the variant.  Returns (listens_moved, tracks_hidden)."""
+    canon_rows = conn.execute(
+        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [canonical_id]
+    ).fetchall()
+    by_isrc  = {r[1]: r[0] for r in canon_rows if r[1]}
+    by_title = {_norm(r[2]): r[0] for r in canon_rows}
+
+    var_rows = conn.execute(
+        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [variant_id]
+    ).fetchall()
+
+    listens_moved = tracks_hidden = 0
+    for vid, visrc, vtitle in var_rows:
+        canon_tid = (by_isrc.get(visrc) if visrc else None) or by_title.get(_norm(vtitle))
+        if not canon_tid:
+            continue
+        listens_moved += conn.execute(
+            'UPDATE listens SET track_id=? WHERE track_id=?', [canon_tid, vid]
+        ).rowcount
+        conn.execute('UPDATE tracks SET hidden=1 WHERE id=?', [vid])
+        tracks_hidden += 1
+    return listens_moved, tracks_hidden
+
+
 def _write_group(conn, canonical, type_updates, edition_links, hide_ids):
     """Write all accumulated type/variant/hide changes for one group."""
     for rid in hide_ids:
@@ -2235,6 +2477,9 @@ def _write_group(conn, canonical, type_updates, edition_links, hide_ids):
                    sort_order   = excluded.sort_order''',
             (canonical['id'], variant_id, edition_type, sort_order),
         )
+        # Always hide variant and merge shared-track listens to canonical
+        conn.execute('UPDATE releases SET hidden=1 WHERE id=?', [variant_id])
+        _merge_variant_tracks(conn, canonical['id'], variant_id)
 
     conn.commit()
 
@@ -2615,6 +2860,12 @@ def main():
     p_artists_enrich.add_argument('--overwrite', action='store_true',  help='Re-fetch even if already populated')
     p_artists_enrich.add_argument('--db',        metavar='PATH',       help='Path to master.sqlite')
     p_artists_enrich.set_defaults(func=cmd_enrich_artists)
+
+    p_art = es.add_parser('art', help='Fill in or replace album art (CAA → Spotify → manual URL)')
+    _add_filter_args(p_art)
+    p_art.add_argument('--overwrite',    action='store_true', help='Re-process releases that already have art')
+    p_art.add_argument('--interactive',  action='store_true', help='Prompt for each release instead of auto-applying')
+    p_art.set_defaults(func=cmd_enrich_art)
 
     # hide
     p = sub.add_parser('hide', help='Bulk hide or unhide artists, tracks, or releases')
