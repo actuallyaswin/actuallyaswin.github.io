@@ -4,7 +4,8 @@ const ViewArtist = (() => {
     let _currentChart = null;
     let _chartData = { monthly: null, yearly: null, monthlyRaw: null };
     let _chartState = { granularity: 'monthly', type: 'distribution' };
-    let _sortState = { tracks: 'listens', releases: 'listens' };
+    let _discSort = 'date'; // 'date' | 'listens'
+    let _discData = { own: null, collabs: null };
     let _themeObserver = null;
 
     const CHART_ENABLED = false;
@@ -15,6 +16,7 @@ const ViewArtist = (() => {
         _artistId = params.id;
         _currentChart = null;
         _chartData = { monthly: null, yearly: null, monthlyRaw: null };
+        _discData = { own: null, collabs: null };
 
         if (!_artistId) {
             navigate({ view: 'home' });
@@ -78,34 +80,19 @@ const ViewArtist = (() => {
                 </section>
             </div>
 
-            <div class="two-column-layout">
-                <section class="column">
-                    <div class="section-header">
-                        <h2>Top Releases</h2>
-                        <div class="sort-controls">
-                            <button class="sort-btn${_sortState.releases === 'listens' ? ' active' : ''}" data-sort-releases="listens" title="Sort by listens"><i data-lucide="headphones"></i></button>
-                            <button class="sort-btn${_sortState.releases === 'minutes' ? ' active' : ''}" data-sort-releases="minutes" title="Sort by minutes"><i data-lucide="clock"></i></button>
-                            <button class="sort-btn${_sortState.releases === 'date' ? ' active' : ''}" data-sort-releases="date" title="Sort by release date"><i data-lucide="calendar"></i></button>
-                        </div>
+            <section class="disc-section">
+                <div class="section-header">
+                    <h2>Discography</h2>
+                    <div class="sort-controls">
+                        <span class="disc-sort-label">Sort by</span>
+                        <button class="sort-btn${_discSort === 'date' ? ' active' : ''}" data-disc-sort="date">Release Date</button>
+                        <button class="sort-btn${_discSort === 'listens' ? ' active' : ''}" data-disc-sort="listens">Listens</button>
                     </div>
-                    <div id="releases">
-                        <div class="loading">Loading releases...</div>
-                    </div>
-                </section>
-
-                <section class="column">
-                    <div class="section-header">
-                        <h2>Top Tracks</h2>
-                        <div class="sort-controls">
-                            <button class="sort-btn${_sortState.tracks === 'listens' ? ' active' : ''}" data-sort-tracks="listens" title="Sort by listens"><i data-lucide="headphones"></i></button>
-                            <button class="sort-btn${_sortState.tracks === 'minutes' ? ' active' : ''}" data-sort-tracks="minutes" title="Sort by minutes"><i data-lucide="clock"></i></button>
-                        </div>
-                    </div>
-                    <div class="track-two-col" id="topTracks">
-                        <div class="loading">Loading tracks...</div>
-                    </div>
-                </section>
-            </div>
+                </div>
+                <div id="discographyContainer">
+                    <div class="loading">Loading discography…</div>
+                </div>
+            </section>
 
             <footer>
                 <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
@@ -114,11 +101,10 @@ const ViewArtist = (() => {
 
         loadArtistInfo();
         loadArtistBadges();
-        loadTopTracks();
-        loadReleases();
+        loadDiscography();
         loadListeningHistory();
         loadRecentPlays();
-        setupSortControls();
+        setupDiscSort();
     }
 
     function unmount() {
@@ -151,7 +137,7 @@ const ViewArtist = (() => {
             LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
             LEFT JOIN tracks t ON ta.track_id = t.id
             LEFT JOIN listens l ON t.id = l.track_id
-            WHERE a.id = '${safeId}'
+            WHERE a.id = '${safeId}' AND (a.hidden IS NULL OR a.hidden = 0)
             GROUP BY a.id
         `)[0];
 
@@ -218,11 +204,11 @@ const ViewArtist = (() => {
             SELECT g.aoty_id, g.name, COUNT(DISTINCT rg.release_id) as freq
             FROM release_genres rg
             JOIN genres g ON rg.aoty_genre_id = g.aoty_id
-            WHERE rg.is_primary = 1
-            AND rg.release_id IN (
+            WHERE rg.release_id IN (
                 SELECT DISTINCT t.release_id
                 FROM track_artists ta
                 JOIN tracks t ON ta.track_id = t.id
+                JOIN releases r ON r.id = t.release_id AND r.hidden = 0
                 WHERE ta.artist_id = '${safeId}' AND ta.role = 'main' AND t.hidden = 0
             )
             GROUP BY g.aoty_id
@@ -292,158 +278,170 @@ const ViewArtist = (() => {
         }
     }
 
-    function loadTopTracks() {
-        const orderClause = _sortState.tracks === 'minutes' ? 'total_minutes DESC' : 'play_count DESC';
+    function loadDiscography() {
         const safeId = _artistId.replace(/'/g, "''");
 
-        const result = _db.exec(`
-            SELECT
-                t.title,
-                t.id,
-                t.duration_ms,
-                (SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) as play_count,
-                CAST((SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) * COALESCE(t.duration_ms, 0) / 60000.0 AS INTEGER) as total_minutes,
-                r.album_art_url,
-                r.id as release_id
-            FROM tracks t
-            LEFT JOIN releases r ON t.release_id = r.id
-            WHERE t.id IN (
-                SELECT DISTINCT track_id FROM track_artists
-                WHERE artist_id = '${safeId}' AND role = 'main'
-            )
-            AND t.hidden = 0
-            AND (SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) > 0
-            ORDER BY ${orderClause}
-            LIMIT 20
-        `)[0];
-
-        const container = document.getElementById('topTracks');
-        if (!container) return;
-        container.innerHTML = '';
-
-        if (!result || result.values.length === 0) {
-            container.innerHTML = '<div class="loading">No tracks found</div>';
-            return;
-        }
-
-        result.values.forEach(([trackTitle, trackId, durationMs, playCount, totalMinutes, albumArtUrl, releaseId]) => {
-            const card = document.createElement('a');
-            card.className = 'track-row';
-            card.href = releaseId ? `?view=release&id=${encodeURIComponent(releaseId)}` : '#';
-            const imgSrc = albumArtUrl || getFallbackImageUrl();
-            card.innerHTML = `
-                <div class="track-row-thumb" style="background-image: url('${imgSrc}')"></div>
-                <div class="track-row-info">
-                    <div class="track-row-name">${escapeHtml(trackTitle)}</div>
-                </div>
-                <div class="track-row-stats">
-                    <span class="stat-item">
-                        <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
-                        ${formatNumber(playCount)}
-                    </span>
-                </div>
-            `;
-            container.appendChild(card);
-        });
-
-    }
-
-    function loadReleases() {
-        const safeId = _artistId.replace(/'/g, "''");
-        const sortBy = _sortState.releases;
-        let orderClause;
-        if (sortBy === 'minutes') {
-            orderClause = 'total_minutes DESC';
-        } else if (sortBy === 'date') {
-            orderClause = 'release_year DESC, total_listens DESC';
-        } else {
-            orderClause = 'total_listens DESC, release_year DESC';
-        }
-
-        const result = _db.exec(`
+        const ownResult = _db.exec(`
             SELECT
                 r.id,
                 r.title,
                 r.release_year,
                 r.type,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END) as tracks_listened,
-                COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
-                CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
+                r.type_secondary,
                 r.album_art_url,
-                CASE WHEN r.primary_artist_id != '${safeId}'
-                     THEN (SELECT a2.name FROM artists a2 WHERE a2.id = r.primary_artist_id)
-                     ELSE NULL END as via_artist
+                (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
+                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks,
+                (SELECT COUNT(DISTINCT t.id) FROM tracks t
+                 WHERE t.release_id = r.id AND t.hidden = 0
+                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+                 AND EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id)) as listened_tracks,
+                (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
+                 WHERE t.release_id = r.id AND t.hidden = 0) as total_listens
             FROM releases r
-            JOIN tracks t ON r.id = t.release_id
-            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-            LEFT JOIN listens l ON t.id = l.track_id
-            WHERE (
-                ta.artist_id = '${safeId}'
-                OR ta.artist_id IN (
-                    SELECT group_artist_id FROM artist_members WHERE member_artist_id = '${safeId}'
-                )
-            )
+            WHERE r.primary_artist_id = '${safeId}'
             AND r.hidden = 0
-            GROUP BY r.id
-            HAVING total_listens > 0
-            ORDER BY ${orderClause}
-            LIMIT 15
+            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
         `)[0];
 
-        const container = document.getElementById('releases');
+        const collabResult = _db.exec(`
+            SELECT
+                r.id,
+                r.title,
+                r.release_year,
+                r.type,
+                r.type_secondary,
+                r.album_art_url,
+                (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
+                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks,
+                (SELECT COUNT(DISTINCT t.id) FROM tracks t
+                 WHERE t.release_id = r.id AND t.hidden = 0
+                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+                 AND EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id)) as listened_tracks,
+                (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
+                 WHERE t.release_id = r.id AND t.hidden = 0) as total_listens,
+                (SELECT a2.name FROM artists a2 WHERE a2.id = r.primary_artist_id) as primary_artist_name
+            FROM releases r
+            JOIN release_artists ra ON ra.release_id = r.id
+            WHERE ra.artist_id = '${safeId}' AND ra.role = 'main'
+            AND r.primary_artist_id != '${safeId}'
+            AND r.hidden = 0
+            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
+        `)[0];
+
+        _discData.own = ownResult ? ownResult.values : [];
+        _discData.collabs = collabResult ? collabResult.values : [];
+
+        renderDiscography();
+    }
+
+    const _DISC_GROUPS = [
+        { key: 'album',       label: 'Albums',              test: r => r.type === 'album' && !r.typeSecondary },
+        { key: 'ep',          label: 'EPs',                 test: r => r.type === 'ep' },
+        { key: 'single',      label: 'Singles',             test: r => r.type === 'single' },
+        { key: 'compilation', label: 'Compilations',        test: r => r.typeSecondary === 'compilation' },
+        { key: 'soundtrack',  label: 'Soundtracks',         test: r => r.typeSecondary === 'soundtrack' },
+        { key: 'live',        label: 'Live',                test: r => r.typeSecondary === 'live' },
+        { key: 'remix',       label: 'Remixes & DJ-Mixes',  test: r => r.typeSecondary === 'remix' || r.typeSecondary === 'dj-mix' },
+        { key: 'mixtape',     label: 'Mixtapes',            test: r => r.typeSecondary === 'mixtape' },
+        { key: 'other',       label: 'Other',               test: () => true },
+    ];
+
+    function _discDonutColor(pct) {
+        if (pct <= 0)   return 'var(--border)';
+        if (pct < 0.5)  return '#3b82f6';
+        if (pct < 0.75) return '#f59e0b';
+        if (pct < 1.0)  return '#f97316';
+        return '#22c55e';
+    }
+
+    function _makeDiscCard(row, collab) {
+        const [id, title, year, type, typeSecondary, albumArtUrl,
+               totalTracks, listenedTracks, totalListens, primaryArtistName] = row;
+
+        const pct   = totalTracks > 0 ? listenedTracks / totalTracks : 0;
+        const pctInt = Math.round(pct * 100);
+        const color = _discDonutColor(pct);
+
+        let subParts = [];
+        if (year) subParts.push(year);
+        if (collab && primaryArtistName) subParts.push(escapeHtml(primaryArtistName));
+        else if (totalListens > 0) subParts.push(`${formatNumber(totalListens)} plays`);
+
+        const card = document.createElement('a');
+        card.className = 'disc-card' + (totalListens === 0 ? ' unplayed' : '');
+        card.href = `?view=release&id=${encodeURIComponent(id)}`;
+
+        const imgSrc = albumArtUrl || getFallbackImageUrl();
+        const tooltipText = totalTracks > 0 ? `${listenedTracks} / ${totalTracks} tracks` : '';
+
+        card.innerHTML = `
+            <div class="disc-card-img" style="background-image: url('${imgSrc}')"></div>
+            <div class="disc-card-meta">
+                <div class="disc-card-info">
+                    <div class="disc-card-title">${escapeHtml(title)}</div>
+                    <div class="disc-card-sub">${subParts.join(' · ')}</div>
+                </div>
+                ${totalTracks > 0 ? `<div class="donut-wrap" style="--p:${pctInt};--c:${color}" data-tooltip="${tooltipText}"><div class="donut"></div></div>` : ''}
+            </div>
+        `;
+        return card;
+    }
+
+    function _renderDiscGroup(container, label, rows, collab) {
+        if (!rows || rows.length === 0) return;
+
+        const group = document.createElement('div');
+        group.className = 'disc-group';
+
+        const h3 = document.createElement('h3');
+        h3.textContent = label;
+        group.appendChild(h3);
+
+        const grid = document.createElement('div');
+        grid.className = 'disc-grid';
+        rows.forEach(row => grid.appendChild(_makeDiscCard(row, collab)));
+        group.appendChild(grid);
+
+        container.appendChild(group);
+    }
+
+    function renderDiscography() {
+        const container = document.getElementById('discographyContainer');
         if (!container) return;
         container.innerHTML = '';
 
-        if (!result || result.values.length === 0) {
+        const sortFn = _discSort === 'listens'
+            ? (a, b) => b[8] - a[8]
+            : (a, b) => (b[2] || 0) - (a[2] || 0);
+
+        const own = [...(_discData.own || [])].sort(sortFn);
+        const collabs = [...(_discData.collabs || [])].sort(sortFn);
+
+        if (own.length === 0 && collabs.length === 0) {
             container.innerHTML = '<div class="loading">No releases found</div>';
             return;
         }
 
-        result.values.forEach(([releaseId, releaseTitle, releaseYear, releaseType, tracksListened, totalListens, totalMinutes, albumArtUrl, viaArtist]) => {
-            const card = document.createElement('a');
-            card.className = 'release-card';
-            card.href = `?view=release&id=${encodeURIComponent(releaseId)}`;
-
-            let stat1, stat2;
-            if (sortBy === 'minutes') {
-                stat1 = `${formatNumber(totalMinutes)} min`;
-                stat2 = `${formatNumber(totalListens)} plays`;
-            } else if (sortBy === 'date') {
-                stat1 = `${formatNumber(totalListens)} plays`;
-                stat2 = `${formatNumber(tracksListened)} tracks`;
-            } else {
-                stat1 = `${formatNumber(totalListens)} plays`;
-                stat2 = `${formatNumber(totalMinutes)} min`;
-            }
-
-            const thumbUrl = albumArtUrl || getFallbackImageUrl();
-            const relCert = totalListens >= 250 ? 'diamond' : totalListens >= 100 ? 'platinum' : totalListens >= 50 ? 'gold' : null;
-            const relCertLabels = { gold: '50+ plays', platinum: '100+ plays', diamond: '250+ plays' };
-            const certDot = relCert ? `<span class="release-cert-dot release-cert-dot-${relCert}" title="${relCertLabels[relCert]}"></span>` : '';
-            card.innerHTML = `
-                <div class="release-card-thumb" style="background-image: url('${thumbUrl}')">${certDot}</div>
-                <div class="release-card-body">
-                    <div class="release-name">${escapeHtml(releaseTitle)}</div>
-                    <div class="release-stats">
-                        <span class="stat-item">
-                            <i data-lucide="headphones" style="width: 13px; height: 13px;"></i>
-                            ${stat1}
-                        </span>
-                        <span class="stat-item">
-                            <i data-lucide="clock" style="width: 13px; height: 13px;"></i>
-                            ${stat2}
-                        </span>
-                    </div>
-                    <div class="release-meta">
-                        <span class="release-year">${releaseYear || 'Unknown'}</span>
-                        ${releaseType ? `<span class="release-type-label">${releaseType}</span>` : ''}
-                        ${viaArtist ? `<span class="release-via-artist">${escapeHtml(viaArtist)}</span>` : ''}
-                    </div>
-                </div>
-            `;
-            container.appendChild(card);
+        // Assign each release to the first matching group
+        const groupBuckets = _DISC_GROUPS.map(() => []);
+        own.forEach(row => {
+            const obj = { type: row[3], typeSecondary: row[4] };
+            const idx = _DISC_GROUPS.findIndex(g => g.test(obj));
+            if (idx >= 0) groupBuckets[idx].push(row);
         });
 
+        _DISC_GROUPS.forEach(({ label }, i) => {
+            _renderDiscGroup(container, label, groupBuckets[i], false);
+        });
+
+        _renderDiscGroup(container, 'Collaborations', collabs, true);
+    }
+
+    function setupDiscSort() {
+        setupToggleGroup('[data-disc-sort]', btn => {
+            _discSort = btn.dataset.discSort;
+            renderDiscography();
+        });
     }
 
     function loadRecentPlays() {
@@ -709,18 +707,6 @@ const ViewArtist = (() => {
             data.push(dataMap.get(year) || 0);
         }
         return { labels, data };
-    }
-
-    function setupSortControls() {
-        setupToggleGroup('[data-sort-tracks]', btn => {
-            _sortState.tracks = btn.dataset.sortTracks;
-            loadTopTracks();
-        });
-
-        setupToggleGroup('[data-sort-releases]', btn => {
-            _sortState.releases = btn.dataset.sortReleases;
-            loadReleases();
-        });
     }
 
     return { mount, unmount };

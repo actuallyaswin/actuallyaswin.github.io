@@ -120,6 +120,41 @@ const ViewHome = (() => {
         document.getElementById('statTracks').textContent = formatNumber(totalTracks);
     }
 
+    function attachKeyNav(inputEl, resultsEl) {
+        inputEl.addEventListener('keydown', e => {
+            if (!resultsEl.classList.contains('active')) return;
+            const items = Array.from(resultsEl.querySelectorAll('a.search-result-item'));
+            if (!items.length) return;
+            const focused = resultsEl.querySelector('.keyboard-focused');
+            const idx = focused ? items.indexOf(focused) : -1;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                const next = items[idx + 1] ?? items[0];
+                focused?.classList.remove('keyboard-focused');
+                next.classList.add('keyboard-focused');
+                next.scrollIntoView({ block: 'nearest' });
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (idx <= 0) {
+                    focused?.classList.remove('keyboard-focused');
+                    inputEl.focus();
+                } else {
+                    const prev = items[idx - 1];
+                    focused?.classList.remove('keyboard-focused');
+                    prev.classList.add('keyboard-focused');
+                    prev.scrollIntoView({ block: 'nearest' });
+                }
+            } else if (e.key === 'Enter' && focused) {
+                e.preventDefault();
+                focused.click();
+            } else if (e.key === 'Escape') {
+                resultsEl.classList.remove('active');
+                focused?.classList.remove('keyboard-focused');
+            }
+        });
+    }
+
     function setupSearch() {
         const searchInput = document.getElementById('searchInput');
         const searchResults = document.getElementById('searchResults');
@@ -137,6 +172,8 @@ const ViewHome = (() => {
             }
             debounceTimer = setTimeout(() => performSearch(query), 300);
         });
+
+        attachKeyNav(searchInput, searchResults);
 
         document.addEventListener('click', e => {
             if (searchInput && !searchInput.contains(e.target) && searchResults && !searchResults.contains(e.target)) {
@@ -184,8 +221,10 @@ const ViewHome = (() => {
             item.href = `?view=artist&id=${encodeURIComponent(id)}`;
             const showAlias = matchedAlias && name.toLowerCase().indexOf(query.toLowerCase()) === -1;
             item.innerHTML = `
-                <div class="search-result-name">${escapeHtml(name)}</div>
-                <div class="search-result-meta">${formatNumber(totalListens)} plays${showAlias ? ` · <span class="search-result-alias">${escapeHtml(matchedAlias)}</span>` : ''}</div>
+                <div class="search-result-main">
+                    <span class="search-result-name">${escapeHtml(name)}${showAlias ? ` <span class="search-result-alias">· ${escapeHtml(matchedAlias)}</span>` : ''}</span>
+                    <span class="search-result-count">${formatNumber(totalListens)}</span>
+                </div>
             `;
             searchResults.appendChild(item);
         });
@@ -209,6 +248,8 @@ const ViewHome = (() => {
             }
             debounceTimer = setTimeout(() => performReleaseSearch(query), 300);
         });
+
+        attachKeyNav(searchInput, searchResults);
 
         document.addEventListener('click', e => {
             if (searchInput && !searchInput.contains(e.target) && searchResults && !searchResults.contains(e.target)) {
@@ -252,7 +293,10 @@ const ViewHome = (() => {
             item.className = 'search-result-item';
             item.href = `?view=release&id=${encodeURIComponent(id)}`;
             item.innerHTML = `
-                <div class="search-result-name">${escapeHtml(title)}</div>
+                <div class="search-result-main">
+                    <span class="search-result-name">${escapeHtml(title)}</span>
+                    <span class="search-result-count">${formatNumber(totalListens)}</span>
+                </div>
                 <div class="search-result-meta">${escapeHtml(artistName || 'Various Artists')}${year ? ` · ${year}` : ''}</div>
             `;
             searchResults.appendChild(item);

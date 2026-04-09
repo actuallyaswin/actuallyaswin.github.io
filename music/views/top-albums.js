@@ -75,22 +75,15 @@ const ViewTopAlbums = (() => {
                 r.album_art_url,
                 a.name,
                 a.id as artist_id,
-                (SELECT COUNT(DISTINCT t2.id)
-                 FROM tracks t2
-                 LEFT JOIN listens l2 ON t2.id = l2.track_id
-                 WHERE t2.release_id = r.id AND t2.hidden = 0
-                 AND l2.id IS NOT NULL) as tracks_listened,
-                (SELECT COUNT(l2.id)
-                 FROM tracks t2
-                 LEFT JOIN listens l2 ON t2.id = l2.track_id
-                 WHERE t2.release_id = r.id AND t2.hidden = 0) as total_listens,
-                (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) / 60000.0 AS INTEGER)
-                 FROM tracks t2
-                 JOIN listens l2 ON t2.id = l2.track_id
-                 WHERE t2.release_id = r.id AND t2.hidden = 0) as total_minutes
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as tracks_listened,
+                COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
+                CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
             FROM releases r
             LEFT JOIN artists a ON a.id = r.primary_artist_id
+            LEFT JOIN tracks t ON t.release_id = r.id
+            LEFT JOIN listens l ON l.track_id = t.id
             WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
+            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
             GROUP BY r.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}

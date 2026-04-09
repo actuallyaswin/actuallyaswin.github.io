@@ -199,17 +199,71 @@ const ViewRelease = (() => {
             albumArtDiv.innerHTML = '';
         }
 
-        if (artistResult && artistResult.values.length > 0) {
-            const artistSpan = document.getElementById('releaseArtist');
-            const links = artistResult.values.map(([name, id]) =>
-                `<a href="?view=artist&id=${encodeURIComponent(id)}" style="color:${getCSSColor('--primary')};text-decoration:none">${escapeHtml(name)}</a>`
-            );
-            const joined = links.length === 1 ? links[0]
-                : links.length === 2 ? `${links[0]} and ${links[1]}`
-                : `${links.slice(0, -1).join(', ')}, and ${links[links.length - 1]}`;
-            artistSpan.innerHTML = joined;
+        const artistSpan = document.getElementById('releaseArtist');
+        if (!artistResult || artistResult.values.length === 0) {
+            artistSpan.textContent = 'Various Artists';
         } else {
-            document.getElementById('releaseArtist').textContent = 'Various Artists';
+            const allArtists = artistResult.values; // [[name, id], ...]
+            const makeLink = (n, i) =>
+                `<a href="?view=artist&id=${encodeURIComponent(i)}" style="color:${getCSSColor('--primary')};text-decoration:none">${escapeHtml(n)}</a>`;
+
+            let html;
+            if (allArtists.length === 1) {
+                html = makeLink(allArtists[0][0], allArtists[0][1]);
+            } else {
+                const idList = allArtists.map(([, id]) => `'${id}'`).join(',');
+                const suppressedIds = new Set();
+
+                // Suppress past_name aliases: if artist A is a past_name alias of artist B
+                // and both appear on this release, hide A and keep B
+                const aliasDedup = _db.exec(`
+                    SELECT a_alias.id
+                    FROM artists a_alias
+                    JOIN artist_aliases aa
+                        ON lower(aa.alias) = lower(a_alias.name) AND aa.alias_type = 'past_name'
+                    WHERE a_alias.id IN (${idList})
+                      AND aa.artist_id IN (${idList})
+                `)[0];
+                if (aliasDedup) aliasDedup.values.forEach(([id]) => suppressedIds.add(id));
+
+                // Suppress members of supergroups: if group G has members M1, M2 all on this
+                // release, render "G (M1 and M2)" and hide M1/M2 as standalone entries
+                const groupMemberMap = new Map(); // groupId -> [{id, name}, ...]
+                const memberResult = _db.exec(`
+                    SELECT am.group_artist_id, am.member_artist_id, a.name
+                    FROM artist_members am
+                    JOIN artists a ON a.id = am.member_artist_id
+                    WHERE am.group_artist_id IN (${idList})
+                      AND am.member_artist_id IN (${idList})
+                    ORDER BY am.sort_order
+                `)[0];
+                if (memberResult) {
+                    memberResult.values.forEach(([groupId, memberId, memberName]) => {
+                        if (!groupMemberMap.has(groupId)) groupMemberMap.set(groupId, []);
+                        groupMemberMap.get(groupId).push({ id: memberId, name: memberName });
+                        suppressedIds.add(memberId);
+                    });
+                }
+
+                const joinLinks = arr =>
+                    arr.length === 1 ? arr[0]
+                    : arr.length === 2 ? `${arr[0]} and ${arr[1]}`
+                    : `${arr.slice(0, -1).join(', ')}, and ${arr[arr.length - 1]}`;
+
+                const parts = [];
+                for (const [name, id] of allArtists) {
+                    if (suppressedIds.has(id)) continue;
+                    if (groupMemberMap.has(id)) {
+                        const memberLinks = groupMemberMap.get(id).map(m => makeLink(m.name, m.id));
+                        parts.push(`${makeLink(name, id)} (${joinLinks(memberLinks)})`);
+                    } else {
+                        parts.push(makeLink(name, id));
+                    }
+                }
+
+                html = parts.length === 0 ? 'Various Artists' : joinLinks(parts);
+            }
+            artistSpan.innerHTML = html;
         }
 
         const genreResult = _db.exec(`
@@ -456,10 +510,10 @@ const ViewRelease = (() => {
         const safeId = _releaseId.replace(/'/g, "''");
 
         const varResult = _db.exec(`
-            SELECT rv.variant_id, rv.variant_type, r.title, r.album_art_url, r.release_year
+            SELECT rv.variant_id, rv.variant_type, r.title, r.album_art_url, r.release_year, r.hidden
             FROM release_variants rv
             JOIN releases r ON r.id = rv.variant_id
-            WHERE rv.canonical_id = '${safeId}' AND r.hidden = 0
+            WHERE rv.canonical_id = '${safeId}'
             ORDER BY rv.sort_order, r.release_year
         `)[0];
 
@@ -481,19 +535,22 @@ const ViewRelease = (() => {
         const shownIsrcs  = new Set(canonTracks.map(t => t.isrc).filter(Boolean));
         const shownTitles = new Set(canonTracks.map(t => _normTitle(t.title)));
 
-        for (const [variantId, variantType, variantTitle, artUrl, year] of varResult.values) {
+        for (const [variantId, variantType, variantTitle, artUrl, year, variantHidden] of varResult.values) {
             const safeVarId = variantId.replace(/'/g, "''");
 
             const vtResult = _db.exec(`
-                SELECT t.title, t.id, t.track_number, t.disc_number, t.duration_ms, t.isrc
+                SELECT t.title, t.id, t.track_number, t.disc_number, t.duration_ms, t.isrc,
+                       COUNT(l.id) as play_count
                 FROM tracks t
+                LEFT JOIN listens l ON l.track_id = t.id
                 WHERE t.release_id = '${safeVarId}' AND t.hidden = 0
+                GROUP BY t.id
                 ORDER BY t.disc_number, t.track_number, t.title
             `)[0];
 
             const variantTracks = (vtResult ? vtResult.values : []).map(
-                ([title, id, trackNumber, discNumber, durationMs, isrc]) =>
-                    ({ title, id, trackNumber, discNumber, durationMs, isrc })
+                ([title, id, trackNumber, discNumber, durationMs, isrc, playCount]) =>
+                    ({ title, id, trackNumber, discNumber, durationMs, isrc, playCount })
             );
 
             const exclusive = variantTracks.filter(t =>
@@ -521,9 +578,9 @@ const ViewRelease = (() => {
                     <div class="variant-art" style="${artStyle}"></div>
                     <div class="variant-header-info">
                         <h3>
-                            <a href="?view=release&id=${encodeURIComponent(variantId)}">
-                                ${escapeHtml(variantTitle)}
-                            </a>
+                            ${variantHidden
+                                ? escapeHtml(variantTitle)
+                                : `<a href="?view=release&id=${encodeURIComponent(variantId)}">${escapeHtml(variantTitle)}</a>`}
                         </h3>
                         <span class="variant-meta">
                             ${typeBadge}
@@ -539,7 +596,7 @@ const ViewRelease = (() => {
             if (exclusive.length === 0) {
                 trackContainer.innerHTML = '<div class="tracklist-empty">No additional tracks</div>';
             } else {
-                _renderTracklist(trackContainer, exclusive, false);
+                _renderTracklist(trackContainer, exclusive, true);
             }
         }
     }
