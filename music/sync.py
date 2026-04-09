@@ -9,7 +9,7 @@ album-by-album.
 Usage:
   sync fetch [--parquet FILE] [--sqlite FILE] [--no-live] [--full] [--since N]
              [--spotify [DIR]]
-  sync match [--limit N] [--skipped] [--recent]
+  sync match [--limit N] [--skipped] [--recent] [--release-id ULID]
   sync status
 """
 
@@ -63,6 +63,24 @@ SP_TOKEN   = 'https://accounts.spotify.com/api/token'
 SP_SEARCH  = 'https://api.spotify.com/v1/search'
 
 
+def _mb_key(title: str) -> str:
+    """ascii_key of a title normalized to MB parenthetical ETI format.
+
+    'My Melody - TEED Club Mix' → 'My Melody (TEED club mix)' → ascii_key.
+    Used for track matching so remixes match their correct disc entry instead
+    of a plain-title track with the same base name.
+    Strips MB '(With X)' collaborator credits — scrobbles never include them.
+    """
+    import re as _re
+    title = _re.sub(r'\s*\(With [^)]+\)', '', title).strip()
+    r = _parse_track_title(title)
+    full = r.clean_title
+    if r.feat_artists:
+        full += ' (feat. ' + ', '.join(r.feat_artists) + ')'
+    if r.eti:
+        full += ' (' + r.eti + ')'
+    return _ascii_key(full)
+
 def _prompt_choice(label, options, current=None, allow_hide=False):
     """Mirror of mdb.py _prompt_choice. Returns (value, quit, hide)."""
     default = current if current and current in options else options[0]
@@ -90,6 +108,25 @@ def _prompt_choice(label, options, current=None, allow_hide=False):
     return default, False, False
 
 
+def _merge_variant_tracks(conn, canonical_id, variant_id):
+    """Move listens from shared variant tracks → canonical tracks (ISRC, then title fallback),
+    then hide those shared tracks on the variant."""
+    canon_rows = conn.execute(
+        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [canonical_id]
+    ).fetchall()
+    by_isrc  = {r[1]: r[0] for r in canon_rows if r[1]}
+    by_title = {_ascii_key(r[2]): r[0] for r in canon_rows}
+
+    for vid, visrc, vtitle in conn.execute(
+        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [variant_id]
+    ).fetchall():
+        canon_tid = (by_isrc.get(visrc) if visrc else None) or by_title.get(_ascii_key(vtitle))
+        if not canon_tid:
+            continue
+        conn.execute('UPDATE listens SET track_id=? WHERE track_id=?', [canon_tid, vid])
+        conn.execute('UPDATE tracks SET hidden=1 WHERE id=?', [vid])
+
+
 def _write_variant_links(conn, canonical, type_updates, edition_links, hide_ids):
     """Write accumulated type/variant/hide changes for a variant group."""
     for rid in hide_ids:
@@ -105,6 +142,9 @@ def _write_variant_links(conn, canonical, type_updates, edition_links, hide_ids)
                 (canonical_id, variant_id, variant_type, sort_order)
             VALUES (?, ?, ?, ?)
         ''', [canonical['id'], variant_id, edition_type, sort_order])
+        # Always hide variant and merge shared-track listens to canonical
+        conn.execute('UPDATE releases SET hidden=1 WHERE id=?', [variant_id])
+        _merge_variant_tracks(conn, canonical['id'], variant_id)
     conn.commit()
 
 
@@ -438,13 +478,12 @@ def _check_track_match_rate(
     db_tracks = conn.execute('''
         SELECT title FROM tracks WHERE release_id = ? AND hidden = 0
     ''', [release_id]).fetchall()
-    db_keys = {_ascii_key(_parse_track_title(r[0]).clean_title) for r in db_tracks}
+    db_keys = {_mb_key(r[0]) for r in db_tracks}
 
     unmatched = []
     matched_count = 0
     for name in scrobbled_names:
-        clean = _parse_track_title(name).clean_title
-        if _ascii_key(clean) in db_keys:
+        if _mb_key(name) in db_keys:
             matched_count += 1
         else:
             unmatched.append(name)
@@ -761,8 +800,50 @@ def _print_release_card(i, m):
     )
 
 
+def _cmd_match_release(conn, ulid: str) -> None:
+    """Force name-based matching of all unmatched listens against a specific DB release."""
+    if ulid.lower().startswith('db:'):
+        ulid = ulid[3:]
+
+    rel = conn.execute('''
+        SELECT r.id, r.title, r.release_date, a.name AS artist_name
+        FROM   releases r
+        LEFT JOIN artists a ON a.id = r.primary_artist_id
+        WHERE  r.id = ?
+    ''', [ulid]).fetchone()
+
+    if not rel:
+        console.print(f'[red]Release {ulid!r} not found in DB[/red]')
+        return
+
+    console.rule('[bold]SYNC MATCH --release-id[/bold]')
+    date_str = f'  [dim]{rel["release_date"]}[/dim]\n' if rel['release_date'] else ''
+    console.print(
+        f'  [bold]{rel["artist_name"] or "?"}[/bold]  —  {rel["title"]}\n'
+        f'{date_str}'
+        '  [dim]Matching all unmatched listens by this release\'s artists…[/dim]\n'
+    )
+
+    newly = bulk_rematch(conn)
+    if newly:
+        console.print(f'  [green]✓ {newly} listens auto-matched via MBID[/green]')
+
+    matched = bulk_rematch_by_name(conn, [ulid])
+    if matched:
+        console.print(f'  [green]✓ {matched} listens matched to {rel["title"]}[/green]')
+    else:
+        console.print('  [yellow]No new matches — track names may not align[/yellow]')
+
+
 def cmd_match(args):
     conn   = open_db()
+
+    release_id = getattr(args, 'release_id', None)
+    if release_id:
+        _cmd_match_release(conn, release_id)
+        conn.close()
+        return
+
     token  = _sp_token()
     limit  = args.limit or 50
     include_deferred = getattr(args, 'skipped', False)
@@ -1591,12 +1672,15 @@ def main():
 
     # match
     pm = sub.add_parser('match', help='Interactive album-by-album resolution')
-    pm.add_argument('--limit',    type=int, default=50,
+    pm.add_argument('--limit',      type=int, default=50,
                     help='Max albums to display per session (default: 50)')
-    pm.add_argument('--skipped', action='store_true',
+    pm.add_argument('--skipped',    action='store_true',
                     help='Include albums previously skipped with [s]')
-    pm.add_argument('--recent',  action='store_true',
+    pm.add_argument('--recent',     action='store_true',
                     help='Sort by most recently listened instead of most-played')
+    pm.add_argument('--release-id', metavar='ULID',
+                    help='Force-match all unmatched listens against a specific DB release '
+                         '(accepts db:ULID or bare ULID)')
 
     # status
     sub.add_parser('status', help='Show matched / unmatched breakdown')

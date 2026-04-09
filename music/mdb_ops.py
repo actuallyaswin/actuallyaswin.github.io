@@ -11,7 +11,7 @@ import unicodedata
 from mdb_strings import (
     resolve_title,
     ascii_key,
-    normalize_text as _normalize_text,
+    normalize_text,
     parse_track_title as _parse_track_title,
     _should_update_date,
 )
@@ -858,8 +858,8 @@ def bulk_rematch(conn: sqlite3.Connection) -> int:
 
 def bulk_rematch_by_name(conn: sqlite3.Connection,
                          release_ids: list,
-                         raw_artist: str,
-                         raw_album: str) -> int:
+                         raw_artist: str | None = None,
+                         raw_album: str | None = None) -> int:
     """Name-based listen matching for tracks without MBIDs.
 
     Scopes to listens whose raw_artist_name matches the release's artists (or
@@ -868,15 +868,30 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
       Phase 2 (Python): ETI-normalised clean-title comparison.
       Phase 3 (Python): fuzzy ascii_key ratio (threshold 0.85).
 
+    raw_artist and raw_album are optional seeds for the filter. When raw_album
+    is None the album-name filter is omitted so all unmatched listens by the
+    matching artists are considered — useful for forced single-release matching.
+
     Returns the count of newly matched listens.
     """
     if not release_ids:
         return 0
 
+    # SQLite's built-in lower() is ASCII-only (e.g. 'ROSALÍA' → 'rosalÍa').
+    # Register a Python-backed function so Unicode lowercasing works correctly.
+    conn.create_function('_ulower', 1, lambda s: s.lower() if s else '')
+
     rph = ','.join('?' * len(release_ids))
 
-    # Collect canonical artist names + all known aliases for artists on these releases
-    artist_name_set = {raw_artist.lower()}
+    # Collect canonical artist names + aliases. Include both Unicode-lowercased
+    # and ASCII-normalized (accent-stripped) forms so that e.g. "ROSALIA" and
+    # "ROSALÍA" both match scrobbles regardless of how the user typed the name.
+    def _name_forms(s: str):
+        return {s.lower(), normalize_text(s)}
+
+    artist_name_set: set = set()
+    if raw_artist is not None:
+        artist_name_set |= _name_forms(raw_artist)
     rows = conn.execute(f'''
         SELECT DISTINCT a.name, aa.alias
         FROM   artists a
@@ -887,15 +902,22 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     ''', release_ids).fetchall()
     for r in rows:
         if r['name']:
-            artist_name_set.add(r['name'].lower())
+            artist_name_set |= _name_forms(r['name'])
         if r['alias']:
-            artist_name_set.add(r['alias'].lower())
+            artist_name_set |= _name_forms(r['alias'])
+
+    if not artist_name_set:
+        return 0  # no artists found for this release
 
     aph = ','.join('?' * len(artist_name_set))
     artist_names = list(artist_name_set)
 
+    # Album filter — omitted in forced-match mode (raw_album is None)
+    album_clause = "AND lower(raw_album_name) = lower(?)" if raw_album is not None else ""
+    album_params = [raw_album] if raw_album is not None else []
+
     def _n(col):
-        return f"REPLACE(lower({col}), char(8217), char(39))"
+        return f"REPLACE(REPLACE(lower({col}), char(8217), char(39)), '&', ' and ')"
 
     def _bare(col):
         nc = _n(col)
@@ -907,7 +929,7 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         return (f"({_n(db_col)} = {_n(raw_col)}"
                 f" OR {_n(_bare(db_col))} = {_n(raw_col)}"
                 f" OR {_n(db_col)} = {_n(_bare(raw_col))}"
-                f" OR {_n(raw_col)} LIKE {_n(db_col)} || ' - %')")
+                f")")
 
     title_match = _match('t.title', 'listens.raw_track_name')
 
@@ -920,39 +942,52 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
             LIMIT 1
         )
         WHERE track_id IS NULL
-          AND lower(raw_artist_name) IN ({aph})
-          AND lower(raw_album_name)  = lower(?)
+          AND _ulower(raw_artist_name) IN ({aph})
+          {album_clause}
           AND raw_track_name IS NOT NULL
           AND EXISTS (
               SELECT 1 FROM tracks t
               WHERE  t.release_id IN ({rph})
                 AND  {title_match}
           )
-    ''', [*release_ids, *artist_names, raw_album, *release_ids])
+    ''', [*release_ids, *artist_names, *album_params, *release_ids])
     conn.commit()
     sql_matched = cur.rowcount
 
-    # Phase 2: ETI-normalised matching
+    # Phase 2: ETI-normalised matching (normalize both sides to MB parenthetical format)
     db_tracks = conn.execute(
         f'SELECT id, title FROM tracks WHERE release_id IN ({rph})', release_ids
     ).fetchall()
+
+    def _mb_key(title: str) -> str:
+        """ascii_key of a title normalized to MB parenthetical ETI format.
+        'My Melody - TEED Club Mix' → 'My Melody (TEED club mix)' → ascii_key.
+        Strips MB '(With X)' collaborator credits — scrobbles never include them."""
+        import re as _re
+        title = _re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
+        r = _parse_track_title(title)
+        full = r.clean_title
+        if r.feat_artists:
+            full += f" (feat. {', '.join(r.feat_artists)})"
+        if r.eti:
+            full += f" ({r.eti})"
+        return ascii_key(full)
+
     eti_map = {}
     for t in db_tracks:
-        clean = _normalize_text(_parse_track_title(t['title']).clean_title)
-        eti_map.setdefault(clean, t['id'])
+        eti_map.setdefault(_mb_key(t['title']), t['id'])
 
     unmatched = conn.execute(f'''
         SELECT id, raw_track_name FROM listens
         WHERE  track_id IS NULL
-          AND  lower(raw_artist_name) IN ({aph})
-          AND  lower(raw_album_name)  = lower(?)
+          AND  _ulower(raw_artist_name) IN ({aph})
+          {album_clause}
           AND  raw_track_name IS NOT NULL
-    ''', [*artist_names, raw_album]).fetchall()
+    ''', [*artist_names, *album_params]).fetchall()
 
     eti_matched = 0
     for listen in unmatched:
-        clean_raw = _normalize_text(_parse_track_title(listen['raw_track_name']).clean_title)
-        track_id  = eti_map.get(clean_raw)
+        track_id = eti_map.get(_mb_key(listen['raw_track_name']))
         if track_id:
             conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
                          [track_id, listen['id']])
@@ -960,25 +995,24 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     if eti_matched:
         conn.commit()
 
-    # Phase 3: fuzzy ascii_key matching
+    # Phase 3: fuzzy ascii_key matching (full MB-normalized title, not stripped clean title)
     _FUZZY_THRESHOLD = 0.85
     fuzzy_map = {}
     for t in db_tracks:
-        clean = _parse_track_title(t['title']).clean_title
-        k = ascii_key(clean)
+        k = _mb_key(t['title'])
         fuzzy_map.setdefault(k, t['id'])
 
     still_unmatched = conn.execute(f'''
         SELECT id, raw_track_name FROM listens
         WHERE  track_id IS NULL
-          AND  lower(raw_artist_name) IN ({aph})
-          AND  lower(raw_album_name)  = lower(?)
+          AND  _ulower(raw_artist_name) IN ({aph})
+          {album_clause}
           AND  raw_track_name IS NOT NULL
-    ''', [*artist_names, raw_album]).fetchall()
+    ''', [*artist_names, *album_params]).fetchall()
 
     fuzzy_matched = 0
     for listen in still_unmatched:
-        raw_key = ascii_key(_parse_track_title(listen['raw_track_name']).clean_title)
+        raw_key = _mb_key(listen['raw_track_name'])
         if not raw_key:
             continue
         best_ratio, best_id = 0.0, None

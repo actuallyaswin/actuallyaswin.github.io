@@ -438,10 +438,13 @@ def ascii_key(s: str) -> str:
     Runs NFKD decomposition first so accented Latin chars resolve to their base letter
     ('Motörhead' → 'motorhead'). Characters with no ASCII equivalent (symbols, emoji,
     non-Latin scripts) are stripped to spaces; a pure-symbol title returns ''.
+    '&' is normalised to 'and' before stripping so 'Butterflies & Hurricanes' and
+    'Butterflies and Hurricanes' produce the same key.
 
     Used to build lookup dicts for fuzzy title matching (e.g. MusicBrainz track lookups).
     """
     t = str(s or '').translate(_SMART_PUNCT)
+    t = re.sub(r'&', ' and ', t)
     t = unicodedata.normalize('NFKD', t)
     t = ''.join(c for c in t if not unicodedata.combining(c))
     t = re.sub(r'[^a-z0-9 ]', ' ', t.lower())
