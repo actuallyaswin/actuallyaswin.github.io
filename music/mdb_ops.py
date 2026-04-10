@@ -193,11 +193,16 @@ CREATE TABLE IF NOT EXISTS tracks (
     isrc         TEXT,
     tempo_bpm    REAL,
     audio_features TEXT,
+    canonical_track_id  TEXT REFERENCES tracks(id),
+    track_variant_type  TEXT,
     hidden       INTEGER NOT NULL DEFAULT 0,
     notes        TEXT,
     created_at   INTEGER,
     updated_at   INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_tracks_canonical
+    ON tracks(canonical_track_id)
+    WHERE canonical_track_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS track_artists (
     track_id  TEXT NOT NULL REFERENCES tracks(id),
     artist_id TEXT NOT NULL REFERENCES artists(id),
@@ -312,6 +317,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE artist_aliases ADD COLUMN alias_type TEXT NOT NULL DEFAULT 'common'",
         "ALTER TABLE artist_aliases ADD COLUMN language TEXT",
         "ALTER TABLE artist_aliases ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tracks ADD COLUMN canonical_track_id TEXT REFERENCES tracks(id)",
+        "ALTER TABLE tracks ADD COLUMN track_variant_type TEXT",
     ]:
         try:
             conn.execute(ddl)
@@ -1028,6 +1035,46 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         conn.commit()
 
     return sql_matched + eti_matched + fuzzy_matched
+
+
+# ── Track variant linking ──────────────────────────────────────────────────────
+
+def link_track_variant(conn: sqlite3.Connection, canonical_id: str,
+                       variant_id: str, variant_type: 'str | None') -> int:
+    """
+    Declare variant_id as a variant of canonical_id.
+
+    - Moves listens from variant to canonical.
+    - Sets variant.hidden = 1, canonical_track_id, track_variant_type.
+
+    Returns number of listens moved.
+
+    Invariant: canonical_id must not itself have a canonical_track_id (no chains).
+    """
+    row = conn.execute(
+        'SELECT canonical_track_id FROM tracks WHERE id = ?', (canonical_id,)
+    ).fetchone()
+    if row and row[0]:
+        raise ValueError(
+            f'canonical track {canonical_id} already points to {row[0]} — no chaining allowed'
+        )
+
+    moved = conn.execute(
+        'UPDATE listens SET track_id = ? WHERE track_id = ?',
+        (canonical_id, variant_id),
+    ).rowcount
+
+    now = int(time.time())
+    conn.execute(
+        '''UPDATE tracks
+              SET hidden = 1,
+                  canonical_track_id = ?,
+                  track_variant_type = ?,
+                  updated_at = ?
+            WHERE id = ?''',
+        (canonical_id, variant_type, now, variant_id),
+    )
+    return moved
 
 
 def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> list:

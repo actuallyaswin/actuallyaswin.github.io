@@ -10,8 +10,10 @@ Usage:
   mdb enrich  art   [options]             Fill in missing album art (CAA → Spotify → manual)
   mdb enrich  dates [options]             Look up release dates via Wikipedia + MusicBrainz
   mdb enrich  tracks [options]            Fetch track MBIDs from MusicBrainz
+  mdb delete  <releases|artists> <ID…>    Delete releases/artists (cascades to tracks)
   mdb hide    <artists|tracks|releases>   <csv>  Bulk hide/unhide
   mdb artist  images <csv>               Bulk update artist profile images
+  mdb tracks  variants [--all]           Interactive editor for track variant groups
 
 Default flags:
   --no-mb     skip MusicBrainz during import
@@ -65,6 +67,7 @@ from mdb_apis import (
     caa_fetch_front_image_url,
     _mb_get, _mb_get_safe,
     mb_find_release, mb_fetch_recording_ids, mb_fetch_artist_data,
+    _EDITION_RE,
 )
 from mdb_websources import (
     AOTY_TYPE_MAP,
@@ -78,6 +81,7 @@ from mdb_cli import (
     _format_mb_type, _print_member,
     _aoty_prompt, _dates_prompt, _prompt_choice,
     render_diff,
+    cmd_track_variants,
 )
 
 try:
@@ -441,26 +445,153 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
             console.print('  [dim]no date found[/dim]')
     conn.close()
 
+# ── DBRelease — wraps a master.sqlite row to match the SpotifyRelease interface ─
+
+class DBRelease:
+    """Read-only view of a release in master.sqlite, compatible with render_diff."""
+
+    def __init__(self, raw: str, conn=None):
+        key = raw.strip()
+        if key.lower().startswith('db:'):
+            key = key[3:]
+        self._owns_conn = conn is None
+        self._conn      = conn or open_db()
+        row = (
+            self._conn.execute('SELECT * FROM releases WHERE id = ?',       [key]).fetchone() or
+            self._conn.execute('SELECT * FROM releases WHERE spotify_id = ?',[key]).fetchone() or
+            self._conn.execute('SELECT * FROM releases WHERE mbid = ?',      [key]).fetchone()
+        )
+        if not row:
+            raise ValueError(f'Release not found in DB: {raw!r}')
+        self._row    = dict(row)
+        self._tracks = None  # lazy
+
+    def __del__(self):
+        if self._owns_conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    @property
+    def id(self) -> str:
+        return self._row['id']
+
+    @property
+    def name(self) -> str:
+        return self._row['title']
+
+    @property
+    def artist(self) -> str:
+        aid = self._row.get('primary_artist_id')
+        if not aid:
+            return ''
+        row = self._conn.execute('SELECT name FROM artists WHERE id = ?', [aid]).fetchone()
+        return row[0] if row else ''
+
+    @property
+    def year(self) -> str:
+        return (self._row.get('release_date') or '')[:4]
+
+    @property
+    def date(self) -> str:
+        return self._row.get('release_date') or ''
+
+    @property
+    def tracks(self) -> list:
+        if self._tracks is None:
+            self._tracks = self._load_tracks()
+        return self._tracks
+
+    def _load_tracks(self) -> list:
+        rows = self._conn.execute('''
+            SELECT t.id, t.title, t.duration_ms, t.is_explicit
+            FROM   tracks t
+            WHERE  t.release_id = ? AND t.hidden = 0
+            ORDER  BY t.disc_number, t.track_number
+        ''', [self._row['id']]).fetchall()
+        result = []
+        for row in rows:
+            artist_rows = self._conn.execute('''
+                SELECT a.name FROM artists a
+                JOIN   track_artists ta ON ta.artist_id = a.id
+                WHERE  ta.track_id = ?
+                ORDER  BY ta.rowid
+            ''', [row['id']]).fetchall()
+            result.append({
+                'name':        row['title'],
+                'duration_ms': row['duration_ms'],
+                'explicit':    bool(row['is_explicit']),
+                'artists':     [{'name': r[0]} for r in artist_rows],
+            })
+        return result
+
+    @property
+    def track_count(self) -> int:
+        return len(self.tracks)
+
+    @property
+    def explicit_count(self) -> int:
+        return sum(1 for t in self.tracks if t.get('explicit'))
+
+    @property
+    def total_ms(self) -> int:
+        return sum(t.get('duration_ms') or 0 for t in self.tracks)
+
+    @property
+    def label(self) -> str:
+        return self._row.get('label') or ''
+
+    @property
+    def album_type(self) -> str:
+        return self._row.get('type') or ''
+
+    def canonical_score(self) -> tuple:
+        d    = self.date
+        prec = (3 if (len(d) == 10 and not d.endswith('-01-01'))
+                else (2 if len(d) == 7 else 1))
+        return (-prec, d, self.track_count,
+                1 if _EDITION_RE.search(self.name) else 0,
+                -self.explicit_count)
+
+
 def cmd_diff(args):
-    """Compare two or more Spotify or MusicBrainz albums."""
+    """Compare two or more Spotify, MusicBrainz, or DB releases."""
     load_dotenv()
     cid = os.environ.get('SPOTIFY_CLIENT_ID')
     csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
 
+    db_path  = getattr(args, 'db', None) or DB_PATH
+    db_conn  = None   # shared connection for all DBRelease instances in this run
     client   = None
     releases = []
     for album in args.albums:
-        mbid = extract_mbid(album)
-        if mbid:
-            releases.append(MusicBrainzRelease(mbid))
+        key = album.strip()
+        is_db = (
+            key.lower().startswith('db:') or
+            (re.match(r'^[0-9A-Z]{26}$', key) and not re.match(r'^[A-Za-z0-9]{22}$', key))
+        )
+        if is_db:
+            if db_conn is None:
+                db_conn = open_db(db_path)
+                init_schema(db_conn)
+            try:
+                releases.append(DBRelease(key, conn=db_conn))
+            except ValueError as e:
+                console.print(f'[red]Error:[/red] {e}')
+                sys.exit(1)
         else:
-            if client is None:
-                if not (cid and csc):
-                    console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and'
-                                  ' SPOTIFY_CLIENT_SECRET must be set for Spotify entries.')
-                    sys.exit(1)
-                client = SpotifyClient(cid, csc)
-            releases.append(SpotifyRelease(album, client=client))
+            mbid = extract_mbid(album)
+            if mbid:
+                releases.append(MusicBrainzRelease(mbid))
+            else:
+                if client is None:
+                    if not (cid and csc):
+                        console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and'
+                                      ' SPOTIFY_CLIENT_SECRET must be set for Spotify entries.')
+                        sys.exit(1)
+                    client = SpotifyClient(cid, csc)
+                releases.append(SpotifyRelease(album, client=client))
     render_diff(*releases)
 
 
@@ -1474,6 +1605,255 @@ def cmd_hide(args):
     conn.close()
     console.rule(style='dim')
     console.print(f'  [dim]{ok} {action}d  ·  {len(not_found)} not found[/dim]')
+
+# ── cmd: delete ───────────────────────────────────────────────────────────────
+
+def _resolve_for_delete(conn, raw: str, entity: str):
+    """Resolve sp:ID, db:ULID, bare ULID, or bare Spotify ID to a (id, name) row.
+    entity: 'releases' or 'artists'
+    """
+    raw      = raw.strip()
+    name_col = 'title' if entity == 'releases' else 'name'
+    if raw.lower().startswith('sp:'):
+        return conn.execute(
+            f'SELECT id, {name_col} FROM {entity} WHERE spotify_id = ?', [raw[3:]]
+        ).fetchone()
+    if raw.lower().startswith('db:'):
+        return conn.execute(
+            f'SELECT id, {name_col} FROM {entity} WHERE id = ?', [raw[3:]]
+        ).fetchone()
+    # Bare ULID: 26 uppercase Crockford base32 chars — try internal ID first
+    if re.match(r'^[0-9A-Z]{26}$', raw):
+        row = conn.execute(
+            f'SELECT id, {name_col} FROM {entity} WHERE id = ?', [raw]
+        ).fetchone()
+        if row:
+            return row
+    # Bare Spotify ID or fallback
+    return conn.execute(
+        f'SELECT id, {name_col} FROM {entity} WHERE spotify_id = ?', [raw]
+    ).fetchone()
+
+
+def _gather_release_impact(conn, release_id: str) -> dict:
+    """Return counts of tracks, listens, and variant link rows for a release."""
+    track_ids = [r[0] for r in conn.execute(
+        'SELECT id FROM tracks WHERE release_id = ?', [release_id]
+    ).fetchall()]
+    listens = 0
+    if track_ids:
+        ph      = ','.join('?' * len(track_ids))
+        listens = conn.execute(
+            f'SELECT COUNT(*) FROM listens WHERE track_id IN ({ph})', track_ids
+        ).fetchone()[0]
+    rv_rows = conn.execute(
+        'SELECT canonical_id, variant_id FROM release_variants'
+        ' WHERE canonical_id = ? OR variant_id = ?', [release_id, release_id]
+    ).fetchall()
+    return {
+        'track_ids':    track_ids,
+        'tracks':       len(track_ids),
+        'listens':      listens,
+        'variant_rows': [(r[0], r[1]) for r in rv_rows],
+    }
+
+
+def _execute_delete_release(conn, release_id: str) -> dict:
+    """Delete a release and its exclusive tracks. Returns stats dict.
+    Caller is responsible for pre-flight listen checks."""
+    impact    = _gather_release_impact(conn, release_id)
+    track_ids = impact['track_ids']
+
+    deleted_listens = 0
+    if track_ids:
+        ph = ','.join('?' * len(track_ids))
+        deleted_listens = conn.execute(
+            f'DELETE FROM listens WHERE track_id IN ({ph})', track_ids
+        ).rowcount
+        conn.execute(f'DELETE FROM legacy_track_map WHERE track_id IN ({ph})', track_ids)
+        conn.execute(f'DELETE FROM track_artists WHERE track_id IN ({ph})', track_ids)
+        # Unlink other tracks that pointed to our tracks as canonical
+        conn.execute(
+            f'UPDATE tracks SET canonical_track_id = NULL, track_variant_type = NULL'
+            f' WHERE canonical_track_id IN ({ph})', track_ids
+        )
+        conn.execute(f'DELETE FROM tracks WHERE id IN ({ph})', track_ids)
+
+    conn.execute(
+        'DELETE FROM release_variants WHERE canonical_id = ? OR variant_id = ?',
+        [release_id, release_id],
+    )
+    conn.execute('DELETE FROM release_genres   WHERE release_id = ?', [release_id])
+    conn.execute('DELETE FROM release_artists  WHERE release_id = ?', [release_id])
+    conn.execute('DELETE FROM release_aliases  WHERE release_id = ?', [release_id])
+    conn.execute(
+        'DELETE FROM release_sources WHERE compilation_id = ? OR source_id = ?',
+        [release_id, release_id],
+    )
+    conn.execute(
+        f'DELETE FROM external_links WHERE entity_type = {EL_RELEASE} AND entity_id = ?',
+        [release_id],
+    )
+    conn.execute('DELETE FROM releases WHERE id = ?', [release_id])
+    return {'tracks': impact['tracks'], 'listens': deleted_listens}
+
+
+def cmd_delete(args):
+    db_path = getattr(args, 'db', None) or DB_PATH
+    conn    = open_db(db_path)
+    init_schema(conn)
+    force   = args.force
+    entity  = args.entity  # 'releases' or 'artists'
+
+    # ── Resolve all IDs ────────────────────────────────────────────────────────
+    resolved = []
+    for raw in args.ids:
+        row = _resolve_for_delete(conn, raw, entity)
+        if not row:
+            console.print(f'  [red]Not found:[/red] {raw}')
+            conn.close()
+            sys.exit(1)
+        resolved.append((row[0], row[1]))  # (id, display_name)
+
+    # ── Gather and display impact summary ──────────────────────────────────────
+    if entity == 'releases':
+        impacts = {}
+        total_tracks = total_listens = 0
+        for rid, rname in resolved:
+            imp = _gather_release_impact(conn, rid)
+            impacts[rid] = imp
+            total_tracks  += imp['tracks']
+            total_listens += imp['listens']
+            listen_tag = ''
+            if imp['listens'] > 0:
+                listen_tag = (
+                    f'  [red]{imp["listens"]} listen(s)[/red]' if not force
+                    else f'  [yellow]{imp["listens"]} listen(s) will be deleted[/yellow]'
+                )
+            console.print(
+                f'  [bold]{rname}[/bold]  [dim]{imp["tracks"]} track(s)[/dim]{listen_tag}'
+            )
+            if imp['variant_rows']:
+                console.print(
+                    f'    [dim]→ {len(imp["variant_rows"])} variant link(s) will be removed[/dim]'
+                )
+
+        if total_listens > 0 and not force:
+            console.print(
+                f'\n[red]Aborted:[/red] {total_listens} listen(s) would be lost. '
+                f'Pass [bold]--force[/bold] to delete them too.'
+            )
+            conn.close()
+            sys.exit(1)
+
+        console.print(
+            f'\n[dim]Will delete: {len(resolved)} release(s) · '
+            f'{total_tracks} track(s)'
+            + (f' · {total_listens} listen(s)' if total_listens else '') + '[/dim]'
+        )
+
+    else:  # artists
+        artist_releases = {}
+        total_releases = total_tracks = total_listens = 0
+        for aid, aname in resolved:
+            rel_rows = conn.execute(
+                'SELECT id, title FROM releases WHERE primary_artist_id = ?', [aid]
+            ).fetchall()
+            artist_releases[aid] = rel_rows
+
+            all_track_ids = [
+                t[0]
+                for r in rel_rows
+                for t in conn.execute(
+                    'SELECT id FROM tracks WHERE release_id = ?', [r[0]]
+                ).fetchall()
+            ]
+            rel_track_count = len(all_track_ids)
+            lcount = 0
+            if all_track_ids:
+                ph     = ','.join('?' * len(all_track_ids))
+                lcount = conn.execute(
+                    f'SELECT COUNT(*) FROM listens WHERE track_id IN ({ph})', all_track_ids
+                ).fetchone()[0]
+
+            listen_tag = ''
+            if lcount > 0:
+                listen_tag = (
+                    f'  [red]{lcount} listen(s)[/red]' if not force
+                    else f'  [yellow]{lcount} listen(s) will be deleted[/yellow]'
+                )
+            console.print(
+                f'  [bold]{aname}[/bold]  '
+                f'[dim]{len(rel_rows)} release(s) · {rel_track_count} track(s)[/dim]{listen_tag}'
+            )
+            total_releases += len(rel_rows)
+            total_tracks   += rel_track_count
+            total_listens  += lcount
+
+        if total_listens > 0 and not force:
+            console.print(
+                f'\n[red]Aborted:[/red] {total_listens} listen(s) would be lost. '
+                f'Pass [bold]--force[/bold] to delete them too.'
+            )
+            conn.close()
+            sys.exit(1)
+
+        console.print(
+            f'\n[dim]Will delete: {len(resolved)} artist(s) · '
+            f'{total_releases} release(s) · {total_tracks} track(s)'
+            + (f' · {total_listens} listen(s)' if total_listens else '') + '[/dim]'
+        )
+
+    # ── Confirm ────────────────────────────────────────────────────────────────
+    try:
+        answer = input('\n  Proceed? [y/N] ').strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print('\n[dim]Cancelled.[/dim]')
+        conn.close()
+        sys.exit(0)
+    if answer != 'y':
+        console.print('[dim]Cancelled.[/dim]')
+        conn.close()
+        return
+
+    # ── Execute ────────────────────────────────────────────────────────────────
+    if entity == 'releases':
+        for rid, rname in resolved:
+            s = _execute_delete_release(conn, rid)
+            console.print(f'  [green]deleted[/green]  {rname}')
+
+    else:
+        for aid, aname in resolved:
+            deleted_tracks = deleted_listens = 0
+            for rel in artist_releases[aid]:
+                s = _execute_delete_release(conn, rel[0])
+                deleted_tracks  += s['tracks']
+                deleted_listens += s['listens']
+            # Remove feature/co-artist credits on any remaining releases
+            conn.execute('DELETE FROM track_artists   WHERE artist_id = ?', [aid])
+            conn.execute('DELETE FROM release_artists WHERE artist_id = ?', [aid])
+            conn.execute('DELETE FROM artist_aliases  WHERE artist_id = ?', [aid])
+            conn.execute(
+                'DELETE FROM artist_relations'
+                ' WHERE from_artist_id = ? OR to_artist_id = ?', [aid, aid],
+            )
+            conn.execute(
+                'DELETE FROM artist_members'
+                ' WHERE group_artist_id = ? OR member_artist_id = ?', [aid, aid],
+            )
+            conn.execute(
+                f'DELETE FROM external_links WHERE entity_type = {EL_ARTIST} AND entity_id = ?',
+                [aid],
+            )
+            conn.execute('DELETE FROM artists WHERE id = ?', [aid])
+            detail = f'{len(artist_releases[aid])} release(s) · {deleted_tracks} track(s)'
+            if deleted_listens:
+                detail += f' · {deleted_listens} listen(s)'
+            console.print(f'  [green]deleted[/green]  {aname}  [dim]({detail})[/dim]')
+
+    conn.commit()
+    conn.close()
+    console.rule(style='dim')
 
 # ── cmd: artist images ────────────────────────────────────────────────────────
 
@@ -2796,6 +3176,19 @@ def cmd_certs_refresh(args):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+
+def cmd_track_variants_wrapper(args):
+    """Dispatch to the interactive track-variants loop in mdb_cli."""
+    db_path = getattr(args, 'db', None) or DB_PATH
+    conn    = open_db(db_path)
+    init_schema(conn)
+    include_linked = getattr(args, 'all', False)
+    try:
+        cmd_track_variants(conn, include_linked=include_linked)
+    finally:
+        conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='mdb',
@@ -2805,9 +3198,10 @@ def main():
     sub = parser.add_subparsers(dest='cmd', required=True)
 
     # diff
-    p_diff = sub.add_parser('diff', help='Compare two or more Spotify or MusicBrainz albums')
+    p_diff = sub.add_parser('diff', help='Compare two or more Spotify, MusicBrainz, or DB releases')
     p_diff.add_argument('albums', nargs='+', metavar='ALBUM',
-                        help='Spotify URLs/IDs or MusicBrainz URLs/UUIDs (2 or more)')
+                        help='Spotify URLs/IDs, MusicBrainz URLs/UUIDs, or db:ULID / bare ULID (2 or more)')
+    p_diff.add_argument('--db', metavar='PATH', help='Path to master.sqlite (for DB releases)')
     p_diff.set_defaults(func=cmd_diff)
 
     # import
@@ -2874,6 +3268,16 @@ def main():
     p.add_argument('--unhide', action='store_true')
     p.add_argument('--db',     metavar='PATH')
     p.set_defaults(func=cmd_hide)
+
+    # delete
+    p_del = sub.add_parser('delete', help='Delete releases or artists (cascades to tracks)')
+    p_del.add_argument('entity', choices=['releases', 'artists'])
+    p_del.add_argument('ids', nargs='+', metavar='ID',
+                       help='One or more: sp:SPOTIFY_ID, SPOTIFY_ID, db:ULID, or bare ULID')
+    p_del.add_argument('--force', action='store_true',
+                       help='Also delete listens that reference the affected tracks')
+    p_del.add_argument('--db', metavar='PATH')
+    p_del.set_defaults(func=cmd_delete)
 
     # artist
     p_artist = sub.add_parser('artist', help='Manage artist metadata')
@@ -2944,6 +3348,16 @@ def main():
     p_ra_ls.add_argument('release', metavar='RELEASE')
     p_ra_ls.add_argument('--db', metavar='PATH')
     p_ra_ls.set_defaults(func=cmd_release_alias)
+
+    # tracks
+    p_tracks_cmd = sub.add_parser('tracks', help='Manage track metadata')
+    ts_          = p_tracks_cmd.add_subparsers(dest='tracks_cmd', required=True)
+    p_tvariants  = ts_.add_parser('variants',
+                                  help='Interactive editor for track variant groups')
+    p_tvariants.add_argument('--all', action='store_true',
+                             help='Include groups already fully linked')
+    p_tvariants.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_tvariants.set_defaults(func=cmd_track_variants_wrapper)
 
     # link
     p_link  = sub.add_parser('link', help='Link release relationships')

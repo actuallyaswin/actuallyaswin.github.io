@@ -5,6 +5,7 @@ __all__ = [
     '_fmt_dur', '_trunc',
     '_format_mb_type', '_print_member',
     '_aoty_prompt', '_dates_prompt', '_prompt_choice',
+    'cmd_track_variants',
 ]
 
 import logging
@@ -14,7 +15,7 @@ from rich.console import Console
 from rich.table   import Table
 
 from mdb_apis     import compare_releases
-from mdb_strings  import detect_variant_types, _parse_user_date
+from mdb_strings  import detect_variant_types, _parse_user_date, normalize_text, _base_title
 from mdb_websources import _has_aoty, _fmt_aoty
 
 console = Console(width=80, highlight=False)
@@ -378,3 +379,254 @@ def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
             f'{alt.date or "?"}  {alt.track_count} tracks[/dim]  — {reason_str}'
         )
     console.print()
+
+
+# ── cmd: track variants ────────────────────────────────────────────────────────
+
+# shorthand key → stored variant_type value
+_TRACK_VARIANT_KEYS = {
+    'r': 'radio_edit',
+    'e': 'extended',
+    'm': 'remaster',
+    'd': 'demo',
+    'c': 'clean',
+    'i': 'instrumental',
+    'a': 'acoustic',
+    'l': 'live',
+    'o': 'original_mix',
+    'x': 'other',
+}
+
+_TRACK_VARIANT_HINT = (
+    r'\[r]adio_edit \[e]xtended \[m]aster \[d]emo \[c]lean '
+    r'\[i]nstrumental \[a]coustic \[l]ive \[o]riginal_mix \[x]other'
+)
+
+
+def _find_track_variant_groups(conn, include_linked: bool = False) -> list:
+    """
+    Return candidate groups of tracks that look like variant versions of the same recording.
+
+    Each group is a list of dicts:
+        { id, title, release_id, release_title, release_type, artist_name,
+          isrc, listen_count, canonical_track_id }
+
+    Detection passes (deduplicated):
+      1. Same ISRC across different tracks (strongest signal).
+      2. Same release_id + same _base_title().lower() (tracks on the same release).
+      3. Same release_group_mbid on parent release + same clean title (across releases).
+    """
+    # Fetch all visible tracks with context
+    rows = conn.execute('''
+        SELECT t.id, t.title, t.release_id, t.isrc, t.canonical_track_id,
+               r.title  AS release_title,
+               r.type   AS release_type,
+               r.release_group_mbid,
+               a.name   AS artist_name,
+               COUNT(l.id) AS listen_count
+        FROM   tracks  t
+        JOIN   releases r ON r.id = t.release_id
+        JOIN   artists  a ON a.id = r.primary_artist_id
+        LEFT JOIN listens l ON l.track_id = t.id
+        WHERE  t.hidden = 0
+        GROUP  BY t.id
+        ORDER  BY a.name, r.release_date, t.track_number
+    ''').fetchall()
+
+    rows = [dict(r) for r in rows]
+
+    # Build indexes
+    by_isrc       = {}   # isrc → [row]
+    by_release    = {}   # (release_id, base_title) → [row]
+    by_rg_title   = {}   # (release_group_mbid, base_title) → [row]
+
+    for row in rows:
+        isrc = row['isrc']
+        if isrc:
+            by_isrc.setdefault(isrc, []).append(row)
+
+        bt = normalize_text(_base_title(row['title']))
+        by_release.setdefault((row['release_id'], bt), []).append(row)
+
+        rg = row['release_group_mbid']
+        if rg:
+            by_rg_title.setdefault((rg, bt), []).append(row)
+
+    # Already-linked track ids (has canonical_track_id set)
+    linked_ids = {r['id'] for r in rows if r['canonical_track_id']}
+
+    seen_sets = []
+    groups    = []
+
+    def _add(members):
+        ids = frozenset(m['id'] for m in members)
+        if len(ids) < 2:
+            return
+        for s in seen_sets:
+            if s == ids:
+                return
+        seen_sets.append(ids)
+        if not include_linked and ids.issubset(linked_ids | {m['id'] for m in members
+                                                              if m['canonical_track_id']}):
+            return
+        # Skip if all members already have canonical_track_id set
+        if not include_linked and all(m['canonical_track_id'] for m in members):
+            return
+        groups.append(list(members))
+
+    # Pass 1: same ISRC (must be different track rows to be interesting)
+    for isrc, members in by_isrc.items():
+        if len(members) >= 2:
+            ids = {m['id'] for m in members}
+            if len(ids) >= 2:
+                _add(members)
+
+    # Pass 2: same release + same base title
+    for (_rid, _bt), members in by_release.items():
+        if len(members) >= 2:
+            _add(members)
+
+    # Pass 3: same release group + same base title across releases
+    for (_rg, _bt), members in by_rg_title.items():
+        if len(members) >= 2:
+            ids = {m['id'] for m in members}
+            if len(ids) >= 2:
+                _add(members)
+
+    # Sort groups by total listen count descending (most impactful first)
+    groups.sort(key=lambda g: sum(m['listen_count'] for m in g), reverse=True)
+    return groups
+
+
+def cmd_track_variants(conn, include_linked: bool = False) -> None:
+    """
+    Interactive loop for declaring track variant relationships.
+
+    For each candidate group:
+      - User picks the canonical track (by number).
+      - For each non-canonical track, user picks the variant type (or [h]ide-only).
+      - Changes are committed immediately after each group.
+    """
+    from mdb_ops import link_track_variant
+
+    groups = _find_track_variant_groups(conn, include_linked=include_linked)
+
+    if not groups:
+        console.print('  [dim]No unlinked track variant groups found.[/dim]')
+        return
+
+    console.print(
+        f'  Found [bold]{len(groups)}[/bold] candidate group(s).  '
+        f'[dim]\\[s]kip  \\[q]uit[/dim]\n'
+    )
+
+    saved    = 0
+    gi       = 0
+    quit_all = False
+
+    while gi < len(groups) and not quit_all:
+        group = groups[gi]
+        gi   += 1
+        console.rule(f'[dim]Group {gi}/{len(groups)}[/dim]', style='dim')
+
+        # Sort: put clean titles first, variant-titled last; break ties by listen count desc
+        group.sort(key=lambda m: (
+            1 if detect_variant_types(m['title']) else 0,
+            -(m['listen_count']),
+        ))
+
+        artist_name = group[0]['artist_name']
+        base        = _base_title(group[0]['title'])
+        console.print(f'  [bold]{base}[/bold]  ·  {artist_name}')
+        console.print()
+
+        for i, m in enumerate(group, 1):
+            vtypes    = detect_variant_types(m['title'])
+            vtype_str = '  ' + ' '.join(f'[yellow]{t}[/yellow]' for t in vtypes) if vtypes else ''
+            canon_str = (f'  [dim](→ {m["canonical_track_id"][:14]}…)[/dim]'
+                         if m['canonical_track_id'] else '')
+            console.print(
+                f'  [bold]{i}.[/bold]  [bold]{m["title"]}[/bold]'
+                f'  [dim]{m["listen_count"]} listens[/dim]'
+                f'  [dim cyan]db:{m["id"][:14]}…[/dim cyan]'
+                f'  [dim]\[{m["release_type"] or "?"}] {m["release_title"]}[/dim]'
+                f'{vtype_str}{canon_str}'
+            )
+
+        console.print()
+        console.print(
+            '  [bold]Canonical?[/bold]  '
+            '[dim]number / \\[s]kip / \\[q]uit:[/dim] ',
+            end='',
+        )
+        try:
+            raw = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        rl = raw.lower()
+        if rl == 'q':
+            quit_all = True
+            break
+        if rl in ('s', ''):
+            console.print('  [dim]Skipped.[/dim]\n')
+            continue
+        if not raw.isdigit() or not (1 <= int(raw) <= len(group)):
+            console.print(f'  [red]Enter 1–{len(group)}, s, or q.[/red]')
+            gi -= 1  # retry same group
+            continue
+
+        canonical = group[int(raw) - 1]
+        variants  = [m for m in group if m['id'] != canonical['id']]
+
+        group_moved = 0
+        group_ok    = True
+
+        for m in variants:
+            console.print(
+                f'\n  [dim]{m["title"]}[/dim]  →  type?  '
+                f'[dim]{_TRACK_VARIANT_HINT} / \\[h]ide-only / \\[s]kip:[/dim] ',
+                end='',
+            )
+            try:
+                ans = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                quit_all = True
+                group_ok = False
+                break
+
+            if ans == 'q':
+                quit_all = True
+                group_ok = False
+                break
+            if ans == 's':
+                console.print('  [dim]Skipped variant.[/dim]')
+                continue
+
+            if ans == 'h':
+                # hide-only: no variant record, just hide the track + move listens
+                variant_type = None
+            else:
+                variant_type = _TRACK_VARIANT_KEYS.get(ans)
+                if variant_type is None:
+                    console.print(f'  [red]Unknown key "{ans}" — skipping.[/red]')
+                    continue
+
+            try:
+                moved = link_track_variant(conn, canonical['id'], m['id'], variant_type)
+                conn.commit()
+                group_moved += moved
+                saved += 1
+                type_label = variant_type or 'hidden'
+                console.print(
+                    f'  [green]✓[/green]  moved {moved} listens, hidden'
+                    f'  [dim]({type_label})[/dim]'
+                )
+            except ValueError as e:
+                console.print(f'  [red]{e}[/red]')
+
+        if group_ok and group_moved:
+            console.print(f'  [dim]Group done — {group_moved} listens total moved.[/dim]')
+        console.print()
+
+    console.print(f'[bold]Done.[/bold]  {saved} variant(s) linked.')

@@ -524,16 +524,53 @@ def detect_variant_types(title: str) -> list:
 
 
 def _base_title(title: str) -> str:
-    """Strip edition/variant qualifiers for grouping similar releases."""
-    t = re.sub(r'\s*[\(\[][^\)\]]*(?:edition|version|remaster(?:ed)?|deluxe|expanded|'
-               r'extended|bonus|explicit|clean|instrumental|live|remix|reissue|'
-               r'anniversary|special|limited|box\s*set|regional|mono|stereo|'
-               r'sound\s*tracks?|ost)[^\)\]]*[\)\]]',
-               '', title, flags=re.I)
+    """Strip edition/variant qualifiers for grouping similar releases/tracks.
+
+    Remix-containing qualifiers are intentionally preserved — remixes are
+    distinct artistic works, not variants of the same recording.
+
+    Bare 'version' is intentionally NOT a keyword — '(Classixx version)',
+    '(DJ Name version)', etc. are artist-credited variants and should be
+    treated like remixes.  Only specific known-safe 'X version' compounds
+    are stripped (album, single, radio, original).  Keyword-prefixed cases
+    like '(Remastered Version)' are handled by the 'remaster' keyword plus
+    the trailing [^\)\]]* absorber.
+    """
+    # Strip parenthetical/bracketed qualifiers that don't involve remixes.
+    # 'live' is intentionally absent here — handled separately below because
+    # bare 'live' is too broad and would wrongly strip "(Live Without You)".
+    t = re.sub(
+        r'\s*[\(\[](?![^\)\]]*\bremix\b)[^\)\]]*'
+        r'(?:edition|(?:album|single|radio|original)\s+version|'
+        r'(?:\d{4}|single|album)\s+edit|'
+        r'remaster(?:ed)?|deluxe|expanded|extended|unmixed|bonus|'
+        r'explicit|clean|instrumental|reissue|anniversary|special|limited|'
+        r'box\s*set|regional|mono|stereo|sound\s*tracks?|\bost\b|radio.?\s*edit)'
+        r'[^\)\]]*[\)\]]',
+        '', title, flags=re.I)
+    # Live performance qualifiers: (live), (live at X), (Album live), etc.
+    # Requires 'live' to be standalone, followed by at/in/from/recording/version,
+    # or followed by a dash — so "(Live Without You)" is correctly preserved.
+    t = re.sub(
+        r'\s*[\(\[](?![^\)\]]*\bremix\b)'
+        r'(?:[^\)\]]*\s)?live'
+        r'(?:\s+(?:at|in|from|recording|version)\b[^\)\]]*|\s*[-–][^\)\]]*|\s*)'
+        r'[\)\]]',
+        '', t, flags=re.I)
+    # Strip bare (original) — lone "original" means the canonical version
+    t = re.sub(r'\s*[\(\[]\s*original\s*[\)\]]', '', t, flags=re.I)
+    # Strip (With Artist) / (with Artist) guest credits, but not
+    # (With a/an/the ...) where "with" starts a title phrase.
+    t = re.sub(r'\s*[\(\[]\s*with\s+(?!(?:a |an |the ))[^\)\]]+[\)\]]', '', t, flags=re.I)
     t = re.sub(r'\s+original\s+sound\s*tracks?$', '', t, flags=re.I)
-    t = re.sub(r'\s*[-–]\s*(?:deluxe|expanded|extended|remaster(?:ed)?|bonus tracks?|'
-               r'.*edition|.*version|remix(?:ed)?|instrumental|explicit|clean|reissue|'
-               r'special|limited|original\s+sound(?:track)?|ost).*$', '', t, flags=re.I)
+    # Strip bare trailing qualifiers (after dash/em-dash) that don't involve remixes
+    t = re.sub(
+        r'\s*[-–]\s*(?!.*\bremix\b)'
+        r'(?:deluxe|expanded|extended|unmixed|(?:\d{4}\s+)?remaster(?:ed)?|bonus tracks?|'
+        r'.*edition|(?:album|single|radio|original)\s+version|'
+        r'\d{4}\s+edit|instrumental|explicit|clean|reissue|live|'
+        r'special|limited|original\s+sound(?:track)?|ost|radio.?\s*edit).*$',
+        '', t, flags=re.I)
     t = re.sub(r'\s*[-–:,]\s*$', '', t)
     return t.strip() or title
 
