@@ -149,7 +149,8 @@ const ViewRelease = (() => {
                 r.label,
                 (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) AS INTEGER)
                  FROM tracks t2 WHERE t2.release_id = r.id AND t2.hidden = 0) as album_total_ms,
-                MIN(CASE WHEN t.hidden = 0 THEN l.timestamp END) as first_listen_ts
+                MIN(CASE WHEN t.hidden = 0 THEN l.timestamp END) as first_listen_ts,
+                MAX(CASE WHEN t.hidden = 0 THEN l.timestamp END) as last_listen_ts
             FROM releases r
             LEFT JOIN tracks t ON t.release_id = r.id
             LEFT JOIN listens l ON l.track_id = t.id
@@ -167,7 +168,7 @@ const ViewRelease = (() => {
                totalTracksInDb, tracksHeard, totalPlays,
                spotifyId, releaseGroupMbid, mbid, aotyUrl, aotyId,
                aotyScoreCritic, aotyScoreUser, aotyRatingsCritic, aotyRatingsUser,
-               primaryArtistId, label, albumTotalMs, firstListenTs] = result.values[0];
+               primaryArtistId, label, albumTotalMs, firstListenTs, lastListenTs] = result.values[0];
 
         const extLinks = new Map();
         try {
@@ -225,6 +226,9 @@ const ViewRelease = (() => {
                 }
                 if (firstListenTs) {
                     chips.push(`<span class="stat-chip"><i data-lucide="calendar"></i> First heard ${_fmtTs(firstListenTs)}</span>`);
+                }
+                if (lastListenTs && lastListenTs !== firstListenTs) {
+                    chips.push(`<span class="stat-chip"><i data-lucide="clock"></i> Last played ${formatRelativeTime(lastListenTs)}</span>`);
                 }
             }
             if (aotyScoreCritic != null) {
