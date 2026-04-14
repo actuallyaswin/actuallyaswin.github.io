@@ -235,11 +235,11 @@ const ViewArtist = (() => {
                 links.push({ href: resolvedAotyUrl, service: 'aoty', label: 'Album of the Year' });
             }
             if (wikiPageId) {
-                links.push({ href: `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, service: 'wikipedia', label: 'Wikipedia' });
+                links.push({ href: wikiPageId, service: 'wikipedia', label: 'Wikipedia' });
             }
             linksEl.innerHTML = links.map(({ href, service, label }) => {
                 const icon = service === 'aoty'
-                    ? `<img src="images/aoty.png" alt="${label}">`
+                    ? `<img src="images/aoty.svg" alt="${label}">`
                     : `<span class="link-icon-mask" style="--icon-url: url('images/${service}.svg')"></span>`;
                 return `<a href="${href}" target="_blank" rel="noopener" class="release-link-icon" data-service="${service}" title="${label}">${icon}</a>`;
             }).join('');
@@ -285,7 +285,7 @@ const ViewArtist = (() => {
             SELECT
                 r.id,
                 r.title,
-                r.release_year,
+                r.release_date,
                 r.type,
                 r.type_secondary,
                 r.album_art_url,
@@ -307,7 +307,7 @@ const ViewArtist = (() => {
             SELECT
                 r.id,
                 r.title,
-                r.release_year,
+                r.release_date,
                 r.type,
                 r.type_secondary,
                 r.album_art_url,
@@ -355,7 +355,7 @@ const ViewArtist = (() => {
     }
 
     function _makeDiscCard(row, collab) {
-        const [id, title, year, type, typeSecondary, albumArtUrl,
+        const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
                totalTracks, listenedTracks, totalListens, primaryArtistName] = row;
 
         const pct   = totalTracks > 0 ? listenedTracks / totalTracks : 0;
@@ -363,6 +363,7 @@ const ViewArtist = (() => {
         const color = _discDonutColor(pct);
 
         let subParts = [];
+        const year = releaseDate ? releaseDate.slice(0, 4) : null;
         if (year) subParts.push(year);
         if (collab && primaryArtistName) subParts.push(escapeHtml(primaryArtistName));
         else if (totalListens > 0) subParts.push(`${formatNumber(totalListens)} plays`);
@@ -412,7 +413,7 @@ const ViewArtist = (() => {
 
         const sortFn = _discSort === 'listens'
             ? (a, b) => b[8] - a[8]
-            : (a, b) => (b[2] || 0) - (a[2] || 0);
+            : (a, b) => (b[2] || '').localeCompare(a[2] || '');
 
         const own = [...(_discData.own || [])].sort(sortFn);
         const collabs = [...(_discData.collabs || [])].sort(sortFn);
