@@ -7,6 +7,7 @@ import re
 import sqlite3
 import time
 import unicodedata
+from contextlib import contextmanager
 
 from mdb_strings import (
     resolve_title,
@@ -14,6 +15,7 @@ from mdb_strings import (
     normalize_text,
     parse_track_title as _parse_track_title,
     _should_update_date,
+    is_soundtrack_title,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -279,6 +281,12 @@ CREATE TABLE IF NOT EXISTS external_links (
     link_value  TEXT    NOT NULL,  -- Wikipedia: page_id str; Bandcamp: full URL; others: platform ID/slug
     PRIMARY KEY (entity_type, entity_id, service)
 );
+CREATE TABLE IF NOT EXISTS release_soundtrack_meta (
+    release_id        TEXT PRIMARY KEY REFERENCES releases(id),
+    source_type       TEXT CHECK(source_type IN ('film','video_game','tv_series','musical','podcast','other')),
+    industry_region   TEXT,  -- ISO 3166-1 alpha-2 (US, IN, GB, JP, ES, ...)
+    original_language TEXT   -- ISO 639-1 (en, hi, ta, es, ja, ...)
+);
 """
 
 
@@ -319,6 +327,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE artist_aliases ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tracks ADD COLUMN canonical_track_id TEXT REFERENCES tracks(id)",
         "ALTER TABLE tracks ADD COLUMN track_variant_type TEXT",
+        "ALTER TABLE artists ADD COLUMN spotify_popularity INTEGER",
+        "ALTER TABLE artists ADD COLUMN spotify_followers INTEGER",
+        "ALTER TABLE releases ADD COLUMN spotify_popularity INTEGER",
+        "ALTER TABLE tracks ADD COLUMN spotify_popularity INTEGER",
     ]:
         try:
             conn.execute(ddl)
@@ -446,9 +458,12 @@ def upsert_artist(cur, sp_artist: dict) -> 'tuple[str, bool]':
     now = int(time.time())
     if row:
         cur.execute(
-            'UPDATE artists SET name = ?, image_url = ?, image_source = ?, updated_at = ?'
+            'UPDATE artists SET name = ?, image_url = ?, image_source = ?,'
+            ' spotify_popularity = ?, spotify_followers = ?, updated_at = ?'
             ' WHERE id = ?',
-            (sp_artist['name'], _best_image(sp_artist.get('images', [])), 'spotify', now, row[0])
+            (sp_artist['name'], _best_image(sp_artist.get('images', [])), 'spotify',
+             sp_artist.get('popularity'), sp_artist.get('followers', {}).get('total'),
+             now, row[0])
         )
         return row[0], False
     base     = slugify(sp_artist['name'])
@@ -457,9 +472,12 @@ def upsert_artist(cur, sp_artist: dict) -> 'tuple[str, bool]':
     aid      = new_ulid()
     cur.execute(
         'INSERT INTO artists (id, slug, name, spotify_id, image_url, image_source,'
-        ' created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        ' spotify_popularity, spotify_followers, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (aid, slug, sp_artist['name'], sid,
-         _best_image(sp_artist.get('images', [])), 'spotify', now, now)
+         _best_image(sp_artist.get('images', [])), 'spotify',
+         sp_artist.get('popularity'), sp_artist.get('followers', {}).get('total'),
+         now, now)
     )
     return aid, True
 
@@ -477,8 +495,9 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
         release_date = release_date[:7]
     elif precision != 'day':
         release_date = release_date[:4]
-    release_year = int(release_date[:4]) if release_date else None
-    art          = _best_image(sp_album.get('images', []))
+    release_year   = int(release_date[:4]) if release_date else None
+    art            = _best_image(sp_album.get('images', []))
+    type_secondary = 'soundtrack' if is_soundtrack_title(sp_album['name']) else None
 
     if row:
         update_date = _should_update_date(row['release_date'], row['date_source'],
@@ -486,13 +505,14 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
         date_fields = ', release_date = ?, release_year = ?, date_source = ?' if update_date else ''
         date_vals   = (release_date, release_year, 'spotify') if update_date else ()
         cur.execute(
-            f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?{date_fields},'
+            f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?,'
+            f' type_secondary = COALESCE(type_secondary, ?){date_fields},'
             f' label = ?, album_art_url = ?, album_art_source = ?, total_tracks = ?,'
-            f' updated_at = ? WHERE id = ?',
+            f' spotify_popularity = ?, updated_at = ? WHERE id = ?',
             (sp_album['name'], primary_artist_id, _sp_type(sp_album),
-             *date_vals,
+             type_secondary, *date_vals,
              sp_album.get('label'), art, 'spotify',
-             sp_album.get('total_tracks'), now, row['id'])
+             sp_album.get('total_tracks'), sp_album.get('popularity'), now, row['id'])
         )
         return row['id'], False
 
@@ -502,12 +522,13 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
     slug       = unique_slug(base, existing)
     release_id = new_ulid()
     cur.execute(
-        'INSERT INTO releases (id, slug, title, primary_artist_id, type, release_date,'
-        ' release_year, label, spotify_id, album_art_url, album_art_source, total_tracks,'
-        ' date_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
+        ' release_date, release_year, label, spotify_id, album_art_url, album_art_source,'
+        ' total_tracks, spotify_popularity, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (release_id, slug, sp_album['name'], primary_artist_id, _sp_type(sp_album),
-         release_date, release_year, sp_album.get('label'), sid, art, 'spotify',
-         sp_album.get('total_tracks'), 'spotify', now, now)
+         type_secondary, release_date, release_year, sp_album.get('label'), sid, art, 'spotify',
+         sp_album.get('total_tracks'), sp_album.get('popularity'), 'spotify', now, now)
     )
     return release_id, True
 
@@ -534,20 +555,20 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
                 cur.execute(
                     'UPDATE tracks SET release_id = ?, title = ?, track_number = ?,'
                     ' disc_number = ?, duration_ms = ?, is_explicit = ?, isrc = ?,'
-                    ' mbid = ?, updated_at = ? WHERE id = ?',
+                    ' mbid = ?, spotify_popularity = ?, updated_at = ? WHERE id = ?',
                     (release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
                      sp.get('duration_ms'), 1 if sp.get('explicit') else 0,
-                     isrc, track_mbid, now, track_id)
+                     isrc, track_mbid, sp.get('popularity'), now, track_id)
                 )
             except sqlite3.IntegrityError:
                 # MBID already assigned to a different track — update without mbid
                 cur.execute(
                     'UPDATE tracks SET release_id = ?, title = ?, track_number = ?,'
                     ' disc_number = ?, duration_ms = ?, is_explicit = ?, isrc = ?,'
-                    ' updated_at = ? WHERE id = ?',
+                    ' spotify_popularity = ?, updated_at = ? WHERE id = ?',
                     (release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
                      sp.get('duration_ms'), 1 if sp.get('explicit') else 0,
-                     isrc, now, track_id)
+                     isrc, sp.get('popularity'), now, track_id)
                 )
             updated += 1
         else:
@@ -556,21 +577,25 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
             try:
                 cur.execute(
                     'INSERT INTO tracks (id, title, release_id, track_number, disc_number,'
-                    ' duration_ms, is_explicit, spotify_id, mbid, isrc, created_at, updated_at)'
-                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    ' duration_ms, is_explicit, spotify_id, mbid, isrc,'
+                    ' spotify_popularity, created_at, updated_at)'
+                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (track_id, title_to_store, release_id, sp.get('track_number'),
                      sp.get('disc_number', 1), sp.get('duration_ms'),
-                     1 if sp.get('explicit') else 0, sid, track_mbid, isrc, now, now)
+                     1 if sp.get('explicit') else 0, sid, track_mbid, isrc,
+                     sp.get('popularity'), now, now)
                 )
             except sqlite3.IntegrityError:
                 # MBID collision — insert without mbid
                 cur.execute(
                     'INSERT INTO tracks (id, title, release_id, track_number, disc_number,'
-                    ' duration_ms, is_explicit, spotify_id, isrc, created_at, updated_at)'
-                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    ' duration_ms, is_explicit, spotify_id, isrc,'
+                    ' spotify_popularity, created_at, updated_at)'
+                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (track_id, title_to_store, release_id, sp.get('track_number'),
                      sp.get('disc_number', 1), sp.get('duration_ms'),
-                     1 if sp.get('explicit') else 0, sid, isrc, now, now)
+                     1 if sp.get('explicit') else 0, sid, isrc,
+                     sp.get('popularity'), now, now)
                 )
             created += 1
         cur.execute('DELETE FROM track_artists WHERE track_id = ?', (track_id,))
@@ -642,6 +667,14 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
     rg        = mb_data.get('release-group') or {}
     rg_mbid   = rg.get('id')
     rg_type   = (rg.get('primary-type') or '').lower() or 'album'
+    rg_secondary_types = [s.lower() for s in (rg.get('secondary-types') or [])]
+    # Derive type_secondary from MB release group, then fall back to title detection
+    _known_secondary = {'compilation', 'soundtrack', 'live', 'remix', 'dj-mix',
+                        'mixtape', 'demo', 'spokenword', 'interview', 'audiobook',
+                        'audio drama', 'field recording'}
+    type_secondary = next((s for s in rg_secondary_types if s in _known_secondary), None)
+    if type_secondary is None and is_soundtrack_title(title):
+        type_secondary = 'soundtrack'
     now       = int(time.time())
 
     label = ''
@@ -666,10 +699,11 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
         date_fields = ', release_date = ?, release_year = ?, date_source = ?' if update_date else ''
         date_vals   = (date_raw, rel_year, 'musicbrainz') if update_date else ()
         cur.execute(
-            f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?{date_fields},'
+            f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?,'
+            f' type_secondary = COALESCE(type_secondary, ?){date_fields},'
             f' label = ?, release_group_mbid = ?, total_tracks = ?, updated_at = ?'
             f' WHERE id = ?',
-            (title, primary_artist_id, rg_type, *date_vals,
+            (title, primary_artist_id, rg_type, type_secondary, *date_vals,
              label or None, rg_mbid, total_tracks, now, row['id']),
         )
         if image_url and not row['album_art_url']:
@@ -687,11 +721,11 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
     slug       = unique_slug(base, existing)
     release_id = new_ulid()
     cur.execute(
-        'INSERT INTO releases (id, slug, title, primary_artist_id, type, release_date,'
-        ' release_year, label, mbid, release_group_mbid, album_art_url, album_art_source,'
-        ' total_tracks, date_source, created_at, updated_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        (release_id, slug, title, primary_artist_id, rg_type,
+        'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
+        ' release_date, release_year, label, mbid, release_group_mbid, album_art_url,'
+        ' album_art_source, total_tracks, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (release_id, slug, title, primary_artist_id, rg_type, type_secondary,
          date_raw or None, rel_year, label or None,
          mbid or None, rg_mbid,
          image_url, 'coverartarchive' if image_url else None,
@@ -932,10 +966,26 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
                 f" THEN trim(substr({col}, 1, instr({nc}, ' (feat.') - 1))"
                 f" ELSE {col} END")
 
+    def _strip_feat(col):
+        """Strip any featured-artist credit from col (all formats: 'featuring X',
+        ' feat. X' without parens, '(feat. X)' — covers raw scrobble variations).
+        Uses _n(col) for both position lookup AND substr to avoid offset drift
+        when '&' expansion changes string length."""
+        nc = _n(col)
+        bare_nc = (f"CASE WHEN instr({nc}, ' (feat.') > 0"
+                   f" THEN trim(substr({nc}, 1, instr({nc}, ' (feat.') - 1))"
+                   f" ELSE {nc} END")
+        return (f"CASE "
+                f"WHEN instr({nc}, ' featuring ') > 0 "
+                f"THEN trim(substr({nc}, 1, instr({nc}, ' featuring ') - 1)) "
+                f"WHEN instr({nc}, ' feat. ') > 0 "
+                f"THEN trim(substr({nc}, 1, instr({nc}, ' feat. ') - 1)) "
+                f"ELSE {bare_nc} END")
+
     def _match(db_col, raw_col):
         return (f"({_n(db_col)} = {_n(raw_col)}"
                 f" OR {_n(_bare(db_col))} = {_n(raw_col)}"
-                f" OR {_n(db_col)} = {_n(_bare(raw_col))}"
+                f" OR {_n(db_col)} = {_n(_strip_feat(raw_col))}"
                 f")")
 
     title_match = _match('t.title', 'listens.raw_track_name')
@@ -972,6 +1022,7 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         Strips MB '(With X)' collaborator credits — scrobbles never include them."""
         import re as _re
         title = _re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
+        title = _re.sub(r'\s*\(from\s+["\'].*?["\']\)', '', title, flags=_re.IGNORECASE).strip()
         r = _parse_track_title(title)
         full = r.clean_title
         if r.feat_artists:
@@ -980,9 +1031,25 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
             full += f" ({r.eti})"
         return ascii_key(full)
 
+    def _clean_key(title: str) -> str:
+        """ascii_key of clean title only — strips feat. artists and ETI.
+        Fallback for when the DB stores 'Suit & Tie' but the scrobble says
+        'Suit & Tie featuring JAY Z'."""
+        import re as _re
+        title = _re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
+        title = _re.sub(r'\s*\(from\s+["\'].*?["\']\)', '', title, flags=_re.IGNORECASE).strip()
+        r = _parse_track_title(title)
+        return ascii_key(r.clean_title)
+
     eti_map = {}
+    clean_map = {}
     for t in db_tracks:
-        eti_map.setdefault(_mb_key(t['title']), t['id'])
+        k = _mb_key(t['title'])
+        if k:  # skip non-ASCII-only titles (empty key = unsafe catch-all)
+            eti_map.setdefault(k, t['id'])
+        ck = _clean_key(t['title'])
+        if ck:
+            clean_map.setdefault(ck, t['id'])
 
     unmatched = conn.execute(f'''
         SELECT id, raw_track_name FROM listens
@@ -994,7 +1061,8 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
 
     eti_matched = 0
     for listen in unmatched:
-        track_id = eti_map.get(_mb_key(listen['raw_track_name']))
+        track_id = (eti_map.get(_mb_key(listen['raw_track_name']))
+                    or clean_map.get(_clean_key(listen['raw_track_name'])))
         if track_id:
             conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
                          [track_id, listen['id']])
@@ -1007,7 +1075,8 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     fuzzy_map = {}
     for t in db_tracks:
         k = _mb_key(t['title'])
-        fuzzy_map.setdefault(k, t['id'])
+        if k:  # skip non-ASCII-only titles
+            fuzzy_map.setdefault(k, t['id'])
 
     still_unmatched = conn.execute(f'''
         SELECT id, raw_track_name FROM listens
@@ -1108,3 +1177,46 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
             if row['artist_name'] and key_artist in ascii_key(row['artist_name']):
                 results.append(row)
     return results
+
+
+def resolve_artist(conn: sqlite3.Connection, key: str) -> 'sqlite3.Row | None':
+    """Look up an artist by internal ID, slug, Spotify ID, or name (case-insensitive).
+
+    Tries exact matches in order: ULID → slug → Spotify ID → lowercase name.
+    Returns a sqlite3.Row with at minimum (id, name), or None if not found.
+    """
+    return (
+        conn.execute('SELECT id, name FROM artists WHERE id = ?',                 [key]).fetchone() or
+        conn.execute('SELECT id, name FROM artists WHERE slug = ?',               [key]).fetchone() or
+        conn.execute('SELECT id, name FROM artists WHERE spotify_id = ?',         [key]).fetchone() or
+        conn.execute('SELECT id, name FROM artists WHERE lower(name) = lower(?)', [key]).fetchone()
+    )
+
+
+@contextmanager
+def managed_db(db_path: str):
+    """Open DB, run init_schema, yield conn, always close on exit.
+
+    Use this for any command that needs a connection:
+
+        with managed_db(args.db or DB_PATH) as conn:
+            ...
+
+    For interactive commands that want to print a summary even on Ctrl+C, wrap
+    the whole block in ``try/except KeyboardInterrupt`` outside the ``with``:
+
+        updated = skipped = 0
+        try:
+            with managed_db(args.db or DB_PATH) as conn:
+                ...
+        except KeyboardInterrupt:
+            pass
+        console.rule(style='dim')
+        console.print(f'  [dim]Updated: {updated} · Skipped: {skipped}[/dim]')
+    """
+    conn = open_db(db_path)
+    init_schema(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()

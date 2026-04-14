@@ -124,6 +124,12 @@ class SpotifyClient:
             out.extend(self.get('/tracks', {'ids': ','.join(ids[i:i+50])})['tracks'])
         return out
 
+    def get_albums_batch(self, ids: list) -> list:
+        out = []
+        for i in range(0, len(ids), 20):
+            out.extend(self.get('/albums', {'ids': ','.join(ids[i:i+20])})['albums'])
+        return out
+
     def get_artists_batch(self, ids: list) -> list:
         out, seen = [], set()
         unique = [x for x in ids if x not in seen and not seen.add(x)]

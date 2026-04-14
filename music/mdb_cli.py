@@ -6,6 +6,7 @@ __all__ = [
     '_format_mb_type', '_print_member',
     '_aoty_prompt', '_dates_prompt', '_prompt_choice',
     'cmd_track_variants',
+    'cmd_enrich_soundtracks',
 ]
 
 import logging
@@ -562,6 +563,7 @@ def cmd_track_variants(conn, include_linked: bool = False) -> None:
         try:
             raw = input().strip()
         except (EOFError, KeyboardInterrupt):
+            console.print('\n  [yellow]Interrupted.[/yellow]')
             break
 
         rl = raw.lower()
@@ -591,6 +593,7 @@ def cmd_track_variants(conn, include_linked: bool = False) -> None:
             try:
                 ans = input().strip().lower()
             except (EOFError, KeyboardInterrupt):
+                console.print('\n  [yellow]Interrupted.[/yellow]')
                 quit_all = True
                 group_ok = False
                 break
@@ -630,3 +633,219 @@ def cmd_track_variants(conn, include_linked: bool = False) -> None:
         console.print()
 
     console.print(f'[bold]Done.[/bold]  {saved} variant(s) linked.')
+
+
+# ── cmd: enrich soundtracks ───────────────────────────────────────────────────
+
+_SOURCE_TYPES     = ['film', 'video_game', 'tv_series', 'musical', 'podcast', 'other']
+_INDUSTRY_REGIONS = ['US', 'IN', 'GB', 'JP', 'ES', 'FR', 'KR', 'HK', 'AU', 'DE', 'IT', 'MX']
+_LANGUAGES        = ['en', 'hi', 'ta', 'te', 'ml', 'ja', 'ko', 'es', 'fr', 'de', 'zh', 'pt']
+_GEMINI_MODEL     = 'gemini-2.5-flash-lite'
+
+# Nicknames shown next to codes at the prompt (purely cosmetic)
+_REGION_LABELS = {
+    'US': 'Hollywood', 'IN': 'India', 'GB': 'UK', 'JP': 'Japan',
+    'KR': 'Korea',     'HK': 'Hong Kong', 'FR': 'France',
+}
+_LANG_LABELS = {
+    'en': 'English', 'hi': 'Hindi', 'ta': 'Tamil', 'te': 'Telugu',
+    'ml': 'Malayalam', 'ja': 'Japanese', 'ko': 'Korean',
+    'es': 'Spanish', 'fr': 'French', 'de': 'German', 'zh': 'Chinese',
+}
+
+
+def _gemini_soundtrack_meta(title: str, artist: str) -> 'tuple[str|None, str|None, str|None]':
+    """Ask Gemini to classify a soundtrack release into (source_type, industry_region, original_language).
+
+    Requires GEMINI_API_KEY env var and the google-genai package.
+    Returns (src, reg, lng, raw_json_str) — all None on any failure.
+    """
+    import os, json
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        return None, None, None, None
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError:
+        console.print('  [yellow]google-genai not installed — run: pip install google-genai[/yellow]')
+        return None, None, None, None
+
+    client = genai.Client(api_key=api_key)
+
+    src_enum  = ' | '.join(_SOURCE_TYPES)
+    reg_enum  = ' | '.join(_INDUSTRY_REGIONS)
+    lang_enum = ' | '.join(_LANGUAGES)
+
+    prompt = (
+        'You are a music metadata assistant. Given a soundtrack album title and artist name, '
+        'classify the release using exactly these three fields:\n\n'
+        f'  source_type: one of {src_enum}\n'
+        f'  industry_region: ISO 3166-1 alpha-2 country code of the primary production industry. '
+        f'Prefer one of these common values: {reg_enum} — but any valid ISO 3166-1 alpha-2 code is allowed.\n'
+        f'  original_language: ISO 639-1 language code of the original content. '
+        f'Prefer one of these common values: {lang_enum} — but any valid ISO 639-1 code is allowed.\n\n'
+        f'Album title: {title}\n'
+        f'Artist: {artist or "Unknown"}\n\n'
+        'Respond with ONLY a JSON object, no explanation. '
+        'Example: {"source_type": "film", "industry_region": "IN", "original_language": "hi"}'
+    )
+
+    import time, re as _re
+    _MAX_RETRIES = 4
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = client.models.generate_content(
+                model=_GEMINI_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(response_mime_type='application/json'),
+            )
+            data = json.loads(response.text)
+            src = data.get('source_type')
+            reg = data.get('industry_region')
+            lng = data.get('original_language')
+            # Validate against known enums; pass through unknown ISO codes (they may be valid)
+            if src not in _SOURCE_TYPES:
+                src = None
+            return src, reg, lng, response.text
+        except Exception as exc:
+            msg = str(exc)
+            # Parse retryDelay from the error message (e.g. "retryDelay: '10s'")
+            m = _re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", msg)
+            wait = float(m.group(1)) + 1 if m else 2 ** (attempt + 1)
+            if attempt < _MAX_RETRIES - 1 and ('429' in msg or '503' in msg):
+                console.print(f'  [dim]Gemini rate-limited, retrying in {wait:.0f}s… (attempt {attempt+1}/{_MAX_RETRIES})[/dim]')
+                time.sleep(wait)
+            else:
+                console.print(f'  [yellow]Gemini error: {exc}[/yellow]')
+                return None, None, None, None
+
+
+def cmd_enrich_soundtracks(conn, skip: int = 0, limit: 'int|None' = None,
+                            release_id: 'str|None' = None, overwrite: bool = False) -> None:
+    """Interactive prompt to fill release_soundtrack_meta for soundtrack releases."""
+    where = "WHERE r.type_secondary = 'soundtrack' AND r.hidden = 0"
+    params: list = []
+    if release_id:
+        where += ' AND r.id = ?'
+        params.append(release_id)
+    if not overwrite:
+        where += ' AND (sm.source_type IS NULL OR sm.industry_region IS NULL OR sm.original_language IS NULL)'
+
+    rows = conn.execute(f'''
+        SELECT r.id, r.title,
+               GROUP_CONCAT(a.name, ', ') AS artist,
+               sm.source_type, sm.industry_region, sm.original_language
+        FROM   releases r
+        LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+        LEFT JOIN artists a ON ra.artist_id = a.id
+        LEFT JOIN release_soundtrack_meta sm ON sm.release_id = r.id
+        {where}
+        GROUP BY r.id
+        ORDER BY r.release_year DESC NULLS LAST, r.title
+    ''', params).fetchall()
+
+    queue = rows[skip:]
+    if limit:
+        queue = queue[:limit]
+
+    console.print(f'[dim]{len(rows)} soundtrack release(s), processing {len(queue)}[/dim]')
+    import os
+    if os.environ.get('GEMINI_API_KEY'):
+        console.print('[dim]Gemini pre-fill: enabled[/dim]')
+    else:
+        console.print('[dim]Gemini pre-fill: disabled (set GEMINI_API_KEY to enable)[/dim]')
+    console.print('[dim]Press Ctrl+C or q to stop.[/dim]\n')
+
+    saved = 0
+
+    try:
+        for i, row in enumerate(queue):
+            rid     = row['id']
+            title   = row['title']
+            artist  = row['artist'] or ''
+            cur_src = row['source_type']
+            cur_reg = row['industry_region']
+            cur_lng = row['original_language']
+
+            console.print(f'[dim][{i+1}/{len(queue)}][/dim]  [bold]{title}[/bold]  [dim]{artist}[/dim]')
+
+            # Gemini-assisted defaults (falls back to None/None/None if key absent or call fails)
+            g_src, g_reg, g_lng, g_raw = _gemini_soundtrack_meta(title, artist)
+            def_src = cur_src or g_src
+            def_reg = cur_reg or g_reg
+            def_lng = cur_lng or g_lng
+            if g_raw:
+                console.print(f'  [dim]Gemini raw: {g_raw.strip()}[/dim]')
+            if g_src or g_reg or g_lng:
+                console.print(f'  [dim]Gemini: {g_src or "?"} · {g_reg or "?"} · {g_lng or "?"}[/dim]')
+
+            # ── source_type ──
+            src, quit_, _, _ = _prompt_choice(
+                'Source type', _SOURCE_TYPES, current=def_src,
+            )
+            if quit_:
+                break
+
+            # ── industry_region ──
+            region_opts = _INDUSTRY_REGIONS + ['other']
+            region_display = [
+                f'{r} ({_REGION_LABELS[r]})' if r in _REGION_LABELS else r
+                for r in region_opts
+            ]
+            # Map display→code for lookup
+            display_to_code = dict(zip(region_display, region_opts))
+            reg_display, quit_, _, _ = _prompt_choice(
+                'Industry region (ISO 3166-1 alpha-2)', region_display,
+                current=next((d for d, c in display_to_code.items() if c == def_reg), None),
+                allow_back=True,
+            )
+            if quit_:
+                break
+            reg = display_to_code.get(reg_display) if reg_display else None
+            if reg == 'other':
+                console.print('  [dim]Enter ISO 3166-1 alpha-2 code (e.g. NG, PK, BD):[/dim] ', end='')
+                raw = input().strip().upper() or None
+                reg = raw
+
+            # ── original_language ──
+            lang_opts = _LANGUAGES + ['other']
+            lang_display = [
+                f'{l} ({_LANG_LABELS[l]})' if l in _LANG_LABELS else l
+                for l in lang_opts
+            ]
+            display_to_lang = dict(zip(lang_display, lang_opts))
+            lng_display, quit_, _, _ = _prompt_choice(
+                'Original language (ISO 639-1)', lang_display,
+                current=next((d for d, c in display_to_lang.items() if c == def_lng), None),
+                allow_back=True,
+            )
+            if quit_:
+                break
+            lng = display_to_lang.get(lng_display) if lng_display else None
+            if lng == 'other':
+                console.print('  [dim]Enter ISO 639-1 code (e.g. ur, bn, ml):[/dim] ', end='')
+                raw = input().strip().lower() or None
+                lng = raw
+
+            conn.execute('''
+                INSERT INTO release_soundtrack_meta (release_id, source_type, industry_region, original_language)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(release_id) DO UPDATE SET
+                    source_type       = excluded.source_type,
+                    industry_region   = excluded.industry_region,
+                    original_language = excluded.original_language
+            ''', (rid, src, reg, lng))
+            conn.commit()
+
+            parts = [src or '?', reg or '?', lng or '?']
+            console.print(f'  [green]✓[/green]  {" · ".join(parts)}')
+            console.print()
+            saved += 1
+
+    except KeyboardInterrupt:
+        console.print('\n  [yellow]Interrupted.[/yellow]')
+
+    console.rule(style='dim')
+    console.print(f'  [dim]Saved: {saved}[/dim]')
+
