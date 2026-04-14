@@ -73,6 +73,7 @@ def _mb_key(title: str) -> str:
     """
     import re as _re
     title = _re.sub(r'\s*\(With [^)]+\)', '', title).strip()
+    title = _re.sub(r'\s*\(from\s+["\'].*?["\']\)', '', title, flags=_re.IGNORECASE).strip()
     r = _parse_track_title(title)
     full = r.clean_title
     if r.feat_artists:
@@ -800,6 +801,20 @@ def _print_release_card(i, m):
     )
 
 
+def _resolve_release(conn, key: str):
+    """Resolve a db: prefixed key (ULID or slug) to a releases row, or None."""
+    if key.lower().startswith('db:'):
+        key = key[3:]
+    row = conn.execute(
+        'SELECT id, title FROM releases WHERE id = ?', [key]
+    ).fetchone()
+    if not row:
+        row = conn.execute(
+            'SELECT id, title FROM releases WHERE slug = ?', [key]
+        ).fetchone()
+    return row
+
+
 def _cmd_match_release(conn, ulid: str) -> None:
     """Force name-based matching of all unmatched listens against a specific DB release."""
     if ulid.lower().startswith('db:'):
@@ -809,8 +824,8 @@ def _cmd_match_release(conn, ulid: str) -> None:
         SELECT r.id, r.title, r.release_date, a.name AS artist_name
         FROM   releases r
         LEFT JOIN artists a ON a.id = r.primary_artist_id
-        WHERE  r.id = ?
-    ''', [ulid]).fetchone()
+        WHERE  r.id = ? OR r.slug = ?
+    ''', [ulid, ulid]).fetchone()
 
     if not rel:
         console.print(f'[red]Release {ulid!r} not found in DB[/red]')
@@ -850,6 +865,7 @@ def cmd_match(args):
     sort_recent      = getattr(args, 'recent',  False)
     artist_filter    = getattr(args, 'artist',      None)
     interactive_flag = getattr(args, 'interactive', False)
+    use_wiki         = getattr(args, 'wiki',         False)
     artist_norm      = _norm(artist_filter) if artist_filter else None
     # Artist sweep uses a high limit so the whole artist fits in one pass
     eff_limit        = 9999 if artist_norm else limit
@@ -1042,7 +1058,7 @@ def cmd_match(args):
                         f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
                         f'[dim]({count} listens)[/dim]'
                     )
-                    _do_multi_import(conn, [sp_auto[0]], raw_artist=artist, raw_album=album)
+                    _do_multi_import(conn, [sp_auto[0]], raw_artist=artist, raw_album=album, use_wiki=use_wiki)
                     auto_matched_albums += 1
                     _pre_search(album_i)
                     _pre_search(album_i + 1)
@@ -1207,7 +1223,7 @@ def cmd_match(args):
                         else:
                             console.print('  [yellow]No new matches — track names may differ[/yellow]')
                     elif to_import:
-                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album)
+                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album, use_wiki=use_wiki)
                         if to_match:
                             # Also rematch against already-imported DB releases
                             release_ids = [r['id'] for r in to_match]
@@ -1219,10 +1235,7 @@ def cmd_match(args):
                     console.print(hint, end='')
 
                 elif raw.lower().startswith('db:') or re.match(r'^[0-9A-Z]{26}$', raw):
-                    ulid = raw[3:] if raw.lower().startswith('db:') else raw
-                    rel = conn.execute(
-                        'SELECT id, title FROM releases WHERE id = ?', [ulid]
-                    ).fetchone()
+                    rel = _resolve_release(conn, raw)
                     if rel:
                         matched = bulk_rematch_by_name(conn, [rel['id']], artist, album)
                         if matched:
@@ -1231,7 +1244,7 @@ def cmd_match(args):
                             console.print('  [yellow]No new matches — track names may differ[/yellow]')
                         break
                     else:
-                        console.print(f'  [red]Release {ulid!r} not found in DB[/red]')
+                        console.print(f'  [red]Release {raw!r} not found in DB[/red]')
                         console.print(hint, end='')
 
                 elif total_results:
@@ -1276,7 +1289,7 @@ def cmd_match(args):
                             if confirm in ('n', 'no'):
                                 console.print(hint, end='')
                                 continue
-                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album)
+                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album, use_wiki=use_wiki)
                         if to_match:
                             release_ids = [r['id'] for r in to_match]
                             bulk_rematch_by_name(conn, release_ids, artist, album)
@@ -1352,11 +1365,20 @@ def _parse_indices(s: str, max_n: int):
     return None
 
 
+def _mdb_import(url: str, use_wiki: bool = False) -> 'subprocess.CompletedProcess':
+    cmd = [PYTHON, MDB, 'import', url]
+    if not use_wiki:
+        cmd.append('--no-wiki')
+    return subprocess.run(cmd)
+
+
 def _do_import(conn: sqlite3.Connection, url: str,
-               raw_artist: str = None, raw_album: str = None):
+               raw_artist: str = None, raw_album: str = None,
+               use_wiki: bool = False):
     """Import a single URL via mdb.py, then bulk-rematch."""
     _do_multi_import(conn, [SpotifyRelease(url)],
-                     raw_artist=raw_artist, raw_album=raw_album)
+                     raw_artist=raw_artist, raw_album=raw_album,
+                     use_wiki=use_wiki)
 
 
 def _parse_mixed_tokens(raw: str, db_results: list, sp_results: list) -> 'tuple[list, list]':
@@ -1424,7 +1446,8 @@ def _parse_mixed_tokens(raw: str, db_results: list, sp_results: list) -> 'tuple[
 
 
 def _do_multi_import(conn: sqlite3.Connection, selected: list,
-                     raw_artist: str = None, raw_album: str = None):
+                     raw_artist: str = None, raw_album: str = None,
+                     use_wiki: bool = False):
     """
     Import one or more Spotify or MusicBrainz albums via mdb.py.
     selected items are SpotifyRelease objects or {'mbid': ..., 'url': ...} dicts.
@@ -1437,7 +1460,7 @@ def _do_multi_import(conn: sqlite3.Connection, selected: list,
         is_mb  = isinstance(item, dict) and 'mbid' in item
         url    = item['url'] if is_mb else item.url
         console.print(f'  Importing [dim]{url}[/dim]')
-        result = subprocess.run([PYTHON, MDB, 'import', url])
+        result = _mdb_import(url, use_wiki=use_wiki)
         if result.returncode == 0:
             if is_mb:
                 rel = conn.execute(
@@ -1468,10 +1491,10 @@ def _do_multi_import(conn: sqlite3.Connection, selected: list,
                       '(run sync match again after tracks are enriched)[/yellow]')
 
     if len(imported) > 1:
-        _prompt_variants(conn, imported)
+        _prompt_variants(conn, imported, use_wiki=use_wiki)
 
 
-def _prompt_variants(conn: sqlite3.Connection, imported: list):
+def _prompt_variants(conn: sqlite3.Connection, imported: list, use_wiki: bool = False):
     """
     After importing multiple editions of the same album, let the user
     designate a canonical release, then run three-stage type assignment
@@ -1534,7 +1557,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list):
             ).fetchone()
             if not rel:
                 console.print(f'  Importing [dim]{raw}[/dim]')
-                result = subprocess.run([PYTHON, MDB, 'import', raw])
+                result = _mdb_import(raw, use_wiki=use_wiki)
                 if result.returncode != 0:
                     console.print('  [red]Import failed — try again[/red]')
                     console.print(
@@ -1569,7 +1592,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list):
             ).fetchone()
             if not rel:
                 console.print(f'  Importing [dim]{raw}[/dim]')
-                result = subprocess.run([PYTHON, MDB, 'import', raw])
+                result = _mdb_import(raw, use_wiki=use_wiki)
                 if result.returncode != 0:
                     console.print('  [red]Import failed — try again[/red]')
                     console.print(
@@ -1775,6 +1798,8 @@ def main():
                     help='With --artist: fall through to interactive prompt for albums '
                          'that cannot be auto-resolved (instead of collecting them in a '
                          'needs-manual summary)')
+    pm.add_argument('--wiki',        action='store_true',
+                    help='Enable Wikipedia date lookup during import (slower; off by default)')
 
     # status
     sub.add_parser('status', help='Show matched / unmatched breakdown')
