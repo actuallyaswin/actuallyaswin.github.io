@@ -64,6 +64,10 @@ const ViewArtist = (() => {
                             <span class="stat-value" id="totalReleases">-</span>
                             <span class="stat-label">releases</span>
                         </div>
+                        <div class="stat-item" id="lastPlayedStat" hidden>
+                            <span class="stat-value" id="lastPlayedValue">-</span>
+                            <span class="stat-label">last played</span>
+                        </div>
                     </div>
                     <div class="artist-badges" id="artistBadges"></div>
                 </div>
@@ -188,6 +192,21 @@ const ViewArtist = (() => {
         document.getElementById('uniqueTracks').textContent = formatNumber(uniqueTracks);
         document.getElementById('totalReleases').textContent = formatNumber(totalReleases);
         document.title = `aswin.db/music - ${name}`;
+
+        const lastTsResult = _db.exec(`
+            SELECT MAX(l.timestamp) FROM listens l
+            JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
+        `)[0];
+        const lastTs = lastTsResult && lastTsResult.values[0][0];
+        if (lastTs) {
+            const el = document.getElementById('lastPlayedStat');
+            if (el) {
+                document.getElementById('lastPlayedValue').textContent = formatRelativeTime(lastTs);
+                el.removeAttribute('hidden');
+            }
+        }
 
         if (imageUrl) {
             document.getElementById('artistPhoto').innerHTML = `<img src="${imageUrl}" alt="${escapeHtml(name)}">`;
@@ -552,7 +571,7 @@ const ViewArtist = (() => {
 
         if (medalResult && medalResult.values.length > 0) {
             const streakCount = medalResult.values.length;
-            fragments.push(`<span class="badge-streak" title="${streakCount} year${streakCount > 1 ? 's' : ''} in your top 3">★ ${streakCount}</span>`);
+            fragments.push(`<span class="badge-streak" title="${streakCount} year${streakCount > 1 ? 's' : ''} in top 3">★ ${streakCount}</span>`);
             const rankLabel = { 1: '#1', 2: '#2', 3: '#3' };
             const rankText  = { 1: 'Most', 2: '2nd most', 3: '3rd most' };
             const tierClass = { 1: 'gold', 2: 'silver', 3: 'bronze' };
