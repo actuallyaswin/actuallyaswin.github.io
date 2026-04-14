@@ -157,7 +157,8 @@ _ETI_DESCRIPTORS: frozenset[str] = frozenset({
     'instrumental', 'vocal', 'a cappella',
     'remaster', 'remastered',
     'reprise', 'cover', 'flip',
-    'radio', 'extended', 'club', 'dub', 'vip',
+    'radio', 'extended', 'club', 'dub',
+    'edition',
     'original', 'alternate', 'alternative',
     'mono', 'stereo',
     'clean', 'explicit',
@@ -545,7 +546,8 @@ def _base_title(title: str) -> str:
         r'(?:\d{4}|single|album)\s+edit|'
         r'remaster(?:ed)?|deluxe|expanded|extended|unmixed|bonus|'
         r'explicit|clean|instrumental|reissue|anniversary|special|limited|'
-        r'box\s*set|regional|mono|stereo|sound\s*tracks?|\bost\b|radio.?\s*edit)'
+        r'box\s*set|regional|mono|stereo|sound\s*tracks?|\bost\b|radio.?\s*edit|'
+        r'music\s+from\s+(?:the\s+)?(?:motion\s+picture|film|movie))'
         r'[^\)\]]*[\)\]]',
         '', title, flags=re.I)
     # Live performance qualifiers: (live), (live at X), (Album live), etc.
@@ -573,6 +575,19 @@ def _base_title(title: str) -> str:
         '', t, flags=re.I)
     t = re.sub(r'\s*[-–:,]\s*$', '', t)
     return t.strip() or title
+
+
+_SOUNDTRACK_PAT = re.compile(
+    r'(?:original\s+(?:motion\s+picture\s+)?sound\s*tracks?'
+    r'|music\s+from\s+(?:the\s+)?(?:motion\s+picture|film|movie)'
+    r'|[\(\[]\s*(?:ost|sound\s*tracks?)\s*[\)\]])',
+    re.I,
+)
+
+
+def is_soundtrack_title(title: str) -> bool:
+    """Return True if the title contains soundtrack keywords (OMPS, OST, etc.)."""
+    return bool(_SOUNDTRACK_PAT.search(title))
 
 
 # -- Release type lists -------------------------------------------------------
