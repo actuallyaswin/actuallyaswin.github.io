@@ -855,6 +855,104 @@ a.stat-card:hover .stat-label::after {
 }
 
 /* Search */
+.nerds-section { }
+.nerds-list {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.nerds-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+.nerds-row:last-of-type { border-bottom: none; }
+.nerds-row dt {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.nerds-row dd {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.nerds-accordion {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    padding: 0.5rem 0.75rem 0.5rem 1rem;
+}
+.nerds-accordion ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    columns: 2;
+    column-gap: 1.5rem;
+}
+.nerds-accordion li { break-inside: avoid; }
+.nerds-accordion a {
+    display: block;
+    padding: 0.15rem 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+}
+.nerds-accordion a:hover { color: var(--primary); }
+.nerds-accordion-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1rem 0.25rem;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    display: inline-flex;
+    align-items: center;
+    transition: border-color 0.15s, color 0.15s;
+}
+.nerds-accordion-btn svg { width: 13px; height: 13px; }
+.nerds-accordion-btn:hover,
+.nerds-accordion-btn.nerds-accordion-btn-open { border-color: var(--primary); color: var(--primary); }
+.tooltip-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: help;
+    color: var(--text-tertiary);
+}
+.tooltip-wrap svg { width: 11px; height: 11px; }
+.tooltip-wrap::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    padding: 0.3rem 0.5rem;
+    border-radius: 4px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 10;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.tooltip-wrap:hover::after { opacity: 1; }
+
 .search-section {
     margin-bottom: 3rem;
     display: grid;
@@ -1016,6 +1114,31 @@ a.stat-card:hover .stat-label::after {
 :root[data-theme="light"] .sort-btn.active {
     background: #87ae73;
     color: #1a2d13;
+}
+
+.year-filter-select {
+    appearance: none;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: none;
+    border-radius: 4px;
+    padding: 0.45rem 1.8rem 0.45rem 0.65rem;
+    font-size: 0.82rem;
+    font-family: inherit;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    line-height: 1;
+    transition: color 0.15s;
+}
+.year-filter-select:hover { color: var(--text-primary); }
+.year-filter-select:focus { outline: none; box-shadow: 0 0 0 2px var(--primary); }
+
+.controls-dimmed {
+    opacity: 0.35;
+    pointer-events: none;
+    user-select: none;
 }
 
 /* Image Grid */
@@ -1849,6 +1972,7 @@ a.stat-card:hover .stat-label::after {
 .commits-grid {
     /* grid-template-columns set dynamically in JS */
     display: grid;
+    --commit-cell-w: 24px;
     gap: 3px;
     user-select: none;
 }
@@ -1869,7 +1993,7 @@ a.stat-card:hover .stat-label::after {
     line-height: 1;
 }
 .commit-cell {
-    width: 24px;
+    width: var(--commit-cell-w, 24px);
     height: 16px;
     border-radius: 2px;
 }
@@ -1950,6 +2074,7 @@ a.stat-card:hover .stat-label::after {
     margin: 2rem 0;
     align-items: start;
 }
+.stats-row > section { min-width: 0; }
 .stats-row > section[hidden] {
     display: none;
 }
@@ -1961,6 +2086,8 @@ a.stat-card:hover .stat-label::after {
 }
 @media (max-width: 700px) {
     .stats-row { grid-template-columns: 1fr; }
+    .commits-grid { --commit-cell-w: 18px; gap: 2px; }
+    .nerds-accordion ul { columns: 1; }
 }
 
 /* === Recent Plays === */

@@ -56,6 +56,46 @@ const ViewHome = (() => {
                     <h2>Recent Plays</h2>
                     <div class="recent-plays-list" id="homeRecentPlaysList"></div>
                 </section>
+                <section class="nerds-section">
+                    <h2>Stats for Nerds</h2>
+                    <dl class="nerds-list">
+                        <div class="nerds-row">
+                            <dt>Days of Scrobbling</dt>
+                            <dd id="nerdDays">—</dd>
+                        </div>
+                        <div class="nerds-row">
+                            <dt>Avg. Listens / Day</dt>
+                            <dd id="nerdAvgDay">—</dd>
+                        </div>
+                        <div class="nerds-row">
+                            <dt>Total Listening Time</dt>
+                            <dd id="nerdTotalTime">—</dd>
+                        </div>
+                        <div class="nerds-row">
+                            <dt>Most Active Month</dt>
+                            <dd id="nerdPeakMonth">—</dd>
+                        </div>
+                        <div class="nerds-row">
+                            <dt>One hit wonders <span class="tooltip-wrap" data-tooltip="Heard exactly once"><i data-lucide="info"></i></span></dt>
+                            <dd id="nerdOneHit">—</dd>
+                        </div>
+                        <div class="nerds-row">
+                            <dt>Every year artists</dt>
+                            <dd id="nerdEveryYear">—</dd>
+                        </div>
+                        <div class="nerds-accordion" id="nerdEveryYearPanel" hidden>
+                            <ul id="nerdEveryYearList"></ul>
+                        </div>
+                        <div class="nerds-row">
+                            <dt>Eddington number <span class="tooltip-wrap" data-tooltip="N tracks each heard N+ times"><i data-lucide="info"></i></span></dt>
+                            <dd id="nerdEddington">—</dd>
+                        </div>
+                        <div class="nerds-row">
+                            <dt>Artist cut over point <span class="tooltip-wrap" data-tooltip="N artists each with N+ scrobbles"><i data-lucide="info"></i></span></dt>
+                            <dd id="nerdArtistCutover">—</dd>
+                        </div>
+                    </dl>
+                </section>
                 <section id="genreCommitsSection" hidden>
                     <div class="commits-header">
                         <h2>Taste Over Time</h2>
@@ -72,6 +112,7 @@ const ViewHome = (() => {
 
         loadYearRange();
         loadStats();
+        loadNerdsStats();
         setupSearch();
         setupReleaseSearch();
         loadWeeklyReleases();
@@ -153,6 +194,186 @@ const ViewHome = (() => {
                 focused?.classList.remove('keyboard-focused');
             }
         });
+    }
+
+    function loadNerdsStats() {
+        const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+        // Days of Scrobbling + Avg Listens/Day
+        const daysResult = _db.exec(`
+            SELECT
+                COUNT(DISTINCT date(l.timestamp, 'unixepoch')) as active_days,
+                CAST(julianday(date(MAX(l.timestamp), 'unixepoch'))
+                     - julianday(date(MIN(l.timestamp), 'unixepoch')) + 1 AS INTEGER) as total_days,
+                COUNT(l.id) as total_listens
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id WHERE t.hidden = 0
+        `)[0];
+        if (daysResult) {
+            const [active, total, totalListens] = daysResult.values[0];
+            const pct = total > 0 ? ((active / total) * 100).toFixed(1) : '0';
+            const el = document.getElementById('nerdDays');
+            if (el) el.textContent = `${formatNumber(active)} (${pct}%)`;
+            const avgEl = document.getElementById('nerdAvgDay');
+            if (avgEl && active > 0) avgEl.textContent = (totalListens / active).toFixed(1);
+        }
+
+        // Total Listening Time
+        const timeResult = _db.exec(`
+            SELECT SUM(COALESCE(l.ms_played, t.duration_ms)) as total_ms
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+        `)[0];
+        if (timeResult) {
+            const totalMs = timeResult.values[0][0] || 0;
+            const totalHrs = Math.floor(totalMs / 3600000);
+            const days = Math.floor(totalHrs / 24);
+            const remHrs = totalHrs % 24;
+            const el = document.getElementById('nerdTotalTime');
+            if (el) el.textContent = days > 0 ? `${formatNumber(days)} days, ${remHrs} hrs` : `${formatNumber(totalHrs)} hrs`;
+        }
+
+        // Most Active Month
+        const peakResult = _db.exec(`
+            SELECT strftime('%Y-%m', datetime(l.timestamp, 'unixepoch')) as ym,
+                   COUNT(l.id) as cnt
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            GROUP BY ym
+            ORDER BY cnt DESC
+            LIMIT 1
+        `)[0];
+        if (peakResult) {
+            const [ym, cnt] = peakResult.values[0];
+            const [year, month] = ym.split('-');
+            const label = `${MONTH_NAMES[parseInt(month) - 1]} ${year}`;
+            const el = document.getElementById('nerdPeakMonth');
+            if (el) el.textContent = `${label} · ${formatNumber(cnt)}`;
+        }
+
+        // One hit wonders
+        const ohwResult = _db.exec(`
+            WITH artist_counts AS (
+                SELECT ta.artist_id, COUNT(l.id) as play_count
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                JOIN artists a ON ta.artist_id = a.id AND a.hidden = 0
+                GROUP BY ta.artist_id
+            )
+            SELECT
+                SUM(CASE WHEN play_count = 1 THEN 1 ELSE 0 END) as ohw,
+                COUNT(*) as total
+            FROM artist_counts
+        `)[0];
+        if (ohwResult) {
+            const [ohw, total] = ohwResult.values[0];
+            const pct = total > 0 ? ((ohw / total) * 100).toFixed(1) : '0';
+            const el = document.getElementById('nerdOneHit');
+            if (el) el.textContent = `${formatNumber(ohw)} (${pct}%)`;
+        }
+
+        // Every year artists
+        const eyResult = _db.exec(`
+            WITH artist_years AS (
+                SELECT ta.artist_id,
+                       strftime('%Y', datetime(l.timestamp, 'unixepoch')) AS yr
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                WHERE t.hidden = 0
+                GROUP BY ta.artist_id, yr
+            ),
+            total_years AS (
+                SELECT COUNT(DISTINCT strftime('%Y', datetime(l.timestamp, 'unixepoch'))) AS n
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id
+                WHERE t.hidden = 0
+            ),
+            every_year AS (
+                SELECT artist_id, COUNT(DISTINCT yr) AS yrs
+                FROM artist_years
+                GROUP BY artist_id
+                HAVING yrs = (SELECT n FROM total_years)
+            )
+            SELECT a.id, a.name, (SELECT n FROM total_years) AS total_yrs
+            FROM every_year ey
+            JOIN artists a ON a.id = ey.artist_id
+            WHERE a.hidden = 0
+            ORDER BY a.name
+        `)[0];
+        if (eyResult && eyResult.values.length > 0) {
+            const totalYrs = eyResult.values[0][2];
+            const artists = eyResult.values.map(([id, name]) => ({ id, name }));
+            const ddEl = document.getElementById('nerdEveryYear');
+            const panel = document.getElementById('nerdEveryYearPanel');
+            const list  = document.getElementById('nerdEveryYearList');
+            if (ddEl) {
+                ddEl.innerHTML = `${artists.length}
+                    <button class="nerds-accordion-btn" id="nerdEveryYearToggle" title="Show artists (${totalYrs} years)">
+                        <i data-lucide="square-menu"></i>
+                    </button>`;
+                lucide.createIcons({ nodes: [ddEl] });
+                document.getElementById('nerdEveryYearToggle')?.addEventListener('click', () => {
+                    const open = panel.hidden;
+                    panel.hidden = !open;
+                    document.getElementById('nerdEveryYearToggle')?.classList.toggle('nerds-accordion-btn-open', open);
+                });
+            }
+            if (list) {
+                list.innerHTML = artists.map(({ id, name }) =>
+                    `<li><a href="?view=artist&id=${encodeURIComponent(id)}">${escapeHtml(name)}</a></li>`
+                ).join('');
+            }
+        }
+
+        // Eddington number (tracks)
+        const eddResult = _db.exec(`
+            WITH track_counts AS (
+                SELECT l.track_id, COUNT(l.id) as play_count
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                GROUP BY l.track_id
+            ),
+            ranked AS (
+                SELECT play_count,
+                       ROW_NUMBER() OVER (ORDER BY play_count DESC) as rank
+                FROM track_counts
+            )
+            SELECT MAX(rank) as eddington
+            FROM ranked
+            WHERE play_count >= rank
+        `)[0];
+        if (eddResult) {
+            const el = document.getElementById('nerdEddington');
+            if (el) el.textContent = formatNumber(eddResult.values[0][0]);
+        }
+
+        // Artist cut over point
+        const cutResult = _db.exec(`
+            WITH artist_counts AS (
+                SELECT ta.artist_id, COUNT(l.id) as play_count
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                JOIN artists a ON ta.artist_id = a.id AND a.hidden = 0
+                GROUP BY ta.artist_id
+            ),
+            ranked AS (
+                SELECT play_count,
+                       ROW_NUMBER() OVER (ORDER BY play_count DESC) as rank
+                FROM artist_counts
+            )
+            SELECT MAX(rank) as cutover
+            FROM ranked
+            WHERE play_count >= rank
+        `)[0];
+        if (cutResult) {
+            const el = document.getElementById('nerdArtistCutover');
+            if (el) el.textContent = formatNumber(cutResult.values[0][0]);
+        }
+
+        lucide.createIcons();
     }
 
     function setupSearch() {
@@ -426,7 +647,7 @@ const ViewHome = (() => {
 
         // Transposed: months = rows (Y-axis), years = columns (X-axis)
         // Columns: month-label + one per year
-        grid.style.gridTemplateColumns = `2rem repeat(${nYears}, 24px)`;
+        grid.style.gridTemplateColumns = `2rem repeat(${nYears}, var(--commit-cell-w, 24px))`;
 
         const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
         const MONTHS_LONG  = ['January','February','March','April','May','June',
