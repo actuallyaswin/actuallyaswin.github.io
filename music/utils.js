@@ -89,6 +89,20 @@ function formatNumber(num) {
     return num.toLocaleString();
 }
 
+function formatRelativeTime(ts) {
+    const diffSec = Math.floor(Date.now() / 1000) - ts;
+    if (diffSec < 86400)       return 'today';
+    if (diffSec < 2 * 86400)   return 'yesterday';
+    const days = Math.floor(diffSec / 86400);
+    if (days < 14)             return `${days} days ago`;
+    const weeks = Math.floor(days / 7);
+    if (weeks < 9)             return `${weeks} weeks ago`;
+    const months = Math.floor(days / 30);
+    if (months < 12)           return `${months} months ago`;
+    const years = Math.floor(days / 365);
+    return years === 1 ? '1 year ago' : `${years} years ago`;
+}
+
 function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
