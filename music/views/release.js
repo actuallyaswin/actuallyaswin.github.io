@@ -3,6 +3,7 @@ const ViewRelease = (() => {
     let _releaseId = null;
     let _primaryArtistId = null;
     let _releaseType = null;
+    let _artistsWithReleases = new Set();
     let _currentChart = null;
     let _chartData = { monthly: null, yearly: null, monthlyRaw: null };
     let _chartState = { granularity: 'monthly', type: 'distribution' };
@@ -19,6 +20,7 @@ const ViewRelease = (() => {
         _releaseId = params.id;
         _primaryArtistId = null;
         _releaseType = null;
+        _artistsWithReleases = new Set();
         _currentChart = null;
         _chartData = { monthly: null, yearly: null, monthlyRaw: null };
 
@@ -47,13 +49,15 @@ const ViewRelease = (() => {
                 <div class="artist-info-container">
                     <h1 id="releaseName">Loading...</h1>
                     <p class="release-artist">
-                        by <span id="releaseArtist"></span> ·
-                        <span id="releaseYear"></span> ·
-                        <span id="releaseType"></span>
+                        <span id="releaseArtist"></span>
                     </p>
+                    <p class="release-meta-line" id="releaseMeta"></p>
+                    <p id="releaseListenStats" class="release-listen-stats" hidden></p>
                     <p id="releaseAka" class="release-aka" hidden></p>
-                    <p id="releaseGenres" class="genre-list"></p>
+                    <div class="release-footer-row">
+                        <p id="releaseGenres" class="genre-list"></p>
                         <div id="releaseLinks" class="release-links"></div>
+                    </div>
                 </div>
             </header>
 
@@ -125,12 +129,13 @@ const ViewRelease = (() => {
         const result = _db.exec(`
             SELECT
                 r.title,
-                r.release_year,
+                r.release_date,
                 r.type,
                 r.type_secondary,
                 r.album_art_url,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END) as tracks_listened,
-                COUNT(CASE WHEN t.hidden = 0 THEN l.id END)          as total_plays,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END)                      as total_tracks_in_db,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as tracks_heard,
+                COUNT(CASE WHEN t.hidden = 0 THEN l.id END)                               as total_plays,
                 r.spotify_id,
                 r.release_group_mbid,
                 r.mbid,
@@ -140,7 +145,11 @@ const ViewRelease = (() => {
                 r.aoty_score_user,
                 r.aoty_ratings_critic,
                 r.aoty_ratings_user,
-                r.primary_artist_id
+                r.primary_artist_id,
+                r.label,
+                (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) AS INTEGER)
+                 FROM tracks t2 WHERE t2.release_id = r.id AND t2.hidden = 0) as album_total_ms,
+                MIN(CASE WHEN t.hidden = 0 THEN l.timestamp END) as first_listen_ts
             FROM releases r
             LEFT JOIN tracks t ON t.release_id = r.id
             LEFT JOIN listens l ON l.track_id = t.id
@@ -154,10 +163,11 @@ const ViewRelease = (() => {
             return;
         }
 
-        const [title, year, type, typeSecondary, albumArtUrl, tracksListened, totalPlays,
+        const [title, releaseDate, type, typeSecondary, albumArtUrl,
+               totalTracksInDb, tracksHeard, totalPlays,
                spotifyId, releaseGroupMbid, mbid, aotyUrl, aotyId,
                aotyScoreCritic, aotyScoreUser, aotyRatingsCritic, aotyRatingsUser,
-               primaryArtistId] = result.values[0];
+               primaryArtistId, label, albumTotalMs, firstListenTs] = result.values[0];
 
         const extLinks = new Map();
         try {
@@ -187,9 +197,47 @@ const ViewRelease = (() => {
         `)[0];
 
         document.getElementById('releaseName').textContent = title || 'Unknown Release';
-        document.getElementById('releaseYear').textContent = year || 'Unknown year';
-        document.getElementById('releaseType').textContent = typeLabel || 'Unknown type';
         document.title = `aswin.db/music - ${title || 'Release'}`;
+
+        const metaParts = [];
+        if (releaseDate) metaParts.push(_formatReleaseDate(releaseDate));
+        if (label) metaParts.push(label);
+        const metaEl = document.getElementById('releaseMeta');
+        if (metaEl) {
+            const badge = typeLabel
+                ? `<span class="release-type-badge">${escapeHtml(typeLabel)}</span> `
+                : '';
+            metaEl.innerHTML = badge + escapeHtml(metaParts.join(' · '));
+        }
+
+        const scoreColor = n => `hsl(${Math.round(Math.min(n, 100) * 1.2)}, 65%, 40%)`;
+
+        const statsEl = document.getElementById('releaseListenStats');
+        if (statsEl) {
+            const chips = [];
+            if (totalPlays > 0) {
+                chips.push(`<span class="stat-chip"><i data-lucide="headphones"></i> ${formatNumber(totalPlays)}</span>`);
+                if (totalTracksInDb > 0) {
+                    chips.push(`<span class="stat-chip"><i data-lucide="music"></i> ${tracksHeard} / ${totalTracksInDb} tracks</span>`);
+                }
+                if (albumTotalMs > 0) {
+                    chips.push(`<span class="stat-chip"><i data-lucide="clock"></i> ${_formatAlbumDuration(albumTotalMs)}</span>`);
+                }
+                if (firstListenTs) {
+                    chips.push(`<span class="stat-chip"><i data-lucide="calendar"></i> First heard ${_fmtTs(firstListenTs)}</span>`);
+                }
+            }
+            if (aotyScoreCritic != null) {
+                chips.push(`<span class="stat-chip" title="Critic Score${aotyRatingsCritic != null ? ` (${formatNumber(aotyRatingsCritic)} reviews)` : ''}"><i data-lucide="message-square-warning" style="color:${scoreColor(aotyScoreCritic)}"></i> <span style="color:${scoreColor(aotyScoreCritic)}">${aotyScoreCritic}</span></span>`);
+            }
+            if (aotyScoreUser != null) {
+                chips.push(`<span class="stat-chip" title="User Score${aotyRatingsUser != null ? ` (${formatNumber(aotyRatingsUser)} ratings)` : ''}"><i data-lucide="message-square-heart" style="color:${scoreColor(aotyScoreUser)}"></i> <span style="color:${scoreColor(aotyScoreUser)}">${Number(aotyScoreUser).toFixed(1)}</span></span>`);
+            }
+            if (chips.length > 0) {
+                statsEl.innerHTML = chips.join('');
+                statsEl.removeAttribute('hidden');
+            }
+        }
 
         if (albumArtUrl) {
             const albumArtDiv = document.getElementById('albumArt');
@@ -204,8 +252,19 @@ const ViewRelease = (() => {
             artistSpan.textContent = 'Various Artists';
         } else {
             const allArtists = artistResult.values; // [[name, id], ...]
+            // Seed _artistsWithReleases with any header artist that has a primary release.
+            // loadTracks() will extend this set for track-level credits after it runs.
+            const headerIdList = allArtists.map(([, id]) => `'${id}'`).join(',');
+            const hrResult = _db.exec(`
+                SELECT DISTINCT primary_artist_id FROM releases
+                WHERE hidden = 0 AND primary_artist_id IN (${headerIdList})
+            `)[0];
+            if (hrResult) hrResult.values.forEach(([id]) => _artistsWithReleases.add(id));
+
             const makeLink = (n, i) =>
-                `<a href="?view=artist&id=${encodeURIComponent(i)}" style="color:${getCSSColor('--primary')};text-decoration:none">${escapeHtml(n)}</a>`;
+                _artistsWithReleases.has(i)
+                    ? `<a href="?view=artist&id=${encodeURIComponent(i)}" class="release-artist-link">${escapeHtml(n)}</a>`
+                    : escapeHtml(n);
 
             let html;
             if (allArtists.length === 1) {
@@ -292,7 +351,7 @@ const ViewRelease = (() => {
             }
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/album/${aotyId}/` : null);
             if (resolvedAotyUrl) {
-                iconLinks.push(`<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year"><img src="images/aoty.png" alt="Album of the Year"></a>`);
+                iconLinks.push(`<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year"><img src="images/aoty.svg" alt="Album of the Year"></a>`);
             }
             if (wikiPageId) {
                 iconLinks.push(`<a href="https://en.wikipedia.org/wiki/?curid=${wikiPageId}" target="_blank" rel="noopener" class="release-link-icon" data-service="wikipedia" title="Wikipedia"><span class="link-icon-mask" style="--icon-url: url('images/wikipedia.svg')"></span></a>`);
@@ -301,20 +360,39 @@ const ViewRelease = (() => {
                 iconLinks.push(`<a href="https://music.apple.com/album/${appleMusicId}" target="_blank" rel="noopener" class="release-link-icon" data-service="applemusic" title="Apple Music"><span class="link-icon-mask" style="--icon-url: url('images/applemusic.svg')"></span></a>`);
             }
 
-            const scoreColor = n => `hsl(${Math.round(Math.min(n, 100) * 1.2)}, 65%, 40%)`;
-            const scores = [];
-            if (aotyScoreCritic != null) {
-                scores.push(`<span class="release-link-score" title="Critic Score${aotyRatingsCritic != null ? ` (${formatNumber(aotyRatingsCritic)} reviews)` : ''}"><i data-lucide="message-square-warning" style="color:${scoreColor(aotyScoreCritic)}"></i> <span style="color:${scoreColor(aotyScoreCritic)}">${aotyScoreCritic}</span></span>`);
-            }
-            if (aotyScoreUser != null) {
-                scores.push(`<span class="release-link-score" title="User Score${aotyRatingsUser != null ? ` (${formatNumber(aotyRatingsUser)} ratings)` : ''}"><i data-lucide="message-square-heart" style="color:${scoreColor(aotyScoreUser)}"></i> <span style="color:${scoreColor(aotyScoreUser)}">${Number(aotyScoreUser).toFixed(1)}</span></span>`);
-            }
-
-            let html = iconLinks.join('');
-            if (iconLinks.length > 0 && scores.length > 0) html += `<span class="release-links-sep">·</span>`;
-            html += scores.join(`<span class="release-links-sep">·</span>`);
-            linksEl.innerHTML = html;
+            linksEl.innerHTML = iconLinks.join('');
         }
+
+        lucide.createIcons();
+    }
+
+    function _formatReleaseDate(dateStr) {
+        if (!dateStr) return '';
+        const parts = dateStr.split('-');
+        if (parts.length === 3 && !(parts[1] === '01' && parts[2] === '01')) {
+            const d = new Date(dateStr + 'T00:00:00');
+            if (!isNaN(d)) return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        } else if (parts.length === 2) {
+            const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
+            if (!isNaN(d)) return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+        }
+        return parts[0]; // fallback to year
+    }
+
+    function _formatAlbumDuration(ms) {
+        if (!ms) return '';
+        const totalMin = Math.floor(ms / 60000);
+        if (totalMin < 60) return `${totalMin} min`;
+        const h = Math.floor(totalMin / 60);
+        const m = totalMin % 60;
+        return m > 0 ? `${h} hr ${m} min` : `${h} hr`;
+    }
+
+    function _fmtTs(ts) {
+        if (!ts) return '';
+        const d = new Date(ts * 1000);
+        if (isNaN(d)) return '';
+        return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
     }
 
     function loadReleaseAliases() {
@@ -353,7 +431,7 @@ const ViewRelease = (() => {
     // ── Shared tracklist renderer ───────────────────────────────────────────────
 
     function _renderTracklist(container, tracks, showPlayCounts, opts = {}) {
-        const { showTrackArtists = false, artistsByTrack = new Map(), primaryArtistId = null } = opts;
+        const { showTrackArtists = false, artistsByTrack = new Map(), primaryArtistId = null, artistsWithReleases = new Set() } = opts;
         container.innerHTML = '';
         if (!tracks.length) {
             container.innerHTML = '<div class="tracklist-empty">No tracks found</div>';
@@ -416,7 +494,9 @@ const ViewRelease = (() => {
                 const parts = [];
                 if (mainArtists.length > 0) {
                     const mainLinks = mainArtists.map(a =>
-                        `<a href="?view=artist&id=${encodeURIComponent(a.id)}" class="tracklist-artist-link">${escapeHtml(a.name)}</a>`
+                        artistsWithReleases.has(a.id)
+                            ? `<a href="?view=artist&id=${encodeURIComponent(a.id)}" class="tracklist-artist-link">${escapeHtml(a.name)}</a>`
+                            : escapeHtml(a.name)
                     );
                     const mainStr = mainLinks.length <= 2
                         ? mainLinks.join(' and ')
@@ -425,7 +505,9 @@ const ViewRelease = (() => {
                 }
                 if (featArtists.length > 0) {
                     const featLinks = featArtists.map(a =>
-                        `<a href="?view=artist&id=${encodeURIComponent(a.id)}" class="tracklist-artist-link">${escapeHtml(a.name)}</a>`
+                        artistsWithReleases.has(a.id)
+                            ? `<a href="?view=artist&id=${encodeURIComponent(a.id)}" class="tracklist-artist-link">${escapeHtml(a.name)}</a>`
+                            : escapeHtml(a.name)
                     );
                     const featStr = featLinks.length <= 2
                         ? featLinks.join(' and ')
@@ -501,7 +583,21 @@ const ViewRelease = (() => {
             }
         }
 
-        _renderTracklist(container, tracks, true, { showTrackArtists, artistsByTrack, primaryArtistId: _primaryArtistId });
+        // Extend _artistsWithReleases with track-level credited artists.
+        // (Header artists were already seeded by loadReleaseInfo.)
+        const allTrackArtistIds = new Set();
+        artistsByTrack.forEach(list => list.forEach(a => allTrackArtistIds.add(`'${a.id}'`)));
+        if (allTrackArtistIds.size > 0) {
+            const arResult = _db.exec(`
+                SELECT DISTINCT primary_artist_id
+                FROM releases
+                WHERE hidden = 0
+                  AND primary_artist_id IN (${[...allTrackArtistIds].join(',')})
+            `)[0];
+            if (arResult) arResult.values.forEach(([id]) => _artistsWithReleases.add(id));
+        }
+
+        _renderTracklist(container, tracks, true, { showTrackArtists, artistsByTrack, primaryArtistId: _primaryArtistId, artistsWithReleases: _artistsWithReleases });
     }
 
     // ── Release variants ────────────────────────────────────────────────────────

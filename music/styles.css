@@ -393,24 +393,120 @@ header h1 {
 .release-artist {
     font-size: 1.15rem;
     color: var(--text);
-    margin: 0.25rem 0 0.75rem 0;
+    margin: 0.25rem 0 0.3rem 0;
     text-align: left;
 }
 
-.release-artist a {
+.release-artist a,
+.release-artist-link {
     color: var(--primary);
-    text-decoration: none;
+    text-decoration: underline;
+    text-decoration-style: dashed;
+    text-underline-offset: 3px;
 }
 
-.release-artist a:hover {
-    text-decoration: underline;
+.release-artist a:hover,
+.release-artist-link:hover {
+    text-decoration-style: solid;
 }
 
 .release-aka {
     font-size: 0.9rem;
     color: var(--text-secondary);
-    margin: 0 0 0.5rem 0;
+    margin: 0 0 0.3rem 0;
     text-align: left;
+}
+
+.release-meta-line {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.3rem 0;
+    text-align: left;
+}
+
+.release-listen-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0 0 0.4rem 0;
+    align-items: center;
+}
+
+.release-listen-stats .stat-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: none;
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    white-space: nowrap;
+}
+
+.release-listen-stats .stat-chip i[data-lucide] {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.release-type-badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    padding: 0.1rem 0.35rem;
+    margin-right: 0.3rem;
+    vertical-align: middle;
+}
+
+.release-footer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.release-footer-row .genre-list,
+.release-footer-row .release-links {
+    margin: 0;
+}
+
+/* Genre chips — scoped to release header only */
+#releaseHeader .genre-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0;
+    line-height: normal;
+}
+
+#releaseHeader .genre-tag {
+    display: inline-flex;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+#releaseHeader .genre-tag:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+    text-decoration: none;
+}
+
+#releaseHeader .genre-tag.genre-tag-secondary {
+    color: var(--text-tertiary);
+    border-color: var(--bg-tertiary);
 }
 
 .release-meta-footer .aoty-scores {
@@ -1320,11 +1416,13 @@ a.stat-card:hover .stat-label::after {
 
 .tracklist-artist-link {
     color: var(--text-secondary);
-    text-decoration: none;
+    text-decoration: underline;
+    text-decoration-style: dashed;
+    text-underline-offset: 3px;
 }
 .tracklist-artist-link:hover {
     color: var(--primary);
-    text-decoration: underline;
+    text-decoration-style: solid;
 }
 
 .tracklist-feat {
@@ -2244,6 +2342,7 @@ footer a:hover {
 
     #releaseHeader h1 {
         margin-bottom: 0.2rem;
+        text-align: center;
     }
 
     #releaseHeader .genre-list,
@@ -2256,8 +2355,18 @@ footer a:hover {
 
     /* Release-specific */
     #releaseHeader .release-artist,
-    #releaseHeader .release-aka {
+    #releaseHeader .release-aka,
+    #releaseHeader .release-meta-line {
         font-size: 0.875rem;
+        text-align: center;
+    }
+
+    #releaseHeader .release-listen-stats {
+        justify-content: center;
+    }
+
+    #releaseHeader .release-footer-row {
+        justify-content: center;
     }
 
     /* Artist-specific */
