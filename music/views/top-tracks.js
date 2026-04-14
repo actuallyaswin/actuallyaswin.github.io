@@ -2,6 +2,7 @@ const ViewTopTracks = (() => {
     let _db = null;
     let sortBy = 'listens';
     let countLimit = 10;
+    let releaseYear = 'all';
     let cachedResults = [];
 
     function mount(container, db, params) {
@@ -29,6 +30,14 @@ const ViewTopTracks = (() => {
                     </div>
                 </div>
                 <div class="control-block">
+                    <span class="control-block-label">Released</span>
+                    <div class="sort-controls">
+                        <select id="yearFilter" class="year-filter-select">
+                            <option value="all">All years</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="control-block">
                     <span class="control-block-label">#</span>
                     <div class="sort-controls">
                         ${[10, 20, 50, 100].map(n =>
@@ -48,6 +57,7 @@ const ViewTopTracks = (() => {
         `;
 
         setupControls();
+        populateYearFilter();
         loadTracks();
     }
 
@@ -55,6 +65,7 @@ const ViewTopTracks = (() => {
 
     function loadTracks() {
         const orderClause = sortBy === 'minutes' ? 'total_minutes DESC' : 'total_listens DESC';
+        const yearFilter = releaseYear !== 'all' ? `AND r.release_year = ${parseInt(releaseYear)}` : '';
 
         const result = _db.exec(`
             SELECT
@@ -72,6 +83,7 @@ const ViewTopTracks = (() => {
             LEFT JOIN releases r ON t.release_id = r.id
             LEFT JOIN listens l ON t.id = l.track_id
             WHERE t.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
+            ${yearFilter}
             GROUP BY t.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}
@@ -123,11 +135,38 @@ const ViewTopTracks = (() => {
         });
     }
 
+    function populateYearFilter() {
+        const sel = document.getElementById('yearFilter');
+        if (!sel) return;
+        const res = _db.exec(`
+            SELECT DISTINCT r.release_year FROM tracks t
+            LEFT JOIN releases r ON t.release_id = r.id
+            WHERE r.release_year IS NOT NULL AND t.hidden = 0
+            ORDER BY r.release_year DESC
+        `)[0];
+        if (res) {
+            res.values.forEach(([yr]) => {
+                const opt = document.createElement('option');
+                opt.value = yr;
+                opt.textContent = yr;
+                sel.appendChild(opt);
+            });
+        }
+    }
+
     function setupControls() {
         setupToggleGroup('[data-sort]', btn => {
             sortBy = btn.dataset.sort;
             loadTracks();
         });
+
+        const yearSel = document.getElementById('yearFilter');
+        if (yearSel) {
+            yearSel.addEventListener('change', () => {
+                releaseYear = yearSel.value;
+                loadTracks();
+            });
+        }
 
         setupToggleGroup('[data-count]', btn => {
             countLimit = parseInt(btn.dataset.count);

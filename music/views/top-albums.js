@@ -3,6 +3,7 @@ const ViewTopAlbums = (() => {
     let sortBy = 'listens';
     let countLimit = 10;
     let viewMode = 'list';
+    let releaseYear = 'all';
     let cachedResults = [];
 
     function mount(container, db, params) {
@@ -39,6 +40,14 @@ const ViewTopAlbums = (() => {
                     <div class="sort-controls">${countBtns}</div>
                 </div>
                 <div class="control-block">
+                    <span class="control-block-label">Released</span>
+                    <div class="sort-controls">
+                        <select id="yearFilter" class="year-filter-select">
+                            <option value="all">All years</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="control-block">
                     <span class="control-block-label">Display</span>
                     <div class="sort-controls">
                         <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
@@ -58,6 +67,7 @@ const ViewTopAlbums = (() => {
         `;
 
         setupControls();
+        populateYearFilter();
         loadAlbums();
     }
 
@@ -65,6 +75,7 @@ const ViewTopAlbums = (() => {
 
     function loadAlbums() {
         const orderClause = sortBy === 'minutes' ? 'total_minutes DESC' : 'total_listens DESC';
+        const yearFilter = releaseYear !== 'all' ? `AND r.release_year = ${parseInt(releaseYear)}` : '';
 
         const result = _db.exec(`
             SELECT
@@ -84,6 +95,7 @@ const ViewTopAlbums = (() => {
             LEFT JOIN listens l ON l.track_id = t.id
             WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
             AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
+            ${yearFilter}
             GROUP BY r.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}
@@ -180,11 +192,38 @@ const ViewTopAlbums = (() => {
         }
     }
 
+    function populateYearFilter() {
+        const sel = document.getElementById('yearFilter');
+        if (!sel) return;
+        const res = _db.exec(`
+            SELECT DISTINCT release_year FROM releases
+            WHERE release_year IS NOT NULL AND hidden = 0
+            ORDER BY release_year DESC
+        `)[0];
+        if (res) {
+            res.values.forEach(([yr]) => {
+                const opt = document.createElement('option');
+                opt.value = yr;
+                opt.textContent = yr;
+                if (String(yr) === String(releaseYear)) opt.selected = true;
+                sel.appendChild(opt);
+            });
+        }
+    }
+
     function setupControls() {
         setupToggleGroup('[data-sort]', btn => {
             sortBy = btn.dataset.sort;
             loadAlbums();
         });
+
+        const yearSel = document.getElementById('yearFilter');
+        if (yearSel) {
+            yearSel.addEventListener('change', () => {
+                releaseYear = yearSel.value;
+                loadAlbums();
+            });
+        }
 
         setupToggleGroup('[data-count]', btn => {
             countLimit = parseInt(btn.dataset.count);
