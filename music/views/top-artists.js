@@ -37,11 +37,13 @@ const ViewTopArtists = (() => {
                 <div class="control-block">
                     <span class="control-block-label">Sort By</span>
                     <div class="sort-controls">
-                        <button class="sort-btn${sortBy === 'listens' ? ' active' : ''}" data-sort="listens" title="Sort by listens"><i data-lucide="headphones"></i></button>
-                        <button class="sort-btn${sortBy === 'minutes' ? ' active' : ''}" data-sort="minutes" title="Sort by minutes"><i data-lucide="clock"></i></button>
+                        <button class="sort-btn${sortBy === 'listens'     ? ' active' : ''}" data-sort="listens"     title="Sort by listens"><i data-lucide="headphones"></i></button>
+                        <button class="sort-btn${sortBy === 'minutes'     ? ' active' : ''}" data-sort="minutes"     title="Sort by minutes"><i data-lucide="clock"></i></button>
+                        <button class="sort-btn${sortBy === 'discoveries' ? ' active' : ''}" data-sort="discoveries" title="Latest discoveries — artists with newest average listen date"><i data-lucide="sparkles"></i></button>
+                        <button class="sort-btn${sortBy === 'oldies'      ? ' active' : ''}" data-sort="oldies"      title="Golden oldies — artists with oldest average listen date"><i data-lucide="history"></i></button>
                     </div>
                 </div>
-                <div class="control-block">
+                <div class="control-block" id="rangeControlBlock">
                     <span class="control-block-label">Range</span>
                     <div class="sort-controls">
                         <button class="sort-btn${range === 'week'  ? ' active' : ''}" data-range="week">Week</button>
@@ -89,9 +91,17 @@ const ViewTopArtists = (() => {
     }
 
     function loadArtists() {
-        const orderClause = sortBy === 'minutes' ? 'total_minutes DESC' : 'total_listens DESC';
-        const startTs = _rangeStartTs();
+        const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
+        const startTs = isTemporalSort ? null : _rangeStartTs();
         const tsFilter = startTs ? `AND l.timestamp >= ${startTs}` : '';
+
+        document.getElementById('rangeControlBlock')?.classList.toggle('controls-dimmed', isTemporalSort);
+
+        let orderClause;
+        if (sortBy === 'minutes')     orderClause = 'total_minutes DESC';
+        else if (sortBy === 'discoveries') orderClause = 'avg_ts DESC';
+        else if (sortBy === 'oldies')      orderClause = 'avg_ts ASC';
+        else                               orderClause = 'total_listens DESC';
 
         const result = _db.exec(`
             SELECT
@@ -101,7 +111,8 @@ const ViewTopArtists = (() => {
                 a.cert,
                 COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as unique_tracks,
                 COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
-                CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
+                CAST(AVG(CASE WHEN t.hidden = 0 THEN l.timestamp END) AS INTEGER) as avg_ts
             FROM artists a
             LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
             LEFT JOIN tracks t ON ta.track_id = t.id
@@ -141,12 +152,21 @@ const ViewTopArtists = (() => {
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedResults.forEach((row, i) => {
-                const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes, avgTs] = row;
+                const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
+                let meta;
+                if (isTemporalSort && avgTs) {
+                    const d = new Date(avgTs * 1000);
+                    const label = d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+                    meta = `avg. ${label}`;
+                } else {
+                    meta = `${formatNumber(uniqueTracks)} tracks`;
+                }
                 const card = createWideCard({
                     href: `?view=artist&id=${encodeURIComponent(id)}`,
                     imageUrl,
                     name,
-                    meta: `${formatNumber(uniqueTracks)} tracks`,
+                    meta,
                     totalListens,
                     totalMinutes,
                     rounded: true
