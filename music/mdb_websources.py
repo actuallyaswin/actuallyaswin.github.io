@@ -255,7 +255,10 @@ def _fmt_aoty(data: dict) -> str:
 
 
 def save_aoty_data(conn, release_id: str, aoty_url: str, data: dict,
+                   force: bool = False,
                    overwrite_date: bool = False, overwrite_type: bool = False) -> None:
+    """Persist AOTY data for a release.  Pass force=True to overwrite everything,
+    or use the granular overwrite_date / overwrite_type booleans for partial control."""
     now      = int(time.time())
     existing = conn.execute(
         'SELECT release_date, type, date_source FROM releases WHERE id = ?', (release_id,)
@@ -265,12 +268,12 @@ def save_aoty_data(conn, release_id: str, aoty_url: str, data: dict,
     ex_source = existing['date_source']  if existing else None
 
     updates = {'aoty_url': aoty_url, 'updated_at': now}
-    if data['release_date'] and (overwrite_date
+    if data['release_date'] and (force or overwrite_date
             or _should_update_date(ex_date, ex_source, data['release_date'], 'aoty')):
         updates['release_date'] = data['release_date']
         updates['release_year'] = data['release_year']
         updates['date_source']  = 'aoty'
-    if data['type'] and (overwrite_type or not ex_type):
+    if data['type'] and (force or overwrite_type or not ex_type):
         updates['type'] = data['type']
         if data['type_secondary'] is not None:
             updates['type_secondary'] = data['type_secondary']
