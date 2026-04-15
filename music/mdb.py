@@ -268,40 +268,32 @@ def _write_variant_links(conn, canonical_id, variants):
 # ── cmd: import ───────────────────────────────────────────────────────────────
 
 def _import_aoty_step(db_path, release_id, release_title, artist_name):
-    console.rule('[dim]AOTY[/dim]', style='dim')
     with managed_db(db_path) as conn:
         cached     = conn.execute('SELECT aoty_url FROM releases WHERE id = ?', (release_id,)).fetchone()
         cached_url = cached[0] if cached else None
         url, data  = fetch_aoty_data(release_title, artist_name, cached_url)
         if _has_aoty(data):
             save_aoty_data(conn, release_id, url, data)
-            type_str  = f'  [{data["aoty_type"]}]' if data['aoty_type'] else ''
-            date_str  = f'  {data["release_date"]}' if data['release_date'] else ''
             primary   = [n for _, n, _, p in data['genres'] if p]
-            genre_str = f'  {", ".join(primary)}' if primary else ''
-            console.print(f'  [green]✓[/green]  [dim]{url}[/dim]{type_str}{date_str}{genre_str}')
-        else:
-            console.print('  [dim]no match[/dim]')
+            genre_str = '  ·  ' + '  ·  '.join(primary) if primary else ''
+            score_str = ''
+            if data.get('score_critic') is not None:
+                score_str = f'  [dim]({data["score_critic"]}/100)[/dim]'
+            console.print(f'      [dim]·  AOTY{genre_str}[/dim]{score_str}')
 
 def _import_wiki_step(db_path, release_id, release_title, artist_name):
-    console.rule('[dim]Wikipedia[/dim]', style='dim')
+    # No rule separator — only prints when it actually changes something.
     with managed_db(db_path) as conn:
         row  = conn.execute(
             'SELECT mbid, release_date, date_source, type, type_secondary FROM releases WHERE id = ?',
             (release_id,)
         ).fetchone()
         if not row or not row['mbid']:
-            console.print('  [dim]no MBID — skipped[/dim]')
-            return
-        # Skip singles and remixes: they rarely have their own Wikipedia articles,
-        # causing the search to land on a parent album's page and apply that date.
-        # Spotify/MB dates are reliable enough for these release types.
+            return  # silent — no MBID
         rtype = (row['type'] or '').lower()
         rsec  = (row['type_secondary'] or '').lower()
         if rtype == 'single' or rsec in ('remix', 'dj-mix'):
-            console.print(f'  [dim]skipped ({rtype or "?"}{f"/{rsec}" if rsec else ""}) — '
-                          f'singles/remixes rarely have own Wikipedia articles[/dim]')
-            return
+            return  # silent — singles/remixes skip Wikipedia
         mbid        = row['mbid']
         ex_date     = row['release_date']
         ex_source   = row['date_source']
@@ -322,29 +314,23 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
                     year_diff = abs(int(best['date'][:4]) - int(ex_date[:4]))
                     if year_diff > 10:
                         console.print(
-                            f'  [yellow]Wikipedia date {best["date"]} is {year_diff}y from '
-                            f'existing {ex_date} — likely wrong page match, skipped[/yellow]'
+                            f'      [dim]·  ⚠ Wikipedia date {best["date"]} is {year_diff}y from '
+                            f'stored {ex_date} — skipped[/dim]'
                         )
                         return
                 except (ValueError, TypeError):
                     pass
 
-            saved    = save_release_date(conn, release_id, best['date'], wiki_page_id, source=src)
-            wiki_disp = (f'  [dim]https://en.wikipedia.org/wiki/?curid={wiki_page_id}[/dim]'
-                         if wiki_page_id else '')
+            saved = save_release_date(conn, release_id, best['date'], wiki_page_id, source=src)
             if saved:
-                console.print(f"  [green]✓[/green]  {best['date']}  [dim]{best['source']}[/dim]"
-                              + wiki_disp)
-            else:
-                console.print(f"  [dim]kept {ex_date} ({ex_source}) — "
-                              f"{src} had {best['date']}[/dim]")
+                # Only print when the date actually changed
+                src_label = 'Wikipedia' if src == 'wikipedia' else 'MusicBrainz'
+                console.print(f'      [dim]·  date updated → {best["date"]}  ({src_label})[/dim]')
         else:
             if wiki_page_id:
                 upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))
                 conn.commit()
-                console.print(f'  [dim]no date found — saved wiki page ID {wiki_page_id}[/dim]')
-            else:
-                console.print('  [dim]no date found[/dim]')
+            # Silent when no date found — not finding a date is normal
 
 # ── DBRelease — wraps a master.sqlite row to match the SpotifyRelease interface ─
 
@@ -629,7 +615,7 @@ def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title
 
         total = mbid_n + name_n
         if total:
-            console.print(f'  [green]auto-matched {total:,} listen{"s" if total != 1 else ""}[/green]'
+            console.print(f'      [green]Successfully matched {total:,} listen{"s" if total != 1 else ""}[/green]'
                           + (f'  [dim]({mbid_n} mbid, {name_n} name)[/dim]' if mbid_n and name_n else ''))
     finally:
         conn.close()
@@ -654,6 +640,14 @@ _ART_SOURCE_RANK = {'apple_music': 0, 'bandcamp': 1, 'beatport': 2,
                     'coverartarchive': 3, 'spotify': 4}
 _ART_SOURCE_SIZE = {'apple_music': '3000px', 'bandcamp': '3000px', 'beatport': '1400px',
                     'coverartarchive': '1200px', 'spotify': '640px'}
+
+_SRC_ABBREV = {'sp': 'Sp', 'mb': 'MB', 'am': 'AM', 'bp': 'Bp', 'dz': 'Dz', 'bc': 'Bc'}
+
+
+def _fmt_src(source_data: dict) -> str:
+    """Return compact source token string, e.g. '[Sp MB AM]'."""
+    tokens = [_SRC_ABBREV.get(k, k.upper()) for k in source_data if k in _SRC_ABBREV]
+    return f'[{" ".join(tokens)}]' if tokens else ''
 
 
 def _parse_import_url(url_or_id: str) -> 'tuple[str, str]':
@@ -966,14 +960,10 @@ def _build_enrich_diff(cur, release_id: str, mdb_r: MDBRelease, mdb_tracks: list
 
 
 def _show_enrich_diff(mdb_r: MDBRelease, diffs: list, source_data: dict) -> None:
-    """Print a Rich summary of proposed enrichment changes."""
-    labels = {'sp': 'Spotify', 'mb': 'MusicBrainz', 'bp': 'Beatport',
-              'am': 'Apple Music', 'bc': 'Bandcamp'}
-    src_str = '  '.join(f'[green]{labels.get(k, k)}[/green]' for k in source_data)
-    console.print(f'  Sources: {src_str}')
+    """Print a compact diff of proposed enrichment changes."""
     fw, cw, pw = 20, 28, 26
-    console.print(f"  [dim]{'Field':<{fw}}  {'Current':<{cw}}  Proposed [source][/dim]")
-    console.print(f"  {'─' * (fw + cw + pw + 4)}")
+    console.print(f"  [dim]{'Field':<{fw}}  {'Current':<{cw}}  Proposed[/dim]")
+    console.print(f"  {'─' * (fw + cw + pw + 2)}")
 
     for d in diffs:
         field, current, proposed, src = d[0], d[1], d[2], d[3]
@@ -1057,32 +1047,51 @@ def _select_variants_unified(
     if not candidates and not in_db:
         return
 
-    # Filter candidates that are same-content pressings (same date + same track count
-    # as the release we just imported). These are MB data artifacts — separate release
-    # IDs for the same digital/physical pressing across regions. Our DB works at
-    # release-group granularity, so they're not genuine variants worth importing.
+    # ── Candidate filtering ────────────────────────────────────────────────────
+    # We track releases at release-group granularity (one canonical per work).
+    # Only surface candidates that represent genuinely different musical content.
+
+    # 1. Drop withdrawn/pre-release stubs — never worth importing.
+    candidates = [c for c in candidates if (c[3] or '').lower() != 'withdrawn']
+
+    # 2. Drop same-content pressings vs the just-imported release
+    #    (same date + same track count = MB artifact for regional digital release).
     with managed_db(db_path) as _vconn:
         cur_row = _vconn.execute(
             'SELECT release_date, total_tracks FROM releases WHERE id = ?',
             [current_release_id]
         ).fetchone()
-    cur_date   = (cur_row['release_date'] or '')   if cur_row else ''
-    cur_tracks = (cur_row['total_tracks']  or 0)   if cur_row else 0
+    cur_date   = (cur_row['release_date'] or '') if cur_row else ''
+    cur_tracks = (cur_row['total_tracks']  or 0) if cur_row else 0
 
     candidates = [
-        (mbid_r, title, date, status, country, n)
-        for (mbid_r, title, date, status, country, n) in candidates
-        if not (date == cur_date and n == cur_tracks)
+        c for c in candidates
+        if not (c[2] == cur_date and c[5] == cur_tracks)
     ]
+
+    # 3. Deduplicate regional variants within the remaining candidate list:
+    #    same title + same track count = same music, different pressing region.
+    #    Keep the worldwide (XW) release if present, otherwise the earliest date.
+    seen: dict = {}   # (norm_title, track_count) → index in deduped
+    deduped: list = []
+    for c in candidates:
+        mbid_r, title, date, status, country, n = c
+        key = (_norm(title), n)
+        if key not in seen:
+            seen[key] = len(deduped)
+            deduped.append(c)
+        else:
+            existing = deduped[seen[key]]
+            # Prefer worldwide (XW) over country-specific
+            if country == 'XW' and existing[4] != 'XW':
+                deduped[seen[key]] = c
+    candidates = deduped
 
     if not candidates and not in_db:
         return
 
-    console.rule('[dim]Release Group Variants[/dim]', style='dim')
-    for db_id, title, date in in_db:
-        console.print(f'  [dim]in DB:[/dim] {title}  [{date}]  [dim]{db_id}[/dim]')
-
-    # Offer to link already-imported same-group releases as variants
+    # ── Variant display (compact bullets, no full-width rule) ─────────────────
+    # Already-in-DB same-group releases
     unlinked_in_db = []
     if in_db:
         with managed_db(db_path) as conn:
@@ -1097,11 +1106,12 @@ def _select_variants_unified(
                     unlinked_in_db.append((db_id, title, date))
 
     if unlinked_in_db:
-        console.print()
+        console.print(f'      [dim]·  {len(unlinked_in_db)} unlinked variant'
+                      f'{"s" if len(unlinked_in_db) != 1 else ""} in release group:[/dim]')
         for db_id, title, date in unlinked_in_db:
-            console.print(f'  [dim]unlinked:[/dim] {title}  [{date}]  [dim]{db_id}[/dim]')
+            console.print(f'         [dim]{title}  [{date}][/dim]')
         raw_link = console.input(
-            f'  Link {len(unlinked_in_db)} existing release(s) as variant(s)? [Y/n]: '
+            f'         Link as variant{"s" if len(unlinked_in_db) != 1 else ""}? [Y/n]: '
         ).strip().lower()
         if raw_link in ('', 'y', 'yes'):
             with managed_db(db_path) as conn:
@@ -1117,17 +1127,18 @@ def _select_variants_unified(
                         (current_release_id, db_id, vtype_val, 0),
                     )
                     conn.commit()
-                    console.print(f'  [green]Linked:[/green] {title}  [dim]{db_id}[/dim]')
+                    console.print(f'         [green]Linked:[/green] [dim]{title}[/dim]')
 
     if not candidates:
         return
 
+    console.print(f'      [dim]·  Variants:[/dim]')
     for i, (_, title, date, status, country, n) in enumerate(candidates, 1):
-        console.print(f'  [bold]{i}.[/bold] {title}  '
-                      f'[dim]{date} · {country or "?"} · {n} tracks · {status or "?"}[/dim]')
-    console.print()
+        # Shorten to distinguishing info only (strip repeated parent title prefix where possible)
+        console.print(f'         [dim]{i}.[/dim]  [dim]{title}  '
+                      f'{date or "?"}  ·  {n} tracks[/dim]')
     raw = console.input(
-        '  Import variants? Numbers (e.g. "1 2"), db:ULID to link existing, or Enter to skip: '
+        '         [dim]Import? number(s) · db:ULID · or Enter to skip:[/dim] '
     ).strip()
     if not raw:
         return
@@ -1192,9 +1203,9 @@ def _select_variants_unified(
                     (current_release_id, vid, vtype_val, 0),
                 )
                 conn.commit()
-            console.print(f'  [green]Linked variant:[/green] {vtitle}  [dim]{vid}[/dim]')
+            console.print(f'         [green]Linked:[/green] [dim]{vtitle}[/dim]')
         except Exception as e:
-            console.print(f'  [red]Error importing {mbid_r}: {e}[/red]')
+            console.print(f'         [red]Error:[/red] {e}')
 
 
 def import_album_unified(
@@ -1246,8 +1257,8 @@ def import_album_unified(
             ''', (mdb_tracks[0].isrc,)).fetchone()
         if existing_t:
             console.print(
-                f'  [dim]ISRC {mdb_tracks[0].isrc} already on '
-                f'"{existing_t["title"]}" — skipping single import[/dim]'
+                f'[dim]{mdb_r.title}  →  already on "{existing_t["title"]}" '
+                f'(ISRC match) · skipping single[/dim]'
             )
             _auto_rematch(db_path, existing_t['release_id'],
                           mdb_r.primary_artist.name if mdb_r.primary_artist else '',
@@ -1257,14 +1268,15 @@ def import_album_unified(
                    mdb_r.release_date or ''
 
     artist_name = mdb_r.primary_artist.name if mdb_r.primary_artist else ''
-    console.print(
-        f"[bold]{mdb_r.title}[/bold]  "
-        f"[dim]{artist_name} · {(mdb_r.release_date or '')[:4]}"
-        f" · {mdb_r.total_tracks or '?'} tracks[/dim]"
-    )
-    console.print(f'  Sources: {src_str}')
+    src_tok     = _fmt_src(source_data)
+    tracks_str  = f' · {mdb_r.total_tracks} tracks' if mdb_r.total_tracks else ''
+    year_str    = (mdb_r.release_date or '')[:4]
+    # Conflicts as compact inline notes (shorten long conflict messages)
+    conflict_lines = []
     for c in (mdb_r.conflicts or []):
-        console.print(f'  [yellow]⚠[/yellow]  {c}')
+        # Keep only the first 70 chars of each conflict; strip preamble boilerplate
+        short = c.replace('release_date: ', '').replace('track_count: ', '')
+        conflict_lines.append(f'      [dim]·  ⚠ {short[:70]}[/dim]')
 
     release_id: str = ''
     with managed_db(db_path) as conn:
@@ -1273,9 +1285,15 @@ def import_album_unified(
         existing_id = _find_existing_release_mdb(cur, mdb_r)
 
         if existing_id:
-            console.print(f'  [dim]already in DB: {existing_id}[/dim]')
             diffs = _build_enrich_diff(cur, existing_id, mdb_r, mdb_tracks)
             if diffs:
+                console.print(
+                    f'[bold]{mdb_r.title}[/bold]  '
+                    f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
+                    f'[dim]{src_tok}[/dim]  [yellow]→ updating[/yellow]'
+                )
+                for cl in conflict_lines:
+                    console.print(cl)
                 _show_enrich_diff(mdb_r, diffs, source_data)
                 if auto:
                     apply = True
@@ -1287,16 +1305,29 @@ def import_album_unified(
                     upsert_tracks_mdb(cur, existing_id, mdb_tracks)
                     conn.commit()
                     _store_external_links_mdb(conn, existing_id, source_data)
-                    console.print('  [green]Enrichment applied.[/green]')
+                    console.print('      [green]Updated.[/green]')
             else:
-                console.print('  [dim]Already up to date.[/dim]')
+                console.print(
+                    f'[bold]{mdb_r.title}[/bold]  '
+                    f'[dim]{artist_name}  ·  {year_str}  →  up to date[/dim]'
+                )
+                # Nothing changed — skip all post-import steps (variants, AOTY,
+                # Wikipedia). Only rematch in case new listens arrived since last import.
+                _auto_rematch(db_path, existing_id, artist_name, mdb_r.title)
+                return existing_id, mdb_r.title, artist_name, mdb_r.release_date or ''
             release_id = existing_id
         else:
             release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
             upsert_tracks_mdb(cur, release_id, mdb_tracks)
             conn.commit()
             _store_external_links_mdb(conn, release_id, source_data)
-            console.print(f'  [green]Imported: {release_id}[/green]')
+            console.print(
+                f'[bold]{mdb_r.title}[/bold]  '
+                f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
+                f'[dim]{src_tok}[/dim]  [green]→ imported[/green]'
+            )
+            for cl in conflict_lines:
+                console.print(cl)
 
     # Variant selection (after closing main DB context)
     if not no_variants and mdb_r.release_group_mbid:
