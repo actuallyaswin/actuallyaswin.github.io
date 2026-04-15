@@ -619,7 +619,7 @@ MONTHS: dict[str, str] = {
 }
 
 _SOURCE_PRIORITY: dict[str, int] = {
-    'manual': 5, 'wikipedia': 4, 'aoty': 3, 'musicbrainz': 2, 'spotify': 1,
+    'manual': 5, 'wikipedia': 4, 'aoty': 3, 'musicbrainz': 2, 'spotify': 1, 'beatport': 1,
 }
 
 
@@ -675,6 +675,49 @@ def _parse_user_date(text: str) -> 'str | None':
     if m and m.group(1).lower() in MONTHS:
         return f'{m.group(2)}-{MONTHS[m.group(1).lower()]}'
     return None
+
+
+# -- UPC / GTIN normalization ------------------------------------------------
+
+def normalize_upc(upc: 'str | None') -> 'str | None':
+    """Normalize a UPC/GTIN to its canonical form, preserving the original length.
+
+    Spotify often returns 12-digit UPC-A (strips leading zero from EAN-13).
+    Beatport and MusicBrainz return the full 13-digit EAN-13.
+    Valid lengths: 8 (EAN-8), 12 (UPC-A), 13 (EAN-13), 14 (GTIN-14).
+
+    Returns the digit-only string at original length, or None if empty/invalid.
+    """
+    if not upc:
+        return None
+    digits = re.sub(r'\D', '', str(upc))
+    if len(digits) in (8, 12, 13, 14):
+        return digits
+    return None  # not a recognized GTIN length
+
+
+def beatport_is_catalog_addition(bp_data: dict) -> bool:
+    """Return True if Beatport's publish_date is a catalog availability date,
+    not the original release date.
+
+    Detection: if the gap between encoded_date (when Beatport processed the
+    release internally) and publish_date (Beatport's listed release date) exceeds
+    30 days, the release was likely added to Beatport long after the original release.
+
+    Example: Settle (The Remixes) — released 2013-06-11, added to Beatport
+    catalog 2013-12-16 (encoded_date 2021-09-09). Gap = 2824 days → catalog addition.
+    """
+    encoded_str = (bp_data.get('encoded_date') or '')[:10]
+    publish_str = (bp_data.get('publish_date') or '')[:10]
+    if not encoded_str or not publish_str:
+        return False
+    try:
+        from datetime import date
+        encoded = date.fromisoformat(encoded_str)
+        publish = date.fromisoformat(publish_str)
+        return abs((encoded - publish).days) > 30
+    except ValueError:
+        return False
 
 
 # -- URL / ID extraction ------------------------------------------------------

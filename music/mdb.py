@@ -56,20 +56,30 @@ from mdb_ops import (
     _best_image, _sp_type, _VARIOUS_ARTISTS_SPOTIFY_ID, _is_various_artists,
     upsert_artist, upsert_release, upsert_tracks,
     upsert_artist_mb, upsert_release_mb, upsert_tracks_mb,
+    upsert_release_beatport,
     populate_genre_relations,
     bulk_rematch, bulk_rematch_by_name,
     upsert_external_link, EL_ARTIST, EL_RELEASE, EL_SVC_WIKIPEDIA,
+    EL_SVC_BEATPORT, EL_SVC_BANDCAMP,
     resolve_artist,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
     MusicBrainzRelease,
+    BeatportRelease, ItunesRelease, BandcampRelease,
     MB_API, MB_UA, SP_TOKEN,
     AOTY_AHEAD, DATES_AHEAD,
     caa_fetch_front_image_url,
     _mb_get, _mb_get_safe,
     mb_find_release, mb_fetch_recording_ids, mb_fetch_artist_data,
+    mb_fetch_release_group_releases,
     _EDITION_RE,
+)
+from mdb_merge import (
+    ReleaseMerge, MDBRelease, MDBTrack,
+    upsert_release_mdb, upsert_tracks_mdb,
+    resolve_by_gtin,
+    _resolve_artist_credit,
 )
 from mdb_websources import (
     AOTY_TYPE_MAP,
@@ -101,6 +111,8 @@ log = logging.getLogger(__name__)
 
 _CSV_ID_COLS  = {'url', 'spotify_url', 'spotify_id', 'id', 'album_id'}
 _RE_SP_URL    = re.compile(r'https?://open\.spotify\.com/(?:album|prerelease)/([A-Za-z0-9]+)(?:\?[^\s,]*)?',
+                           re.IGNORECASE)
+_RE_BP_URL    = re.compile(r'https?://(?:www\.)?beatport\.com/release/([^/?#,\s]+)/(\d+)',
                            re.IGNORECASE)
 _RE_DISC_ANN  = re.compile(r'\(\s*discs?\s+([\d,\s\-]+?)(?:\s+only)?\s*\)', re.IGNORECASE)
 
@@ -139,6 +151,16 @@ def _parse_group_line(line):
                 'url':  token if 'musicbrainz.org' in token else f'https://musicbrainz.org/release/{mbid}',
                 'mbid': mbid,
                 'discs': None,
+            })
+            continue
+        # Beatport URL
+        m = _RE_BP_URL.search(token)
+        if m:
+            bp_slug, bp_id = m.group(1), int(m.group(2))
+            entries.append({
+                'url':         f'https://www.beatport.com/release/{bp_slug}/{bp_id}',
+                'beatport_id': bp_id,
+                'discs':       None,
             })
             continue
         # Spotify URL
@@ -716,6 +738,111 @@ def import_album_from_mb(db_path: str, mbid: str, *,
     return release_id, rel.name, rel.artist, rel.date
 
 
+def import_album_from_beatport(db_path: str, url: str, *,
+                               use_aoty: bool = True,
+                               use_wiki: bool = True) -> 'tuple[str, str, str, str]':
+    """Import a Beatport release into master.sqlite.
+    Returns (release_id, title, artist_name, release_date)."""
+    rel = BeatportRelease(url)
+    rel._ensure_full()
+
+    console.print(f"[bold]{rel.name}[/bold]  "
+                  f"[dim]{rel.artist} · {rel.year} · {rel.track_count} tracks[/dim]")
+    console.print(f"  [dim]source: Beatport  {rel.beatport_id}  {rel.url}[/dim]")
+
+    conn = open_db(db_path)
+    cur  = conn.cursor()
+    init_schema(conn)
+
+    try:
+        console.rule('[dim]Artists[/dim]', style='dim')
+
+        # Collect unique Beatport artists across all tracks
+        artist_credits_seen: dict = {}  # {bp_artist_id_str: artist_dict}
+        for t in rel.tracks:
+            for credit in (t.get('_artist_credit') or []):
+                if isinstance(credit, dict) and 'artist' in credit:
+                    bp_a   = credit['artist']
+                    bp_aid = bp_a.get('id', '')
+                    if bp_aid and bp_aid not in artist_credits_seen:
+                        artist_credits_seen[bp_aid] = bp_a
+
+        artist_map: dict = {}  # {bp_artist_id_str: our_artist_id}
+        for bp_aid, bp_a in artist_credits_seen.items():
+            # upsert_artist_mb falls through to name-based match when mbid is empty
+            our_id, created = upsert_artist_mb(cur, {'id': '', 'name': bp_a['name']})
+            artist_map[bp_aid] = our_id
+            tag = '[green]new[/green]' if created else '[dim]upd[/dim]'
+            console.print(f"  {tag}  {bp_a['name']:<28} [dim]{our_id}[/dim]")
+
+        # Primary artist: first credit on the first track
+        primary_id = None
+        for t in rel.tracks:
+            for credit in (t.get('_artist_credit') or []):
+                if isinstance(credit, dict) and 'artist' in credit:
+                    primary_id = artist_map.get(credit['artist'].get('id', ''))
+                    break
+            if primary_id:
+                break
+
+        release_id, r_new = upsert_release_beatport(
+            cur, rel.beatport_id, rel.name, primary_id,
+            rel.date, rel.label, rel.image_url,
+            rel.track_count, rel.album_type,
+        )
+        tag = '[green]new[/green]' if r_new else '[dim]upd[/dim]'
+        console.print(f"\n  {tag}  [bold]{rel.name}[/bold] [dim]→ {release_id}[/dim]")
+
+        upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_BEATPORT, str(rel.beatport_id))
+
+        cur.execute('DELETE FROM release_artists WHERE release_id = ?', (release_id,))
+        for t in rel.tracks[:1]:
+            for credit in (t.get('_artist_credit') or []):
+                if isinstance(credit, dict) and 'artist' in credit:
+                    aid = artist_map.get(credit['artist'].get('id', ''))
+                    if aid:
+                        try:
+                            cur.execute(
+                                'INSERT INTO release_artists (release_id, artist_id, role)'
+                                ' VALUES (?, ?, ?)',
+                                (release_id, aid, 'main'),
+                            )
+                        except sqlite3.IntegrityError:
+                            pass
+
+        console.rule('[dim]Tracks[/dim]', style='dim')
+        n_created, n_updated = upsert_tracks_mb(cur, release_id, rel.tracks, artist_map)
+
+        # Store BPM where available (tempo_bpm column, matched by ISRC)
+        for t in rel.tracks:
+            bpm  = t.get('_bpm')
+            isrc = (t.get('_isrcs') or [None])[0]
+            if bpm and isrc:
+                cur.execute(
+                    'UPDATE tracks SET tempo_bpm = ? WHERE isrc = ? AND release_id = ?',
+                    (bpm, isrc, release_id),
+                )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    any_isrc = any(t.get('_isrcs') for t in rel.tracks)
+    for t in rel.tracks:
+        num      = t.get('_track_number', '?')
+        title    = t.get('name', '?')
+        isrcs    = t.get('_isrcs') or []
+        isrc     = isrcs[0] if isrcs else ''
+        bpm      = t.get('_bpm')
+        isrc_col = f'  [dim]{isrc:<12}[/dim]' if any_isrc else ''
+        bpm_col  = f'  [dim]{bpm:>3}bpm[/dim]' if bpm else ''
+        console.print(f"  [dim]{num:>2}.[/dim]  {_trunc(title, 40):<40}{isrc_col}{bpm_col}")
+    console.print(f'\n  [dim]{n_created} created · {n_updated} updated[/dim]  '
+                  f'[bold]{os.path.basename(db_path)}[/bold]')
+
+    return release_id, rel.name, rel.artist, rel.date
+
+
 def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title: str) -> None:
     """Run listen matching for a freshly imported release.
 
@@ -757,13 +884,498 @@ def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title
         conn.close()
 
 
+# ── Unified import helpers ─────────────────────────────────────────────────────
+
+_SP_ALBUM_URL_RE2 = re.compile(r'open\.spotify\.com/album/([A-Za-z0-9]{22})', re.I)
+_SP_BARE_ID_RE2   = re.compile(r'^[A-Za-z0-9]{22}$')
+_MB_RELEASE_URL_RE2 = re.compile(
+    r'musicbrainz\.org/release/'
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+    re.I,
+)
+_BP_RELEASE_URL_RE2 = re.compile(r'beatport\.com/release/', re.I)
+_AM_URL_RE2 = re.compile(r'music\.apple\.com/[a-z]{2}/album/[^/]+/(\d{7,12})', re.I)
+_AM_BARE_RE2 = re.compile(r'^\d{7,12}$')
+_BC_URL_RE2 = re.compile(r'https?://[^./]+\.bandcamp\.com/album/', re.I)
+
+_ART_SOURCE_RANK = {'apple_music': 0, 'bandcamp': 1, 'beatport': 2,
+                    'coverartarchive': 3, 'spotify': 4}
+_ART_SOURCE_SIZE = {'apple_music': '3000px', 'bandcamp': '3000px', 'beatport': '1400px',
+                    'coverartarchive': '1200px', 'spotify': '640px'}
+
+
+def _parse_import_url(url_or_id: str) -> 'tuple[str, str]':
+    """Detect URL type. Returns (source_key, id_or_url).
+    For 'bp' and 'bc', the second element is the full URL.
+    """
+    s = str(url_or_id).strip()
+    if _BP_RELEASE_URL_RE2.search(s):
+        return 'bp', s
+    m = _AM_URL_RE2.search(s)
+    if m:
+        return 'am', m.group(1)
+    if _BC_URL_RE2.match(s):
+        return 'bc', s
+    m = _MB_RELEASE_URL_RE2.search(s)
+    if m:
+        return 'mb', m.group(1).lower()
+    if is_valid_mbid(s):
+        return 'mb', s.lower()
+    m = _SP_ALBUM_URL_RE2.search(s)
+    if m:
+        return 'sp', m.group(1)
+    if _SP_BARE_ID_RE2.match(s):
+        return 'sp', s
+    if _AM_BARE_RE2.match(s):
+        return 'am', s
+    # Default: Spotify
+    return 'sp', s
+
+
+def _extract_upc_from_initial(source: str, obj) -> 'str | None':
+    if obj is None:
+        return None
+    if source == 'sp' and isinstance(obj, dict):
+        return (obj.get('external_ids') or {}).get('upc')
+    if source == 'mb':
+        data = obj._data if hasattr(obj, '_data') else obj
+        return data.get('barcode') or None
+    if source == 'bp':
+        data = obj._data if hasattr(obj, '_data') else obj
+        raw = data.get('upc')
+        return str(raw) if raw else None
+    if source == 'bc':
+        return obj.upc if hasattr(obj, 'upc') else None
+    return None  # 'am' — iTunes API doesn't return UPC in lookup response
+
+
+def _discover_sources(
+    url_or_id: str,
+    client: 'SpotifyClient | None' = None,
+    no_gtin: bool = False,
+    skip_sources: frozenset = frozenset(),
+) -> 'tuple[dict, dict]':
+    """Parse URL, fetch initial source, GTIN-broadcast to discover others.
+
+    Returns (source_data, sp_full) where:
+      source_data = {'sp': album_dict, 'mb': MusicBrainzRelease, 'bp': BeatportRelease, ...}
+      sp_full     = {track_id: full_track_dict}
+    """
+    source, source_id = _parse_import_url(url_or_id)
+    source_data: dict = {}
+    sp_full: dict = {}
+
+    def _sp_client() -> 'SpotifyClient | None':
+        nonlocal client
+        if client is not None:
+            return client
+        cid = os.environ.get('SPOTIFY_CLIENT_ID', '')
+        csc = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
+        if cid and csc:
+            client = SpotifyClient(cid, csc)
+        return client
+
+    # Fetch initial source
+    try:
+        if source == 'sp':
+            sp = _sp_client()
+            if sp:
+                source_data['sp'] = sp.get_album(source_id)
+        elif source == 'mb':
+            rel = MusicBrainzRelease(source_id)
+            rel._ensure_full()
+            source_data['mb'] = rel
+        elif source == 'bp':
+            rel = BeatportRelease(url_or_id)
+            rel._ensure_full()
+            source_data['bp'] = rel
+        elif source == 'am':
+            rel = ItunesRelease(source_id)
+            rel._ensure_full()
+            source_data['am'] = rel
+        elif source == 'bc':
+            rel = BandcampRelease(url_or_id)
+            rel._ensure_full()
+            source_data['bc'] = rel
+    except Exception as e:
+        console.print(f'  [red]Failed to fetch {source}:{source_id}: {e}[/red]')
+
+    # GTIN broadcast
+    if not no_gtin:
+        upc = _extract_upc_from_initial(source, source_data.get(source))
+        if upc:
+            skip = frozenset([source]) | skip_sources
+            try:
+                discovered = resolve_by_gtin(upc, skip=skip)
+            except Exception:
+                discovered = {}
+
+            if 'sp' in discovered and 'sp' not in source_data:
+                sp = _sp_client()
+                if sp:
+                    try:
+                        source_data['sp'] = sp.get_album(discovered['sp'])
+                    except Exception as e:
+                        console.print(f'  [dim]Spotify: {e}[/dim]')
+
+            if 'mb' in discovered and 'mb' not in source_data:
+                try:
+                    rel = MusicBrainzRelease(discovered['mb'])
+                    rel._ensure_full()
+                    source_data['mb'] = rel
+                except Exception as e:
+                    console.print(f'  [dim]MusicBrainz: {e}[/dim]')
+
+            if 'am' in discovered and 'am' not in source_data:
+                try:
+                    rel = ItunesRelease(discovered['am'])
+                    rel._ensure_full()
+                    source_data['am'] = rel
+                except Exception as e:
+                    console.print(f'  [dim]iTunes: {e}[/dim]')
+
+    # Fetch Spotify full-track data (ISRCs, popularity)
+    sp_album = source_data.get('sp')
+    if sp_album and isinstance(sp_album, dict):
+        sp = _sp_client()
+        if sp:
+            try:
+                ids = [t['id'] for t in (sp_album.get('_all_tracks') or []) if t.get('id')]
+                if ids:
+                    sp_full = {t['id']: t for t in sp.get_tracks_batch(ids) if t}
+            except Exception as e:
+                console.print(f'  [dim]Spotify track details: {e}[/dim]')
+
+    return source_data, sp_full
+
+
+def _find_existing_release_mdb(cur, mdb_r: MDBRelease) -> 'str | None':
+    """Return release_id if a matching release already exists in the DB."""
+    if mdb_r.spotify_id:
+        row = cur.execute('SELECT id FROM releases WHERE spotify_id = ?',
+                          (mdb_r.spotify_id,)).fetchone()
+        if row:
+            return row[0]
+    if mdb_r.mbid:
+        row = cur.execute('SELECT id FROM releases WHERE mbid = ?',
+                          (mdb_r.mbid,)).fetchone()
+        if row:
+            return row[0]
+    if mdb_r.beatport_id:
+        row = cur.execute(
+            'SELECT entity_id FROM external_links'
+            ' WHERE entity_type = ? AND service = ? AND link_value = ?',
+            (EL_RELEASE, EL_SVC_BEATPORT, str(mdb_r.beatport_id)),
+        ).fetchone()
+        if row:
+            return row[0]
+    if mdb_r.apple_music_id:
+        row = cur.execute('SELECT id FROM releases WHERE apple_music_id = ?',
+                          (mdb_r.apple_music_id,)).fetchone()
+        if row:
+            return row[0]
+    return None
+
+
+def _upsert_primary_artist_mdb(cur, mdb_r: MDBRelease) -> 'str | None':
+    if mdb_r.primary_artist is None:
+        return None
+    return _resolve_artist_credit(cur, mdb_r.primary_artist)
+
+
+def _build_enrich_diff(cur, release_id: str, mdb_r: MDBRelease, mdb_tracks: list) -> list:
+    """Return list of (field, current_val, proposed_val, source) for fields that would change."""
+    row = cur.execute('SELECT * FROM releases WHERE id = ?', (release_id,)).fetchone()
+    if not row:
+        return []
+
+    def get(col):
+        try:
+            return row[col]
+        except Exception:
+            return None
+
+    diffs = []
+
+    # Platform IDs
+    if mdb_r.beatport_id:
+        has_bp = cur.execute(
+            'SELECT 1 FROM external_links'
+            ' WHERE entity_type=? AND service=? AND link_value=?',
+            (EL_RELEASE, EL_SVC_BEATPORT, str(mdb_r.beatport_id)),
+        ).fetchone()
+        if not has_bp:
+            diffs.append(('beatport_id', '—', str(mdb_r.beatport_id), 'bp'))
+
+    if mdb_r.apple_music_id and not get('apple_music_id'):
+        diffs.append(('apple_music_id', '—', mdb_r.apple_music_id, 'am'))
+
+    if mdb_r.mbid and not get('mbid'):
+        diffs.append(('mbid', '—', mdb_r.mbid[:16] + '…', 'mb'))
+
+    if mdb_r.release_group_mbid and not get('release_group_mbid'):
+        diffs.append(('release_group_mbid', '—', mdb_r.release_group_mbid[:16] + '…', 'mb'))
+
+    # Release date
+    from mdb_strings import _should_update_date as _sud
+    if mdb_r.release_date and _sud(get('release_date'), get('date_source'),
+                                    mdb_r.release_date, mdb_r.date_source):
+        diffs.append((
+            'release_date',
+            f"{get('release_date')} [{get('date_source')}]",
+            f"{mdb_r.release_date} [{mdb_r.date_source}]",
+            mdb_r.date_source,
+        ))
+
+    # Album art — upgrade to higher-quality source
+    cur_art_src = get('album_art_source') or ''
+    new_art_src = mdb_r.album_art_source or ''
+    cur_art_url = get('album_art_url') or ''
+    if mdb_r.album_art_url:
+        cur_rank = _ART_SOURCE_RANK.get(cur_art_src, 99)
+        new_rank = _ART_SOURCE_RANK.get(new_art_src, 99)
+        if not cur_art_url or new_rank < cur_rank:
+            cur_label = f'{cur_art_src} ({_ART_SOURCE_SIZE.get(cur_art_src, "?")})' if cur_art_src else '—'
+            new_label = f'{new_art_src} ({_ART_SOURCE_SIZE.get(new_art_src, "?")})'
+            diffs.append(('album_art_url', cur_label, new_label, new_art_src))
+
+    # Label
+    new_label = mdb_r.label.name if mdb_r.label else None
+    if new_label and not get('label'):
+        diffs.append(('label', '—', new_label, mdb_r.source_map.get('label', '')))
+
+    # Track-level enrichments
+    bp_new = mx_new = gn_new = 0
+    for t in mdb_tracks:
+        if not t.isrc:
+            continue
+        ex = cur.execute(
+            'SELECT tempo_bpm, mix_name, beatport_genre FROM tracks WHERE isrc = ?',
+            (t.isrc,),
+        ).fetchone()
+        if ex:
+            if t.bpm is not None and not ex['tempo_bpm']:
+                bp_new += 1
+            if t.mix_name and not ex['mix_name']:
+                mx_new += 1
+            if t.beatport_genre and not ex['beatport_genre']:
+                gn_new += 1
+
+    if bp_new:
+        diffs.append(('tracks.bpm/key', f'NULL ({bp_new} tracks)', f'filled ({bp_new} tracks)', 'bp'))
+    if mx_new:
+        diffs.append(('tracks.mix_name', f'NULL ({mx_new} tracks)', f'filled ({mx_new} tracks)', 'bp'))
+    if gn_new:
+        diffs.append(('tracks.genre', f'NULL ({gn_new} tracks)', f'filled ({gn_new} tracks)', 'bp'))
+
+    return diffs
+
+
+def _show_enrich_diff(mdb_r: MDBRelease, diffs: list, source_data: dict) -> None:
+    """Print a Rich summary of proposed enrichment changes."""
+    labels = {'sp': 'Spotify', 'mb': 'MusicBrainz', 'bp': 'Beatport',
+              'am': 'Apple Music', 'bc': 'Bandcamp'}
+    src_str = '  '.join(f'[green]{labels.get(k, k)}[/green]' for k in source_data)
+    console.print(f'  Sources: {src_str}')
+    fw, cw, pw = 20, 28, 26
+    console.print(f"  [dim]{'Field':<{fw}}  {'Current':<{cw}}  Proposed [source][/dim]")
+    console.print(f"  {'─' * (fw + cw + pw + 4)}")
+    for field, current, proposed, src in diffs:
+        src_tag = f' [{src}]' if src else ''
+        console.print(f"  {field:<{fw}}  {str(current or '—')[:cw]:<{cw}}  "
+                      f"[green]{str(proposed)[:pw]}{src_tag}[/green]")
+    console.print()
+
+
+def _store_external_links_mdb(conn, release_id: str, source_data: dict) -> None:
+    """Store Bandcamp URL in external_links after import."""
+    if 'bc' in source_data:
+        bc = source_data['bc']
+        bc_url = bc.url if hasattr(bc, 'url') else None
+        if bc_url:
+            upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_BANDCAMP, bc_url)
+            conn.commit()
+
+
+def _select_variants_unified(
+    db_path: str,
+    rg_mbid: str,
+    current_release_id: str,
+    use_aoty: bool = False,
+    use_wiki: bool = False,
+) -> None:
+    """Show MB release-group variants and offer interactive import."""
+    all_releases = mb_fetch_release_group_releases(rg_mbid)
+    if len(all_releases) <= 1:
+        return  # nothing to show beyond the release we just imported
+
+    with managed_db(db_path) as conn:
+        in_db: list[tuple] = []
+        candidates: list[tuple] = []
+        for r in all_releases:
+            mbid_r = r.get('id')
+            if not mbid_r:
+                continue
+            row = conn.execute(
+                'SELECT id, title FROM releases WHERE mbid = ?', (mbid_r,)
+            ).fetchone()
+            if row:
+                if row[0] != current_release_id:
+                    in_db.append((row[0], r.get('title', ''), r.get('date', '')))
+            else:
+                n = sum(m.get('track-count', 0) for m in (r.get('media') or []))
+                candidates.append((
+                    mbid_r, r.get('title', ''), r.get('date', ''),
+                    r.get('status', ''), r.get('country', ''), n,
+                ))
+
+    if not candidates and not in_db:
+        return
+
+    console.rule('[dim]Release Group Variants[/dim]', style='dim')
+    for db_id, title, date in in_db:
+        console.print(f'  [dim]in DB:[/dim] {title}  [{date}]  [dim]{db_id}[/dim]')
+    if not candidates:
+        return
+
+    for i, (_, title, date, status, country, n) in enumerate(candidates, 1):
+        console.print(f'  [bold]{i}.[/bold] {title}  '
+                      f'[dim]{date} · {country or "?"} · {n} tracks · {status or "?"}[/dim]')
+    console.print()
+    raw = console.input('  Import variants? Numbers (e.g. "1 2") or Enter to skip: ').strip()
+    if not raw:
+        return
+
+    selected_mbids: list[str] = []
+    for token in raw.replace(',', ' ').split():
+        try:
+            idx = int(token) - 1
+            if 0 <= idx < len(candidates):
+                selected_mbids.append(candidates[idx][0])
+        except ValueError:
+            pass
+
+    for mbid_r in selected_mbids:
+        try:
+            vid, vtitle, _, _ = import_album_from_mb(
+                db_path, mbid_r, use_aoty=use_aoty, use_wiki=use_wiki,
+            )
+            vtypes = detect_variant_types(vtitle)
+            vtype_val = ','.join(vtypes) if vtypes else None
+            with managed_db(db_path) as conn:
+                conn.execute(
+                    'INSERT INTO release_variants'
+                    ' (canonical_id, variant_id, variant_type, sort_order)'
+                    ' VALUES (?, ?, ?, ?)'
+                    ' ON CONFLICT(canonical_id, variant_id) DO UPDATE SET'
+                    '   variant_type = COALESCE(excluded.variant_type, variant_type)',
+                    (current_release_id, vid, vtype_val, 0),
+                )
+                conn.commit()
+            console.print(f'  [green]Linked variant:[/green] {vtitle}  [dim]{vid}[/dim]')
+        except Exception as e:
+            console.print(f'  [red]Error importing {mbid_r}: {e}[/red]')
+
+
+def import_album_unified(
+    db_path: str,
+    url_or_id: str,
+    *,
+    client: 'SpotifyClient | None' = None,
+    use_aoty: bool = True,
+    use_wiki: bool = True,
+    no_gtin: bool = False,
+    no_variants: bool = False,
+    no_mb: bool = False,
+    auto: bool = False,
+) -> 'tuple[str, str, str, str]':
+    """Unified import for any URL type (Spotify/MB/Beatport/Apple Music/Bandcamp).
+
+    Discovers all available sources via GTIN broadcast, merges them into a
+    MDBRelease, then either imports as new or enriches an existing release.
+    Returns (release_id, title, artist_name, release_date).
+    """
+    skip_sources = frozenset(['mb']) if no_mb else frozenset()
+    source_data, sp_full = _discover_sources(
+        url_or_id, client=client, no_gtin=no_gtin, skip_sources=skip_sources,
+    )
+    if not source_data:
+        raise ValueError(f'Could not fetch any metadata for: {url_or_id!r}')
+
+    labels = {'sp': 'Spotify', 'mb': 'MusicBrainz', 'bp': 'Beatport',
+              'am': 'Apple Music', 'bc': 'Bandcamp'}
+    src_str = '  '.join(f'[bold]{labels.get(k, k)}[/bold]' for k in source_data)
+
+    merge = ReleaseMerge(source_data, sp_full=sp_full)
+    mdb_r = merge.release()
+    mdb_tracks = merge.tracks()
+
+    artist_name = mdb_r.primary_artist.name if mdb_r.primary_artist else ''
+    console.print(
+        f"[bold]{mdb_r.title}[/bold]  "
+        f"[dim]{artist_name} · {(mdb_r.release_date or '')[:4]}"
+        f" · {mdb_r.total_tracks or '?'} tracks[/dim]"
+    )
+    console.print(f'  Sources: {src_str}')
+    for c in (mdb_r.conflicts or []):
+        console.print(f'  [yellow]⚠[/yellow]  {c}')
+
+    release_id: str = ''
+    with managed_db(db_path) as conn:
+        cur = conn.cursor()
+        primary_artist_id = _upsert_primary_artist_mdb(cur, mdb_r)
+        existing_id = _find_existing_release_mdb(cur, mdb_r)
+
+        if existing_id:
+            console.print(f'  [dim]already in DB: {existing_id}[/dim]')
+            diffs = _build_enrich_diff(cur, existing_id, mdb_r, mdb_tracks)
+            if diffs:
+                _show_enrich_diff(mdb_r, diffs, source_data)
+                if auto:
+                    apply = True
+                else:
+                    raw = console.input('  Apply these changes? [y/N]: ').strip().lower()
+                    apply = raw in ('y', 'yes')
+                if apply:
+                    upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                    upsert_tracks_mdb(cur, existing_id, mdb_tracks)
+                    conn.commit()
+                    _store_external_links_mdb(conn, existing_id, source_data)
+                    console.print('  [green]Enrichment applied.[/green]')
+            else:
+                console.print('  [dim]Already up to date.[/dim]')
+            release_id = existing_id
+        else:
+            release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
+            upsert_tracks_mdb(cur, release_id, mdb_tracks)
+            conn.commit()
+            _store_external_links_mdb(conn, release_id, source_data)
+            console.print(f'  [green]Imported: {release_id}[/green]')
+
+    # Variant selection (after closing main DB context)
+    if not no_variants and mdb_r.release_group_mbid:
+        _select_variants_unified(
+            db_path, mdb_r.release_group_mbid, release_id,
+            use_aoty=use_aoty, use_wiki=use_wiki,
+        )
+
+    if use_aoty:
+        _import_aoty_step(db_path, release_id, mdb_r.title, artist_name)
+    if use_wiki:
+        _import_wiki_step(db_path, release_id, mdb_r.title, artist_name)
+    _auto_rematch(db_path, release_id, artist_name, mdb_r.title)
+
+    return release_id, mdb_r.title, artist_name, mdb_r.release_date or ''
+
+
 def cmd_import(args):
     load_dotenv()
-    cid = os.environ.get('SPOTIFY_CLIENT_ID')
-    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
 
     use_aoty = not args.no_aoty
     use_wiki = not args.no_wiki
+    no_gtin  = getattr(args, 'no_gtin', False)
+    no_variants = getattr(args, 'no_variants', False)
+    auto     = getattr(args, 'auto', False)
 
     if use_aoty and not _AOTY_AVAILABLE:
         console.print('[yellow]Warning:[/yellow] AOTY disabled — pip install requests beautifulsoup4')
@@ -788,11 +1400,16 @@ def cmd_import(args):
         console.print('[red]Error:[/red] No album IDs found.')
         sys.exit(1)
 
-    # Lazily init Spotify client only if any entry requires it
-    client  = None
-    total   = sum(len(g) for g in groups)
-    errors  = 0
-    seq     = 0
+    # Lazily init Spotify client; reused across all entries for token efficiency
+    client: 'SpotifyClient | None' = None
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    if cid and csc:
+        client = SpotifyClient(cid, csc)
+
+    total  = sum(len(g) for g in groups)
+    errors = 0
+    seq    = 0
 
     for group in groups:
         group_results = []  # (release_id, title, release_date) or None per entry
@@ -804,33 +1421,19 @@ def cmd_import(args):
             disc_note = f'  [dim]discs {entry["discs"]}[/dim]' if entry.get('discs') else ''
             if disc_note:
                 console.print(disc_note)
+            url = entry.get('url') or entry.get('album_id') or ''
             try:
-                if entry.get('mbid'):
-                    # MusicBrainz import path — no Spotify credentials needed
-                    release_id, title, artist, rel_date = import_album_from_mb(
-                        db_path, entry['mbid'],
-                        use_aoty=use_aoty, use_wiki=use_wiki,
-                    )
-                else:
-                    # Spotify import path — credentials required
-                    if client is None:
-                        if not (cid and csc):
-                            console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and'
-                                          ' SPOTIFY_CLIENT_SECRET must be set for Spotify imports.')
-                            sys.exit(1)
-                        client = SpotifyClient(cid, csc)
-                    release_id, title, artist, rel_date = import_album(
-                        db_path, client, entry['url'],
-                        use_mb=not args.no_mb,
-                        discs=entry['discs'],
-                    )
+                release_id, title, artist, rel_date = import_album_unified(
+                    db_path, url,
+                    client=client,
+                    use_aoty=use_aoty,
+                    use_wiki=use_wiki,
+                    no_gtin=no_gtin,
+                    no_variants=no_variants,
+                    no_mb=args.no_mb,
+                    auto=auto,
+                )
                 group_results.append((release_id, title, rel_date))
-                if use_aoty and release_id:
-                    _import_aoty_step(db_path, release_id, title, artist)
-                if use_wiki and release_id and not args.no_mb:
-                    _import_wiki_step(db_path, release_id, title, artist)
-                if release_id:
-                    _auto_rematch(db_path, release_id, artist, title)
             except urllib.error.HTTPError as e:
                 console.print(f'[red]HTTP {e.code}:[/red] {e.reason}')
                 errors += 1
@@ -842,11 +1445,12 @@ def cmd_import(args):
                 errors += 1
                 group_results.append(None)
 
+        # Multi-URL group: link as variants (batch file CSV groups)
         valid = [x for x in group_results if x is not None]
         if len(valid) > 1:
-            canon_idx   = pick_canonical(valid)
+            canon_idx = pick_canonical(valid)
             canon_id, canon_title, _ = valid[canon_idx]
-            variants    = [
+            variants = [
                 (rid, vtitle, order)
                 for order, (rid, vtitle, _) in enumerate(valid)
                 if rid != canon_id
@@ -865,6 +1469,8 @@ def cmd_import(args):
         ok = total - errors
         console.print(f'  [dim]Batch:[/dim] {ok}/{total} succeeded'
                       + (f'  [red]{errors} failed[/red]' if errors else ''))
+
+
 
 # ── cmd: enrich art ──────────────────────────────────────────────────────────
 
@@ -3505,13 +4111,16 @@ def main():
     p_diff.set_defaults(func=cmd_diff)
 
     # import
-    p = sub.add_parser('import', help='Import Spotify album(s)')
+    p = sub.add_parser('import', help='Import a release from any source URL')
     p.add_argument('albums', nargs='+', metavar='ALBUM',
-                   help='Spotify album URL/ID or a batch file (csv/yaml/txt)')
-    p.add_argument('--no-mb',   action='store_true', help='Skip MusicBrainz lookup')
-    p.add_argument('--no-aoty', action='store_true', help='Skip AOTY enrichment')
-    p.add_argument('--no-wiki', action='store_true', help='Skip Wikipedia date lookup')
-    p.add_argument('--db',      metavar='PATH',      help='Path to master.sqlite')
+                   help='URL (Spotify/MB/Beatport/Apple Music/Bandcamp) or batch file')
+    p.add_argument('--no-mb',       action='store_true', help='Skip MusicBrainz lookup')
+    p.add_argument('--no-aoty',     action='store_true', help='Skip AOTY enrichment')
+    p.add_argument('--no-wiki',     action='store_true', help='Skip Wikipedia date lookup')
+    p.add_argument('--no-gtin',     action='store_true', help='Skip GTIN cross-platform discovery')
+    p.add_argument('--no-variants', action='store_true', help='Skip MB release-group variant selection')
+    p.add_argument('--auto',        action='store_true', help='Apply enrichment without prompting')
+    p.add_argument('--db',          metavar='PATH',      help='Path to master.sqlite')
     p.set_defaults(func=cmd_import)
 
     # enrich

@@ -195,6 +195,10 @@ CREATE TABLE IF NOT EXISTS tracks (
     isrc         TEXT,
     tempo_bpm    REAL,
     audio_features TEXT,
+    mix_name     TEXT,
+    musical_key  TEXT,
+    beatport_genre TEXT,
+    beatport_sub_genre TEXT,
     canonical_track_id  TEXT REFERENCES tracks(id),
     track_variant_type  TEXT,
     hidden       INTEGER NOT NULL DEFAULT 0,
@@ -331,6 +335,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE artists ADD COLUMN spotify_followers INTEGER",
         "ALTER TABLE releases ADD COLUMN spotify_popularity INTEGER",
         "ALTER TABLE tracks ADD COLUMN spotify_popularity INTEGER",
+        "ALTER TABLE tracks ADD COLUMN mix_name TEXT",
+        "ALTER TABLE tracks ADD COLUMN musical_key TEXT",
+        "ALTER TABLE tracks ADD COLUMN beatport_genre TEXT",
+        "ALTER TABLE tracks ADD COLUMN beatport_sub_genre TEXT",
     ]:
         try:
             conn.execute(ddl)
@@ -730,6 +738,66 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
          mbid or None, rg_mbid,
          image_url, 'coverartarchive' if image_url else None,
          total_tracks, 'musicbrainz' if date_raw else None,
+         now, now),
+    )
+    return release_id, True
+
+
+def upsert_release_beatport(cur, beatport_id: int, title: str,
+                            primary_artist_id: 'str | None',
+                            date_raw: str, label: str,
+                            image_url: 'str | None',
+                            total_tracks: int,
+                            album_type: str) -> 'tuple[str, bool]':
+    """Insert or update a release from Beatport data.
+    Identifies existing releases via the external_links table (EL_SVC_BEATPORT).
+    Returns (release_id, created)."""
+    now = int(time.time())
+
+    row = cur.execute(
+        'SELECT el.entity_id FROM external_links el'
+        ' WHERE el.entity_type = ? AND el.service = ? AND el.link_value = ?',
+        (EL_RELEASE, EL_SVC_BEATPORT, str(beatport_id)),
+    ).fetchone()
+
+    if row:
+        release_id  = row[0]
+        date_fields = ''
+        date_vals: tuple = ()
+        if date_raw:
+            rel_year    = int(date_raw[:4]) if date_raw[:4].isdigit() else None
+            date_fields = ', release_date = ?, release_year = ?, date_source = ?'
+            date_vals   = (date_raw, rel_year, 'beatport')
+        cur.execute(
+            f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?{date_fields},'
+            f' label = ?, total_tracks = ?, updated_at = ? WHERE id = ?',
+            (title, primary_artist_id, album_type, *date_vals,
+             label or None, total_tracks, now, release_id),
+        )
+        if image_url:
+            cur.execute(
+                'UPDATE releases SET album_art_url = COALESCE(album_art_url, ?),'
+                ' album_art_source = COALESCE(album_art_source, ?) WHERE id = ?',
+                (image_url, 'beatport', release_id),
+            )
+        return release_id, False
+
+    rel_year   = int(date_raw[:4]) if date_raw and date_raw[:4].isdigit() else None
+    base       = slugify(title)
+    existing   = {r[0] for r in cur.execute(
+        'SELECT slug FROM releases WHERE primary_artist_id IS ?', (primary_artist_id,)
+    ).fetchall()}
+    slug       = unique_slug(base, existing)
+    release_id = new_ulid()
+    cur.execute(
+        'INSERT INTO releases (id, slug, title, primary_artist_id, type,'
+        ' release_date, release_year, label, album_art_url, album_art_source,'
+        ' total_tracks, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (release_id, slug, title, primary_artist_id, album_type,
+         date_raw or None, rel_year, label or None,
+         image_url, 'beatport' if image_url else None,
+         total_tracks, 'beatport' if date_raw else None,
          now, now),
     )
     return release_id, True

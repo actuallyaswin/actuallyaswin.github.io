@@ -5,6 +5,9 @@ __all__ = [
     'SpotifyClient',
     'SpotifyRelease',
     'MusicBrainzRelease',
+    'BeatportRelease',
+    'ItunesRelease',
+    'BandcampRelease',
     'compare_releases',
     'MB_API', 'MB_UA', 'SP_TOKEN', 'SP_BASE',
     'CAA_API',
@@ -14,6 +17,7 @@ __all__ = [
     'caa_fetch_front_image_url',
     'mb_find_release', 'mb_fetch_recording_ids',
     'mb_fetch_release_data', 'mb_fetch_artist_data',
+    'mb_fetch_release_group_releases',
 ]
 
 import json
@@ -330,6 +334,227 @@ class MusicBrainzRelease:
         return (-prec, d, self.track_count,
                 1 if _EDITION_RE.search(self.name) else 0,
                 0)  # explicit_count always 0 for MB releases
+
+
+# ── BeatportRelease ────────────────────────────────────────────────────────────
+
+BP_UA         = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+                 ' (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+BP_INTERVAL   = 2.0
+_bp_lim       = RateLimiter(BP_INTERVAL)
+_BP_RELEASE_RE = re.compile(r'beatport\.com/release/([^/?#]+)/(\d+)', re.IGNORECASE)
+
+
+class BeatportRelease:
+    """
+    Wrapper around a Beatport release page, scraping the embedded __NEXT_DATA__ JSON.
+
+    Mirrors the MusicBrainzRelease / SpotifyRelease interface so it can be
+    passed to import_album_from_beatport.
+
+    .tracks is a list of dicts with:
+      name, duration_ms, _isrcs, _disc_number, _track_number, _artist_credit,
+      _bpm, _mix_name, _genre, _sub_genre, _key, _key_camelot, _label_name,
+      _remixers, _track_id
+    where _artist_credit matches the MB format: [{'artist': {'id': str, 'name': str, 'slug': str}}]
+    and duration_ms is populated from length_ms in the __NEXT_DATA__ JSON.
+    """
+
+    def __init__(self, url_or_id: str):
+        m = _BP_RELEASE_RE.search(str(url_or_id))
+        if m:
+            self._slug     = m.group(1)
+            self.beatport_id = int(m.group(2))
+        else:
+            try:
+                self.beatport_id = int(url_or_id)
+                self._slug       = 'x'
+            except (ValueError, TypeError):
+                raise ValueError(f'Cannot parse Beatport release ID from: {url_or_id!r}')
+        self.url   = f'https://www.beatport.com/release/{self._slug}/{self.beatport_id}'
+        self._data: 'dict | None' = None
+
+    def _ensure_full(self) -> None:
+        if self._data is not None:
+            return
+        req = urllib.request.Request(self.url, headers={'User-Agent': BP_UA})
+        _bp_lim.wait()
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read().decode('utf-8', errors='replace')
+
+        m = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html
+        )
+        if not m:
+            raise RuntimeError(f'No __NEXT_DATA__ found at {self.url}')
+
+        full_data  = json.loads(m.group(1))
+        page_props = full_data.get('props', {}).get('pageProps', {})
+        queries    = (page_props.get('dehydratedState') or {}).get('queries', [])
+
+        # -- Release metadata: pageProps.release is the most direct path (Harmony approach)
+        release_info: dict = page_props.get('release') or {}
+        if not release_info:
+            # Fallback: scan queries for the one containing 'upc'
+            for q in queries:
+                data = (q.get('state') or {}).get('data') or {}
+                if isinstance(data, dict) and 'upc' in data:
+                    release_info = data
+                    break
+        if not release_info:
+            raise RuntimeError(f'Release metadata not found in __NEXT_DATA__ at {self.url}')
+
+        # -- Track data: Harmony uses queries[1]; scan all queries as fallback
+        raw_tracks: list = []
+        candidates = ([queries[1]] if len(queries) > 1 else []) + \
+                     [q for i, q in enumerate(queries) if i != 1]
+        for q in candidates:
+            data = (q.get('state') or {}).get('data') or {}
+            if not isinstance(data, dict):
+                continue
+            results = data.get('results') or []
+            if results and isinstance(results[0], dict) and 'bpm' in results[0]:
+                raw_tracks = results
+                break
+
+        # -- Track ordering: match by URL against release.tracks (Harmony approach)
+        # release.tracks is a list of API URL strings in descending track-ID order;
+        # reversing gives ascending (track 1 first) order.
+        release_track_urls = list(reversed(release_info.get('tracks') or []))
+        track_by_url = {t.get('url'): t for t in raw_tracks if t.get('url')}
+
+        ordered_tracks = [track_by_url[url] for url in release_track_urls if url in track_by_url]
+        if not ordered_tracks and raw_tracks:
+            # Fallback: reversed order (handles older responses without url field)
+            ordered_tracks = list(reversed(raw_tracks))
+
+        tracks = []
+        for i, t in enumerate(ordered_tracks):
+            mix_name  = (t.get('mix_name') or '').strip()
+            base_name = (t.get('name') or '').strip()
+            full_name = f'{base_name} ({mix_name})' if mix_name else base_name
+
+            artist_credit = [
+                {'artist': {'id': str(a.get('id', '')), 'name': a.get('name', ''), 'slug': a.get('slug', '')}}
+                for a in (t.get('artists') or [])
+            ]
+            remixer_credit = [
+                {'artist': {'id': str(r.get('id', '')), 'name': r.get('name', ''), 'slug': r.get('slug', '')}}
+                for r in (t.get('remixers') or [])
+            ]
+            genre_obj     = t.get('genre')     or {}
+            sub_genre_obj = t.get('sub_genre') or {}
+            key_obj       = t.get('key')        or {}
+            label_obj     = t.get('label')      or {}
+
+            # Camelot Wheel key notation (e.g. "8A" for A minor, "9B" for F major)
+            camelot_num = key_obj.get('camelot_number', '')
+            camelot_let = key_obj.get('camelot_letter', '')
+            camelot_key = f'{camelot_num}{camelot_let}' if camelot_num and camelot_let else None
+
+            tracks.append({
+                'name':           full_name,
+                'duration_ms':    t.get('length_ms'),  # ms duration, always present in __NEXT_DATA__
+                '_isrcs':         [t['isrc']] if t.get('isrc') else [],
+                '_disc_number':   1,
+                '_track_number':  i + 1,
+                '_artist_credit': artist_credit,
+                '_bpm':           t.get('bpm'),
+                '_mix_name':      mix_name,
+                '_genre':         genre_obj.get('name', ''),
+                '_sub_genre':     sub_genre_obj.get('name', '') if sub_genre_obj else '',
+                '_key':           key_obj.get('name', ''),
+                '_key_camelot':   camelot_key,
+                '_label_name':    label_obj.get('name', ''),
+                '_remixers':      remixer_credit,
+                '_track_id':      t.get('id'),  # Beatport numeric track ID
+            })
+
+        release_info['results']     = raw_tracks   # keep raw results accessible
+        release_info['_track_list'] = tracks
+        self._data = release_info
+
+    @property
+    def name(self) -> str:
+        self._ensure_full()
+        return (self._data.get('name') or '').strip()
+
+    @property
+    def artist(self) -> str:
+        """First artist name from the first track's credits."""
+        self._ensure_full()
+        for t in self._data.get('_track_list', []):
+            for credit in (t.get('_artist_credit') or []):
+                name = (credit.get('artist') or {}).get('name', '')
+                if name:
+                    return name
+        return ''
+
+    @property
+    def year(self) -> str:
+        return (self.date or '')[:4]
+
+    @property
+    def date(self) -> str:
+        self._ensure_full()
+        return (
+            self._data.get('new_release_date') or
+            self._data.get('publish_date') or
+            ''
+        ).strip()
+
+    @property
+    def tracks(self) -> list:
+        self._ensure_full()
+        return self._data['_track_list']
+
+    @property
+    def track_count(self) -> int:
+        return len(self.tracks)
+
+    @property
+    def explicit_count(self) -> int:
+        return 0  # Beatport does not expose explicit flags
+
+    @property
+    def total_ms(self) -> int:
+        return sum(t.get('duration_ms') or 0 for t in self.tracks)
+
+    @property
+    def label(self) -> str:
+        self._ensure_full()
+        return ((self._data.get('label') or {}).get('name') or '').strip()
+
+    @property
+    def album_type(self) -> str:
+        n = self.track_count
+        if n == 1:
+            return 'single'
+        if n <= 4:
+            return 'ep'
+        return 'album'
+
+    @property
+    def image_url(self) -> 'str | None':
+        self._ensure_full()
+        img = self._data.get('image') or {}
+        uri = img.get('uri')
+        if uri:
+            return uri
+        dyn = img.get('dynamic_uri', '')
+        if dyn:
+            return dyn.replace('{w}x{h}', '1400x1400')
+        return None
+
+    def canonical_score(self) -> tuple:
+        d    = self.date
+        prec = (3 if (len(d) == 10 and not d.endswith('-01-01'))
+                else (2 if len(d) == 7 else 1))
+        return (-prec, d, self.track_count,
+                1 if _EDITION_RE.search(self.name) else 0,
+                0)
+
+
 _sp_client_singleton: 'SpotifyClient | None' = None
 
 
@@ -651,3 +876,342 @@ def mb_fetch_artist_data(mbid: str) -> dict:
             out['wikipedia_url'] = url
             break
     return out
+
+
+def mb_fetch_release_group_releases(rg_mbid: str) -> list:
+    """Fetch all releases in a MusicBrainz release group.
+
+    Returns a list of dicts: {id, title, date, status, country, track-count, packaging}.
+    Sorted by date ascending (oldest first).  Empty list on any error.
+    """
+    data = _mb_get_safe(f'/release-group/{rg_mbid}', {'inc': 'releases'})
+    if not data:
+        return []
+    releases = data.get('releases') or []
+    return sorted(releases, key=lambda r: (r.get('date') or '9999'))
+
+
+# ── iTunes / Apple Music ───────────────────────────────────────────────────────
+
+ITUNES_LOOKUP = 'https://itunes.apple.com/lookup'
+ITUNES_INTERVAL = 3.0
+_itunes_lim = RateLimiter(ITUNES_INTERVAL)
+_ITUNES_ID_RE = re.compile(
+    r'(?:music\.apple\.com/[a-z]{2}/album/[^/]+/|itunes\.apple\.com/[a-z]{2}/album/[^/]+/)(\d+)'
+    r'|/(\d{7,12})$',   # bare numeric ID (7-12 digits, distinct from Beatport's shorter IDs)
+    re.IGNORECASE,
+)
+_ITUNES_BARE_RE = re.compile(r'^\d{7,12}$')
+
+
+class ItunesRelease:
+    """
+    Lazy-loading wrapper around an Apple Music / iTunes album.
+
+    Uses the public iTunes Lookup API (no authentication required).
+
+    Constructs from a music.apple.com URL, an itunes.apple.com URL, or a bare
+    iTunes numeric collection ID (7-12 digits).
+
+    Cover art: artworkUrl100 with '100x100bb' replaced by '3000x3000bb'.
+    """
+
+    def __init__(self, id_or_url: str):
+        m = _ITUNES_ID_RE.search(str(id_or_url))
+        if m:
+            self.itunes_id = m.group(1) or m.group(2)
+        elif _ITUNES_BARE_RE.match(str(id_or_url).strip()):
+            self.itunes_id = str(id_or_url).strip()
+        else:
+            raise ValueError(f'Cannot parse iTunes collection ID from: {id_or_url!r}')
+        self.url   = f'https://music.apple.com/album/{self.itunes_id}'
+        self._data: 'dict | None' = None
+
+    def _ensure_full(self) -> None:
+        if self._data is not None:
+            return
+        url = (f'{ITUNES_LOOKUP}?id={self.itunes_id}&entity=song'
+               f'&limit=200&country=US')
+        req = urllib.request.Request(url, headers={'User-Agent': MB_UA})
+        _itunes_lim.wait()
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = json.loads(r.read())
+
+        results = raw.get('results') or []
+        album = None
+        tracks = []
+        for item in results:
+            if item.get('wrapperType') == 'collection':
+                album = item
+            elif item.get('wrapperType') == 'track' and item.get('kind') == 'song':
+                tracks.append(item)
+
+        if not album:
+            raise RuntimeError(f'No album found in iTunes response for id {self.itunes_id}')
+
+        # Build normalised track list
+        track_list = []
+        for t in sorted(tracks, key=lambda x: (x.get('discNumber', 1), x.get('trackNumber', 0))):
+            track_list.append({
+                'name':         t.get('trackName', ''),
+                'duration_ms':  t.get('trackTimeMillis'),
+                '_disc_number': t.get('discNumber', 1),
+                '_track_number': t.get('trackNumber', 0),
+                '_is_explicit': t.get('trackExplicitness') == 'explicit',
+            })
+
+        album['_track_list'] = track_list
+        self._data = album
+
+    # -- properties --
+
+    @property
+    def name(self) -> str:
+        self._ensure_full()
+        return (self._data.get('collectionName') or '').strip()
+
+    @property
+    def artist(self) -> str:
+        self._ensure_full()
+        return (self._data.get('artistName') or '').strip()
+
+    @property
+    def year(self) -> str:
+        return (self.date or '')[:4]
+
+    @property
+    def date(self) -> str:
+        self._ensure_full()
+        raw = (self._data.get('releaseDate') or '').strip()
+        return raw[:10] if raw else ''  # YYYY-MM-DDTHH:MM:SS → YYYY-MM-DD
+
+    @property
+    def tracks(self) -> list:
+        self._ensure_full()
+        return self._data['_track_list']
+
+    @property
+    def track_count(self) -> int:
+        self._ensure_full()
+        return self._data.get('trackCount') or len(self.tracks)
+
+    @property
+    def label(self) -> str:
+        self._ensure_full()
+        return ''  # Not exposed by iTunes Lookup API
+
+    @property
+    def album_type(self) -> str:
+        self._ensure_full()
+        kind = (self._data.get('collectionType') or '').lower()
+        if kind == 'album':
+            return 'album'
+        if kind == 'single':
+            return 'single'
+        if kind == 'ep':
+            return 'ep'
+        n = self.track_count
+        return 'single' if n == 1 else ('ep' if n <= 4 else 'album')
+
+    @property
+    def image_url(self) -> 'str | None':
+        """3000×3000 cover art via URL parameter replacement."""
+        self._ensure_full()
+        art = (self._data.get('artworkUrl100') or '').strip()
+        if not art:
+            return None
+        # Replace standard size suffix with 3000×3000
+        art = re.sub(r'\b\d+x\d+bb\b', '3000x3000bb', art)
+        art = re.sub(r'\b100x100\b', '3000x3000', art)
+        return art
+
+    @property
+    def apple_music_id(self) -> str:
+        return self.itunes_id
+
+    def canonical_score(self) -> tuple:
+        d    = self.date
+        prec = (3 if len(d) == 10 else (2 if len(d) == 7 else 1))
+        return (-prec, d, self.track_count, 0, 0)
+
+
+# ── Bandcamp ────────────────────────────────────────────────────────────────────
+
+BC_UA       = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+               ' (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+BC_INTERVAL = 2.0
+_bc_lim     = RateLimiter(BC_INTERVAL)
+_BC_URL_RE  = re.compile(r'https?://[^./]+\.bandcamp\.com/album/[^/?#]+', re.IGNORECASE)
+_BC_ART_RE  = re.compile(r'"art_id"\s*:\s*(\d+)')
+
+
+class BandcampRelease:
+    """
+    Lazy-loading wrapper around a Bandcamp album page.
+
+    Scrapes the `data-tralbum` JSON embedded in the album HTML.
+
+    Bandcamp is URL-input only — no GTIN-based auto-discovery.
+    Main contributions: high-res cover art (3000px), sometimes UPC, credits text.
+    """
+
+    def __init__(self, url: str):
+        if not _BC_URL_RE.match(str(url)):
+            raise ValueError(f'Not a Bandcamp album URL: {url!r}')
+        self.url   = url
+        self._data: 'dict | None' = None
+
+    def _ensure_full(self) -> None:
+        if self._data is not None:
+            return
+
+        import html as _html_mod
+
+        req = urllib.request.Request(self.url, headers={'User-Agent': BC_UA})
+        _bc_lim.wait()
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw_html = r.read().decode('utf-8', errors='replace')
+
+        # Strategy 1: data-tralbum attribute (most Bandcamp pages)
+        m = re.search(r'\bdata-tralbum="([^"]+)"', raw_html)
+        if m:
+            tralbum = json.loads(_html_mod.unescape(m.group(1)))
+            band_m  = re.search(r'\bdata-band="([^"]+)"', raw_html)
+            band    = json.loads(_html_mod.unescape(band_m.group(1))) if band_m else {}
+            self._data = self._normalise({'tralbum': tralbum, 'band': band})
+            return
+
+        # Strategy 2: <script>var TralbumData = {...};</script>
+        m = re.search(r'TralbumData\s*=\s*(\{.*?\})\s*;?\s*\n', raw_html, re.DOTALL)
+        if m:
+            tralbum = json.loads(m.group(1))
+            self._data = self._normalise({'tralbum': tralbum, 'band': {}})
+            return
+
+        raise RuntimeError(f'Could not extract tralbum JSON from Bandcamp page: {self.url}')
+
+    def _normalise(self, page: dict) -> dict:
+        """Flatten the nested tralbum/band structure into a flat _data dict."""
+        tralbum = page.get('tralbum') or {}
+        current = tralbum.get('current') or {}
+        band    = page.get('band') or {}
+        tracks  = []
+        for t in (tralbum.get('trackinfo') or []):
+            dur_s = t.get('duration') or 0.0
+            tracks.append({
+                'name':          t.get('title', ''),
+                'duration_ms':   int(dur_s * 1000) if dur_s else None,
+                '_track_number': t.get('track_num'),
+                '_disc_number':  1,
+            })
+
+        # Release date: try 'current.release_date' (e.g. "30 Apr 2025 00:00:00 GMT")
+        release_date = _parse_bc_date(current.get('release_date') or
+                                      tralbum.get('album_release_date') or '')
+
+        # Cover art URL: https://f4.bcbits.com/img/a{art_id}_0.jpg
+        art_id  = tralbum.get('art_id') or current.get('art_id')
+        art_url = f'https://f4.bcbits.com/img/a{art_id}_0.jpg' if art_id else None
+
+        return {
+            'title':        current.get('title') or '',
+            'artist':       tralbum.get('artist') or current.get('artist') or band.get('name') or '',
+            'band_name':    band.get('name') or '',
+            'release_date': release_date,
+            'upc':          current.get('upc') or None,
+            'credits':      current.get('credits') or None,
+            'about':        current.get('about') or None,
+            'item_type':    tralbum.get('item_type') or 'album',
+            'art_url':      art_url,
+            '_track_list':  tracks,
+        }
+
+    # -- properties --
+
+    @property
+    def name(self) -> str:
+        self._ensure_full()
+        return (self._data.get('title') or '').strip()
+
+    @property
+    def artist(self) -> str:
+        self._ensure_full()
+        return (self._data.get('artist') or '').strip()
+
+    @property
+    def year(self) -> str:
+        return (self.date or '')[:4]
+
+    @property
+    def date(self) -> str:
+        self._ensure_full()
+        return self._data.get('release_date') or ''
+
+    @property
+    def tracks(self) -> list:
+        self._ensure_full()
+        return self._data['_track_list']
+
+    @property
+    def track_count(self) -> int:
+        return len(self.tracks)
+
+    @property
+    def label(self) -> str:
+        return ''  # Not reliably extractable without band/artist disambiguation
+
+    @property
+    def upc(self) -> 'str | None':
+        self._ensure_full()
+        return self._data.get('upc')
+
+    @property
+    def credits_text(self) -> 'str | None':
+        self._ensure_full()
+        return self._data.get('credits')
+
+    @property
+    def image_url(self) -> 'str | None':
+        self._ensure_full()
+        return self._data.get('art_url')
+
+    @property
+    def album_type(self) -> str:
+        n = self.track_count
+        return 'single' if n == 1 else ('ep' if n <= 4 else 'album')
+
+    def canonical_score(self) -> tuple:
+        d    = self.date
+        prec = (3 if len(d) == 10 else (2 if len(d) == 7 else 1))
+        return (-prec, d, self.track_count, 0, 0)
+
+
+def _parse_bc_date(raw: str) -> str:
+    """Parse a Bandcamp release date string to YYYY-MM-DD.
+
+    Handles formats like:
+      "30 Apr 2025 00:00:00 GMT"  → "2025-04-30"
+      "2025-04-30"                → "2025-04-30"
+      "April 30, 2025"            → "2025-04-30"
+    """
+    if not raw:
+        return ''
+    raw = raw.strip()
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', raw):
+        return raw
+    from mdb_strings import MONTHS
+    # "30 Apr 2025 ..."
+    m = re.match(r'(\d{1,2})\s+(\w{3,})\s+(\d{4})', raw, re.IGNORECASE)
+    if m:
+        day, mon, year = m.group(1), m.group(2).lower(), m.group(3)
+        if mon in MONTHS:
+            return f'{year}-{MONTHS[mon]}-{day.zfill(2)}'
+    # "April 30, 2025"
+    m = re.match(r'(\w+)\s+(\d{1,2}),?\s+(\d{4})', raw, re.IGNORECASE)
+    if m:
+        mon, day, year = m.group(1).lower(), m.group(2), m.group(3)
+        if mon in MONTHS:
+            return f'{year}-{MONTHS[mon]}-{day.zfill(2)}'
+    # Just return whatever year we can find
+    m = re.search(r'\b(\d{4})\b', raw)
+    return m.group(1) if m else ''
