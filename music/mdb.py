@@ -219,174 +219,22 @@ def read_ids_from_file(path):
     return groups
 
 def import_album(db_path, client, album_url, use_mb=True, discs=None):
-    """Import a Spotify album. Returns (release_id, title, artist_name, release_date)."""
-    album_id   = (re.search(r'(?:album|prerelease)/([A-Za-z0-9]+)', album_url) or type('m', (), {'group': lambda s, i: album_url})()).group(1)
-    album      = client.get_album(album_id)
-    all_tracks = album['_all_tracks']
-    year       = (album.get('release_date') or '?')[:4]
-    artist_str = ', '.join(a['name'] for a in album['artists'])
+    """Import a Spotify album. Thin wrapper around import_album_unified.
 
-    console.print(f"[bold]{album['name']}[/bold]  "
-                  f"[dim]{artist_str} · {year} · {len(all_tracks)} tracks[/dim]")
+    Returns (release_id, title, artist_name, release_date).
+    Kept for backwards compatibility with any callers that pass a pre-built
+    SpotifyClient — import_album_unified re-uses it via the _sp_client() closure.
+    """
+    return import_album_unified(
+        db_path, album_url,
+        client=client,
+        no_gtin=False,
+        no_mb=not use_mb,
+        # AOTY/wiki are handled by cmd_import's post-import steps, not here
+        use_aoty=False,
+        use_wiki=False,
+    )
 
-    all_artist_ids = list(dict.fromkeys(
-        [a['id'] for a in album['artists']] +
-        [a['id'] for t in all_tracks for a in t.get('artists', [])]
-    ))
-    sp_artists  = client.get_artists_batch(all_artist_ids)
-    full_tracks = client.get_tracks_batch([t['id'] for t in all_tracks if t.get('id')])
-    full_by_id  = {t['id']: t for t in full_tracks if t}
-    enriched    = [full_by_id.get(t['id'], t) for t in all_tracks]
-    if discs:
-        enriched = [t for t in enriched if (t.get('disc_number') or 1) in discs]
-
-    conn = open_db(db_path)
-    cur  = conn.cursor()
-    init_schema(conn)
-
-    try:
-        console.rule('[dim]Artists[/dim]', style='dim')
-        artist_map = {}
-        for sp_a in sp_artists:
-            if not sp_a:
-                continue
-            if _is_various_artists(sp_a):
-                console.print(f"  [dim]skip[/dim]  {sp_a['name']:<28} [dim](Various Artists — not stored)[/dim]")
-                continue
-            our_id, created = upsert_artist(cur, sp_a)
-            artist_map[sp_a['id']] = our_id
-            tag = '[green]new[/green]' if created else '[dim]upd[/dim]'
-            console.print(f"  {tag}  {sp_a['name']:<28} [dim]{our_id}[/dim]")
-
-        first_album_artist = album['artists'][0]
-        primary_id = (None if _is_various_artists(first_album_artist)
-                      else artist_map.get(first_album_artist['id']))
-        release_id, r_new = upsert_release(cur, album, primary_id)
-        tag               = '[green]new[/green]' if r_new else '[dim]upd[/dim]'
-        console.print(f"\n  {tag}  [bold]{album['name']}[/bold] [dim]→ {release_id}[/dim]")
-
-        cur.execute('DELETE FROM release_artists WHERE release_id = ?', (release_id,))
-        for sp_a in album['artists']:
-            aid = artist_map.get(sp_a['id'])
-            if aid:
-                try:
-                    cur.execute('INSERT INTO release_artists (release_id, artist_id) VALUES (?, ?)',
-                                (release_id, aid))
-                except sqlite3.IntegrityError:
-                    pass
-
-        mb_by_isrc, mb_by_title = {}, {}
-        if use_mb:
-            console.rule('[dim]MusicBrainz[/dim]', style='dim')
-
-            # Check if we already have a stable MBID — if so, skip the search
-            # and just re-fetch recording IDs to avoid MBID churn on re-import
-            existing_mb = conn.execute(
-                'SELECT mbid FROM releases WHERE id = ?', (release_id,)
-            ).fetchone()
-            existing_mbid = existing_mb[0] if existing_mb else None
-
-            if existing_mbid:
-                mb_id, mb_score = existing_mbid, 100
-                console.print(f'  [dim]using stored MBID[/dim]  [dim]{mb_id}[/dim]')
-            else:
-                year_int       = int(year) if year.isdigit() else 0
-                mb_id, mb_score = mb_find_release(album['name'], album['artists'][0]['name'],
-                                                   len(all_tracks), year_int)
-
-            if mb_id:
-                mb_by_isrc, mb_by_title, rg_mbid = mb_fetch_recording_ids(mb_id)
-                updates = {}
-                if not existing_mbid:
-                    updates['mbid'] = mb_id
-                if rg_mbid:
-                    updates['release_group_mbid'] = rg_mbid
-                mb_stored = True
-                if updates:
-                    set_clause = ', '.join(f'{k} = ?' for k in updates)
-                    try:
-                        cur.execute(f'UPDATE releases SET {set_clause} WHERE id = ?',
-                                    (*updates.values(), release_id))
-                    except sqlite3.IntegrityError:
-                        # Another release already has this MBID — skip MB data
-                        mb_by_isrc, mb_by_title, mb_stored = {}, {}, False
-                        console.print(f'  [yellow]⚠[/yellow]  [dim]MBID {mb_id} already claimed — skipping MB[/dim]')
-                if mb_stored:
-                    matched = sum(
-                        1 for t in enriched
-                        if ((t.get('external_ids') or {}).get('isrc') in mb_by_isrc)
-                        or (_norm(t.get('name', '')) in mb_by_title)
-                    )
-                    console.print(f"  [green]✓[/green]  [dim]{mb_id}[/dim]  "
-                                  f"[dim]score {mb_score} · {matched}/{len(all_tracks)} tracks[/dim]")
-            else:
-                console.print('  [dim]no match found[/dim]')
-
-        tr_created, tr_updated = upsert_tracks(cur, release_id, enriched, artist_map,
-                                               mb_by_isrc, mb_by_title)
-        conn.commit()
-
-        # ── Infer primary artist for Various Artists releases ────────────────
-        if primary_id is None:
-            rows = conn.execute('''
-                SELECT a.id, a.name, COUNT(*) as n
-                FROM track_artists ta
-                JOIN tracks t ON t.id = ta.track_id
-                JOIN artists a ON a.id = ta.artist_id
-                WHERE t.release_id = ? AND ta.role = 'main'
-                GROUP BY a.id
-                ORDER BY n DESC
-                LIMIT 5
-            ''', [release_id]).fetchall()
-
-            if rows:
-                total_tracks = conn.execute(
-                    'SELECT COUNT(*) FROM tracks WHERE release_id = ?', [release_id]
-                ).fetchone()[0]
-                top_id, top_name, top_count = rows[0]
-                console.rule('[dim]Primary Artist[/dim]', style='dim')
-                for aid, aname, n in rows:
-                    bar = '█' * round(n / total_tracks * 24)
-                    console.print(f'  {aname:<30}  [dim]{n:>3}/{total_tracks}[/dim]  [green]{bar}[/green]')
-                console.print()
-                try:
-                    ans = input(f'  Set "{top_name}" as primary artist? [Y/n] ').strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    ans = 'n'
-                if ans in ('', 'y', 'yes'):
-                    conn.execute(
-                        'UPDATE releases SET primary_artist_id = ? WHERE id = ?',
-                        [top_id, release_id]
-                    )
-                    conn.commit()
-                    console.print(f'  [green]✓[/green]  primary artist → {top_name}')
-                else:
-                    console.print('  [dim]keeping primary_artist_id = NULL[/dim]')
-    finally:
-        conn.close()
-
-    console.rule('[dim]Tracks[/dim]', style='dim')
-    max_disc = max((t.get('disc_number') or 1) for t in enriched)
-    any_isrc = any((t.get('external_ids') or {}).get('isrc') for t in enriched)
-    cur_disc = None
-    for t in enriched:
-        disc  = t.get('disc_number') or 1
-        num   = t.get('track_number', '?')
-        title = t.get('name', '?')
-        dur   = _fmt_dur(t.get('duration_ms'))
-        isrc  = (t.get('external_ids') or {}).get('isrc', '')
-        mb_ok = (isrc and isrc in mb_by_isrc) or _norm(title) in mb_by_title
-        mb_ic = '[green]✓[/green]' if mb_ok else '[dim]·[/dim]'
-        if max_disc > 1 and disc != cur_disc:
-            cur_disc = disc
-            console.print(f'\n  [bold dim]Disc {disc}[/bold dim]')
-        isrc_col = f'  [dim]{isrc:<12}[/dim]' if any_isrc else ''
-        console.print(f"  [dim]{num:>2}.[/dim]  {_trunc(title, 40):<40}  "
-                      f"[dim]{dur:>5}[/dim]{isrc_col}  {mb_ic}")
-    console.print(f'\n  [dim]{tr_created} created · {tr_updated} updated[/dim]  '
-                  f'[bold]{os.path.basename(db_path)}[/bold]')
-
-    return release_id, album['name'], album['artists'][0]['name'], album.get('release_date', '')
 
 # ── Variant / source helpers ──────────────────────────────────────────────────
 
