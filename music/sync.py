@@ -851,12 +851,14 @@ def cmd_match(args):
     limit  = args.limit or 50
     include_deferred = getattr(args, 'skipped', False)
     sort_recent      = getattr(args, 'recent',  False)
-    artist_filter    = getattr(args, 'artist',      None)
+    artist_filter    = getattr(args, 'artist',      None)  # list[str] or None
     interactive_flag = getattr(args, 'interactive', False)
     use_wiki         = getattr(args, 'wiki',         False)
-    artist_norm      = _norm(artist_filter) if artist_filter else None
-    # Artist sweep uses a high limit so the whole artist fits in one pass
-    eff_limit        = 9999 if artist_norm else limit
+    # Build a set of normalised names for O(1) membership tests
+    artist_norms     = {_norm(a) for a in artist_filter} if artist_filter else None
+    artist_norm      = artist_norms  # kept for boolean checks throughout
+    # Artist sweep uses a high limit so all albums for all artists fit in one pass
+    eff_limit        = 9999 if artist_norms else limit
 
     if not token:
         console.print('[yellow]No Spotify credentials found — auto-search disabled.[/yellow]')
@@ -939,8 +941,8 @@ def cmd_match(args):
                 LIMIT    ?
             ''', [eff_limit]).fetchall()
 
-        if artist_norm:
-            rows = [r for r in rows if _norm(r['raw_artist_name']) == artist_norm]
+        if artist_norms:
+            rows = [r for r in rows if _norm(r['raw_artist_name']) in artist_norms]
 
         if not rows:
             console.print('[green]All listens resolved (or skipped)![/green]')
@@ -965,8 +967,8 @@ def cmd_match(args):
         total_unresolved = conn.execute(
             'SELECT COUNT(*) FROM listens WHERE track_id IS NULL'
         ).fetchone()[0]
-        if artist_norm:
-            mode_label = f'artist sweep: {artist_filter}'
+        if artist_norms:
+            mode_label = f'artist sweep: {", ".join(artist_filter)}'
         elif sort_recent:
             mode_label = 'most recent session'
         else:
@@ -1428,6 +1430,11 @@ def _parse_mixed_tokens(raw: str, db_results: list, sp_results: list) -> 'tuple[
             to_import.append({'mbid': mbid, 'url': f'https://musicbrainz.org/release/{mbid}'})
             continue
 
+        # Generic URL — pass straight to mdb.py import (Bandcamp, Beatport, Deezer, Apple Music…)
+        if token.startswith('http://') or token.startswith('https://'):
+            to_import.append({'url': token})
+            continue
+
         return None, None  # unrecognised token
 
     return to_match, to_import
@@ -1444,16 +1451,24 @@ def _do_multi_import(conn: sqlite3.Connection, selected: list,
     """
     imported = []  # list of (item, release_row)
 
+    any_succeeded = False
     for item in selected:
-        is_mb  = isinstance(item, dict) and 'mbid' in item
-        url    = item['url'] if is_mb else item.url
+        is_mb      = isinstance(item, dict) and 'mbid' in item
+        is_generic = isinstance(item, dict) and 'mbid' not in item and 'url' in item
+        url        = item['url'] if (is_mb or is_generic) else item.url
         console.print(f'  Importing [dim]{url}[/dim]')
         result = _mdb_import(url, use_wiki=use_wiki)
         if result.returncode == 0:
+            any_succeeded = True
             if is_mb:
                 rel = conn.execute(
                     'SELECT id, title FROM releases WHERE mbid = ?', [item['mbid']]
                 ).fetchone()
+            elif is_generic:
+                rel = None
+                if raw_artist and raw_album:
+                    matches = _db_search_releases(conn, raw_artist, raw_album)
+                    rel = dict(matches[0]) if matches else None
             else:
                 rel = conn.execute(
                     'SELECT id, title FROM releases WHERE spotify_id = ?', [item.id]
@@ -1461,11 +1476,14 @@ def _do_multi_import(conn: sqlite3.Connection, selected: list,
             if rel:
                 imported.append((item, rel))
         else:
-            label = item['url'] if is_mb else (item.name or item.url)
+            label = item['url'] if (is_mb or is_generic) else (item.name or item.url)
             console.print(f'  [red]Import failed for {label}[/red]')
 
     if not imported:
-        console.print('  [red]All imports failed[/red]')
+        if not any_succeeded:
+            console.print('  [red]All imports failed[/red]')
+        # else: subprocess succeeded but release wasn't trackable (e.g. ISRC skip
+        # redirected to an existing release) — output already printed, nothing to add
         return
 
     matched = bulk_rematch(conn)
@@ -1474,9 +1492,6 @@ def _do_multi_import(conn: sqlite3.Connection, selected: list,
         matched += bulk_rematch_by_name(conn, release_ids, raw_artist, raw_album)
     if matched:
         console.print(f'  [green]✓ {matched} listens now matched[/green]')
-    else:
-        console.print('  [yellow]Imported — no new matches yet '
-                      '(run sync match again after tracks are enriched)[/yellow]')
 
     if len(imported) > 1:
         _prompt_variants(conn, imported, use_wiki=use_wiki)
@@ -1779,9 +1794,9 @@ def main():
     pm.add_argument('--release-id', metavar='ULID',
                     help='Force-match all unmatched listens against a specific DB release '
                          '(accepts db:ULID or bare ULID)')
-    pm.add_argument('--artist',     metavar='NAME',
+    pm.add_argument('--artist',     metavar='NAME', nargs='+',
                     help='Non-interactive sweep: auto-import + match all unmatched albums '
-                         'for a single artist (accent-insensitive)')
+                         'for one or more artists (accent-insensitive; space-separated)')
     pm.add_argument('--interactive', action='store_true',
                     help='With --artist: fall through to interactive prompt for albums '
                          'that cannot be auto-resolved (instead of collecting them in a '
