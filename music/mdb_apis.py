@@ -2,6 +2,7 @@
 
 __all__ = [
     'RateLimiter',
+    'MetadataRelease',
     'SpotifyClient',
     'SpotifyRelease',
     'MusicBrainzRelease',
@@ -29,10 +30,44 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Protocol, runtime_checkable
 
 from mdb_strings import ascii_key as _norm, extract_mbid as _extract_mbid_or_none
 
 log = logging.getLogger(__name__)
+
+
+# ── Shared release interface ───────────────────────────────────────────────────
+
+@runtime_checkable
+class MetadataRelease(Protocol):
+    """Structural protocol shared by all provider release classes.
+
+    Every class that implements this interface can be passed to compare_releases()
+    and used as a source in ReleaseMerge without any explicit inheritance.
+    """
+    @property
+    def name(self) -> str: ...
+    @property
+    def artist(self) -> str: ...
+    @property
+    def year(self) -> str: ...
+    @property
+    def date(self) -> str: ...
+    @property
+    def tracks(self) -> list: ...
+    @property
+    def track_count(self) -> int: ...
+    @property
+    def explicit_count(self) -> int: ...
+    @property
+    def total_ms(self) -> int: ...
+    @property
+    def label(self) -> str: ...
+    @property
+    def album_type(self) -> str: ...
+    def canonical_score(self) -> tuple: ...
+    def _ensure_full(self) -> None: ...
 
 # ── API constants ──────────────────────────────────────────────────────────────
 
@@ -68,6 +103,27 @@ class RateLimiter:
             self._last = time.monotonic()
 
 
+def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = None,
+              timeout: int = 10) -> bytes:
+    """Make a GET request and return the raw response bytes.
+
+    Centralises urllib boilerplate used across all provider classes.
+    Applies the rate limiter before opening the connection (so the limiter
+    fires even when the caller caches the result and skips the call).
+    """
+    if lim:
+        lim.wait()
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _http_get_json(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = None,
+                   timeout: int = 10) -> dict:
+    """GET + JSON decode."""
+    return json.loads(_http_get(url, headers=headers, lim=lim, timeout=timeout))
+
+
 _mb_lim   = RateLimiter(MB_INTERVAL)
 _wiki_lim = RateLimiter(WIKI_INTERVAL)
 _aoty_lim = RateLimiter(AOTY_INTERVAL)
@@ -75,15 +131,30 @@ _aoty_lim = RateLimiter(AOTY_INTERVAL)
 
 # ── Spotify client ─────────────────────────────────────────────────────────────
 
+_SP_TOKEN_CACHE = os.path.expanduser('~/.cache/mdb/spotify_token.json')
+
+
 class SpotifyClient:
     def __init__(self, client_id: str, client_secret: str):
         self.client_id     = client_id
         self.client_secret = client_secret
         self._token        = None
         self._expiry       = 0.0
+        self._load_cached_token()
+
+    def _load_cached_token(self) -> None:
+        """Read a previously-saved token so successive mdb invocations skip the fetch."""
+        try:
+            with open(_SP_TOKEN_CACHE) as f:
+                d = json.load(f)
+            if d.get('client_id') == self.client_id and time.time() < d.get('expiry', 0) - 60:
+                self._token  = d['access_token']
+                self._expiry = d['expiry']
+        except (FileNotFoundError, (json.JSONDecodeError, KeyError)):
+            pass
 
     def _ensure_token(self) -> None:
-        if time.time() < self._expiry - 60:
+        if self._token and time.time() < self._expiry - 60:
             return
         creds = f'{self.client_id}:{self.client_secret}'
         req = urllib.request.Request(
@@ -98,15 +169,20 @@ class SpotifyClient:
             d = json.loads(r.read())
         self._token  = d['access_token']
         self._expiry = time.time() + d['expires_in']
+        try:
+            os.makedirs(os.path.dirname(_SP_TOKEN_CACHE), exist_ok=True)
+            with open(_SP_TOKEN_CACHE, 'w') as f:
+                json.dump({'client_id': self.client_id, 'access_token': self._token,
+                           'expiry': self._expiry}, f)
+        except OSError:
+            pass  # cache write failure is non-fatal
 
     def get(self, path: str, params: dict = None) -> dict:
         self._ensure_token()
         url = SP_BASE + path
         if params:
             url += '?' + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={'Authorization': f'Bearer {self._token}'})
-        with urllib.request.urlopen(req) as r:
-            return json.loads(r.read())
+        return _http_get_json(url, headers={'Authorization': f'Bearer {self._token}'})
 
     def get_album(self, album_id: str) -> dict:
         album  = self.get(f'/albums/{album_id}')
@@ -114,9 +190,7 @@ class SpotifyClient:
         nxt    = album['tracks'].get('next')
         while nxt:
             self._ensure_token()
-            req = urllib.request.Request(nxt, headers={'Authorization': f'Bearer {self._token}'})
-            with urllib.request.urlopen(req) as r:
-                page = json.loads(r.read())
+            page = _http_get_json(nxt, headers={'Authorization': f'Bearer {self._token}'})
             tracks.extend(page['items'])
             nxt = page.get('next')
         album['_all_tracks'] = tracks
@@ -194,14 +268,12 @@ def caa_fetch_front_image_url(release_mbid: str) -> 'str | None':
     """Fetch the front cover art URL from Cover Art Archive for a release MBID.
     Uses the 'large' thumbnail when available (still high-res, faster than original).
     Returns None on 404 or if no Front image is found."""
-    req = urllib.request.Request(
-        f'{CAA_API}/release/{release_mbid}',
-        headers={'User-Agent': MB_UA, 'Accept': 'application/json'},
-    )
-    _mb_lim.wait()
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read())
+        data = _http_get_json(
+            f'{CAA_API}/release/{release_mbid}',
+            headers={'User-Agent': MB_UA, 'Accept': 'application/json'},
+            lim=_mb_lim,
+        )
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
@@ -377,10 +449,8 @@ class BeatportRelease:
     def _ensure_full(self) -> None:
         if self._data is not None:
             return
-        req = urllib.request.Request(self.url, headers={'User-Agent': BP_UA})
-        _bp_lim.wait()
-        with urllib.request.urlopen(req, timeout=15) as r:
-            html = r.read().decode('utf-8', errors='replace')
+        html = _http_get(self.url, headers={'User-Agent': BP_UA}, lim=_bp_lim,
+                         timeout=15).decode('utf-8', errors='replace')
 
         m = re.search(
             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html
@@ -685,7 +755,7 @@ class SpotifyRelease:
 
 # ── compare_releases ───────────────────────────────────────────────────────────
 
-def compare_releases(*releases: SpotifyRelease) -> dict:
+def compare_releases(*releases: MetadataRelease) -> dict:
     """
     Compare two or more SpotifyRelease objects.  Fetches full data as needed.
     Returns a structured dict consumed by render_diff in mdb_cli.
@@ -766,13 +836,8 @@ def compare_releases(*releases: SpotifyRelease) -> dict:
 
 def _mb_get(path: str, params: dict = None) -> dict:
     p = {'fmt': 'json', **(params or {})}
-    req = urllib.request.Request(
-        f'{MB_API}{path}?' + urllib.parse.urlencode(p),
-        headers={'User-Agent': MB_UA},
-    )
-    _mb_lim.wait()
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
+    url = f'{MB_API}{path}?' + urllib.parse.urlencode(p)
+    return _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_mb_lim)
 
 
 def _mb_get_safe(path: str, params: dict = None) -> 'dict | None':
@@ -932,10 +997,7 @@ class ItunesRelease:
             return
         url = (f'{ITUNES_LOOKUP}?id={self.itunes_id}&entity=song'
                f'&limit=200&country=US')
-        req = urllib.request.Request(url, headers={'User-Agent': MB_UA})
-        _itunes_lim.wait()
-        with urllib.request.urlopen(req, timeout=10) as r:
-            raw = json.loads(r.read())
+        raw = _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_itunes_lim)
 
         results = raw.get('results') or []
         album = None
@@ -1067,10 +1129,8 @@ class BandcampRelease:
 
         import html as _html_mod
 
-        req = urllib.request.Request(self.url, headers={'User-Agent': BC_UA})
-        _bc_lim.wait()
-        with urllib.request.urlopen(req, timeout=15) as r:
-            raw_html = r.read().decode('utf-8', errors='replace')
+        raw_html = _http_get(self.url, headers={'User-Agent': BC_UA}, lim=_bc_lim,
+                             timeout=15).decode('utf-8', errors='replace')
 
         # Strategy 1: data-tralbum attribute (most Bandcamp pages)
         m = re.search(r'\bdata-tralbum="([^"]+)"', raw_html)
