@@ -426,63 +426,6 @@ class DBRelease:
                 -self.explicit_count)
 
 
-def cmd_diff(args):
-    """Compare two or more Spotify, MusicBrainz, or DB releases."""
-    load_dotenv()
-    cid = os.environ.get('SPOTIFY_CLIENT_ID')
-    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
-
-    db_path  = getattr(args, 'db', None) or DB_PATH
-    client   = None
-    releases = []
-    has_db   = any(
-        a.strip().lower().startswith('db:') or
-        (re.match(r'^[0-9A-Z]{26}$', a.strip()) and not re.match(r'^[A-Za-z0-9]{22}$', a.strip()))
-        for a in args.albums
-    )
-    if has_db:
-        with managed_db(db_path) as db_conn:
-            for album in args.albums:
-                key = album.strip()
-                is_db = (
-                    key.lower().startswith('db:') or
-                    (re.match(r'^[0-9A-Z]{26}$', key) and not re.match(r'^[A-Za-z0-9]{22}$', key))
-                )
-                if is_db:
-                    try:
-                        releases.append(DBRelease(key, conn=db_conn))
-                    except ValueError as e:
-                        console.print(f'[red]Error:[/red] {e}')
-                        sys.exit(1)
-                else:
-                    mbid = extract_mbid(album)
-                    if mbid:
-                        releases.append(MusicBrainzRelease(mbid))
-                    else:
-                        if client is None:
-                            if not (cid and csc):
-                                console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and'
-                                              ' SPOTIFY_CLIENT_SECRET must be set for Spotify entries.')
-                                sys.exit(1)
-                            client = SpotifyClient(cid, csc)
-                        releases.append(SpotifyRelease(album, client=client))
-            render_diff(*releases)
-    else:
-        for album in args.albums:
-            mbid = extract_mbid(album)
-            if mbid:
-                releases.append(MusicBrainzRelease(mbid))
-            else:
-                if client is None:
-                    if not (cid and csc):
-                        console.print('[red]Error:[/red] SPOTIFY_CLIENT_ID and'
-                                      ' SPOTIFY_CLIENT_SECRET must be set for Spotify entries.')
-                        sys.exit(1)
-                    client = SpotifyClient(cid, csc)
-                releases.append(SpotifyRelease(album, client=client))
-        render_diff(*releases)
-
-
 def import_album_from_mb(db_path: str, mbid: str, *,
                          use_aoty: bool = True,
                          use_wiki: bool = True) -> 'tuple[str, str, str, str]':
@@ -1994,169 +1937,6 @@ def _slug_overlap(title: str, aoty_url: str) -> float:
     return matched / len(title_atoms)
 
 
-def cmd_audit_aoty(args):
-    """Find releases with likely bad AOTY matches and optionally correct them."""
-    fixed = skipped = 0
-    try:
-        with managed_db(args.db or DB_PATH) as conn:
-            artist_clause = ''
-            artist_params = []
-            if getattr(args, 'artist', None):
-                row = resolve_artist(conn, args.artist)
-                if not row:
-                    console.print(f'[red]Artist not found: {args.artist}[/red]')
-                    return
-                artist_clause = ' AND ra.artist_id = ?'
-                artist_params = [row['id']]
-
-            rows = conn.execute(f'''
-                SELECT
-                    r.id, r.title, r.release_year, r.release_date, r.date_source,
-                    r.aoty_url,
-                    a.name                AS artist_name,
-                    COUNT(DISTINCT l.id)  AS listen_count,
-                    MIN(l.year)           AS first_listen_year,
-                    MAX(l.year)           AS last_listen_year
-                FROM releases r
-                LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
-                LEFT JOIN artists a          ON ra.artist_id = a.id
-                LEFT JOIN tracks t           ON t.release_id = r.id AND t.hidden = 0
-                LEFT JOIN listens l          ON l.track_id = t.id
-                WHERE r.aoty_url IS NOT NULL
-                  AND r.aoty_url != 'not_found'
-                  AND r.hidden = 0
-                  {artist_clause}
-                GROUP BY r.id
-                ORDER BY COUNT(DISTINCT l.id) DESC, r.release_year DESC NULLS LAST
-            ''', artist_params).fetchall()
-
-            min_listens = getattr(args, 'min_listens', 0)
-
-            findings = []
-            for row in rows:
-                if row['listen_count'] < min_listens:
-                    continue
-                issues = []
-
-                # Listen predates the release year — temporal impossibility
-                if (row['first_listen_year'] and row['release_year']
-                        and row['first_listen_year'] < row['release_year'] - 1):
-                    issues.append(('HIGH', 'listen-before-release',
-                                   f"first listen {row['first_listen_year']} "
-                                   f"but release year {row['release_year']}"))
-
-                # AOTY URL slug doesn't match the release title
-                overlap = _slug_overlap(row['title'], row['aoty_url'])
-                if overlap < 0.25:
-                    issues.append(('HIGH',   'slug-mismatch',
-                                   f'{overlap:.0%} of title words in URL slug'))
-                elif overlap < 0.5:
-                    issues.append(('MEDIUM', 'slug-mismatch',
-                                   f'{overlap:.0%} of title words in URL slug'))
-
-                if issues:
-                    findings.append((row, issues))
-
-            if not findings:
-                console.print('[green]No suspicious AOTY matches found.[/green]')
-                return
-
-            # Sort: HIGH first, then by listen count desc
-            findings.sort(key=lambda x: (
-                0 if any(s == 'HIGH' for s, _, _ in x[1]) else 1,
-                -x[0]['listen_count']
-            ))
-
-            def _print_finding(row, issues):
-                sev   = 'HIGH' if any(s == 'HIGH' for s, _, _ in issues) else 'MEDIUM'
-                color = 'red' if sev == 'HIGH' else 'yellow'
-                console.print(
-                    f'  [bold]{row["title"]}[/bold]  '
-                    f'[dim]{row["artist_name"] or "Unknown"}  ·  {row["release_year"] or "?"}[/dim]'
-                )
-                console.print(f'  [dim]{row["aoty_url"]}[/dim]')
-                slug_words = _aoty_slug_words(row['aoty_url'])
-                console.print(f'  [dim]url words: {", ".join(sorted(slug_words)) or "(none parsed)"}[/dim]')
-                if row['listen_count']:
-                    yr_range = (f'{row["first_listen_year"]}–{row["last_listen_year"]}'
-                                if row['first_listen_year'] != row['last_listen_year']
-                                else str(row['first_listen_year']))
-                    console.print(f'  [dim]{row["listen_count"]} listens  ({yr_range})[/dim]')
-                for sev_, kind, detail in issues:
-                    c = 'red' if sev_ == 'HIGH' else 'yellow'
-                    console.print(f'  [{c}]▲ {kind}:[/{c}] {detail}')
-
-            console.print(f'\n[bold]{len(findings)} suspicious release(s)[/bold]  '
-                          f'({sum(1 for f in findings if any(s == "HIGH" for s, _, _ in f[1]))} HIGH  '
-                          f'{sum(1 for f in findings if all(s != "HIGH" for s, _, _ in f[1]))} MEDIUM)\n')
-
-            if not getattr(args, 'fix', False):
-                for i, (row, issues) in enumerate(findings, 1):
-                    sev   = 'HIGH' if any(s == 'HIGH' for s, _, _ in issues) else 'MEDIUM'
-                    color = 'red' if sev == 'HIGH' else 'yellow'
-                    console.rule(f'[{color}]{sev}[/{color}]  {i}/{len(findings)}', style='dim')
-                    _print_finding(row, issues)
-                console.print()
-                console.print('[dim]Run with --fix to interactively correct these.[/dim]')
-                return
-
-            # ── Interactive fix mode ───────────────────────────────────────────────────
-            now = int(time.time())
-            for i, (row, issues) in enumerate(findings, 1):
-                sev   = 'HIGH' if any(s == 'HIGH' for s, _, _ in issues) else 'MEDIUM'
-                color = 'red' if sev == 'HIGH' else 'yellow'
-                console.rule(f'[{color}]{sev}[/{color}]  {i}/{len(findings)}', style='dim')
-                _print_finding(row, issues)
-                console.print()
-                try:
-                    ans = input('  URL / [c]lear / [s]kip / [q]uit: ').strip().lower()
-                except EOFError:
-                    break
-
-                if ans in ('q', 'quit'):
-                    break
-                elif ans in ('s', 'skip', ''):
-                    skipped += 1
-                    continue
-                elif ans in ('c', 'clear'):
-                    conn.execute('''
-                        UPDATE releases SET
-                            aoty_url = NULL,
-                            aoty_score_critic = NULL,  aoty_score_user = NULL,
-                            aoty_ratings_critic = NULL, aoty_ratings_user = NULL,
-                            updated_at = ?
-                        WHERE id = ?
-                    ''', (now, row['id']))
-                    conn.execute('DELETE FROM release_genres WHERE release_id = ?', (row['id'],))
-                    if row['date_source'] == 'aoty':
-                        conn.execute(
-                            'UPDATE releases SET release_date = NULL, release_year = NULL,'
-                            ' date_source = NULL WHERE id = ?',
-                            (row['id'],)
-                        )
-                        console.print('  [dim]Cleared AOTY data + date (date was AOTY-sourced).[/dim]')
-                    else:
-                        console.print('  [dim]Cleared AOTY data.[/dim]')
-                    conn.commit()
-                    fixed += 1
-                else:
-                    url = ans if ans.startswith('http') else input('  AOTY URL: ').strip()
-                    new_data = scrape_aoty_page(url)
-                    if not _has_aoty(new_data):
-                        console.print('  [yellow]No data scraped — skipping.[/yellow]')
-                        skipped += 1
-                        continue
-                    action2, _, val_data2 = _aoty_prompt(row['title'], row['artist_name'], url, new_data)
-                    if action2 == 'save':
-                        save_aoty_data(conn, row['id'], url, val_data2)
-                        console.print('  [green]Saved.[/green]')
-                        fixed += 1
-                    else:
-                        skipped += 1
-    except KeyboardInterrupt:
-        console.print('\n  [yellow]Interrupted.[/yellow]')
-    console.rule(style='dim')
-    console.print(f'  [dim]Fixed: {fixed} · Skipped: {skipped}[/dim]')
 
 
 # ── cmd: enrich artists ────────────────────────────────────────────────────────
@@ -3009,113 +2789,6 @@ def cmd_relation(args):
             else:
                 console.print(f'  [yellow]Not found[/yellow]')
 
-
-# ── cmd: migrate artist-slugs ─────────────────────────────────────────────────
-
-def cmd_migrate_artist_slugs(args):
-    """
-    One-time migration: convert legacy slug-as-id artists to ULID ids.
-    For every artist where slug IS NULL, the current id is the slug.
-    Generates a new ULID id, backfills slug, and updates all FK references.
-    """
-    with managed_db(args.db or DB_PATH) as conn:
-        artists = conn.execute(
-            'SELECT id, name FROM artists WHERE slug IS NULL ORDER BY name'
-        ).fetchall()
-
-        if not artists:
-            console.print('  [dim]All artists already have slugs — nothing to do.[/dim]')
-            return
-
-        console.print(f'  Migrating [bold]{len(artists)}[/bold] artist(s) to ULID ids...')
-        conn.execute('PRAGMA foreign_keys = OFF')
-
-        for artist in artists:
-            old_id = artist['id']
-            new_id = new_ulid()
-            slug   = old_id  # current id IS the slug for legacy rows
-
-            conn.execute('UPDATE releases        SET primary_artist_id = ? WHERE primary_artist_id = ?', [new_id, old_id])
-            conn.execute('UPDATE release_artists SET artist_id          = ? WHERE artist_id          = ?', [new_id, old_id])
-            conn.execute('UPDATE track_artists   SET artist_id          = ? WHERE artist_id          = ?', [new_id, old_id])
-            conn.execute('UPDATE artist_aliases  SET artist_id          = ? WHERE artist_id          = ?', [new_id, old_id])
-            conn.execute('UPDATE artist_relations SET from_artist_id    = ? WHERE from_artist_id     = ?', [new_id, old_id])
-            conn.execute('UPDATE artist_relations SET to_artist_id      = ? WHERE to_artist_id       = ?', [new_id, old_id])
-            conn.execute('UPDATE artists SET id = ?, slug = ? WHERE id = ?', [new_id, slug, old_id])
-
-            console.print(f'    [dim]{slug:<30}[/dim] {new_id}')
-
-        conn.commit()
-        conn.execute('PRAGMA foreign_keys = ON')
-    console.print(f'  [green]✓ Done.[/green]')
-
-
-# ── cmd: migrate genres ────────────────────────────────────────────────────────
-
-def cmd_migrate_genres(args):
-    """Copy genres from the legacy overrides DB into master.sqlite, matching by release MBID."""
-    legacy_path = args.legacy_db
-    if not os.path.exists(legacy_path):
-        console.print(f'[red]Legacy DB not found:[/red] {legacy_path}')
-        sys.exit(1)
-
-    legacy = sqlite3.connect(legacy_path)
-    with managed_db(args.db or DB_PATH) as master:
-        # Pull all genres from legacy
-        legacy_genres = {
-            row[0]: (row[1], row[2])
-            for row in legacy.execute('SELECT aoty_id, name, slug FROM genres')
-        }
-
-        # Find releases in master that have an MBID and could have legacy genres
-        candidates = master.execute(
-            'SELECT id, title, mbid FROM releases WHERE mbid IS NOT NULL'
-        ).fetchall()
-
-        console.print(f'[dim]{len(candidates)} releases with MBIDs to check[/dim]\n')
-
-        total_genres  = 0
-        total_releases = 0
-        now = int(time.time())
-
-        for release_id, title, mbid in candidates:
-            rows = legacy.execute(
-                'SELECT aoty_genre_id, is_primary FROM release_genres WHERE release_mbid = ?',
-                (mbid,)
-            ).fetchall()
-            if not rows:
-                continue
-
-            added = 0
-            for aoty_id, is_primary in rows:
-                if aoty_id not in legacy_genres:
-                    continue
-                name, slug = legacy_genres[aoty_id]
-
-                # Upsert genre into master
-                master.execute(
-                    'INSERT INTO genres (aoty_id, name, slug) VALUES (?, ?, ?)'
-                    ' ON CONFLICT(aoty_id) DO UPDATE SET name = excluded.name, slug = excluded.slug',
-                    (aoty_id, name, slug)
-                )
-
-                master.execute('''
-                    INSERT INTO release_genres (release_id, aoty_genre_id, is_primary) VALUES (?, ?, ?)
-                    ON CONFLICT(release_id, aoty_genre_id) DO UPDATE SET is_primary = excluded.is_primary
-                ''', (release_id, aoty_id, int(is_primary)))
-                added += 1
-
-            if added:
-                console.print(f'  [green]{added:2d} genre(s)[/green]  {title}  [dim]{mbid}[/dim]')
-                total_genres  += added
-                total_releases += 1
-
-        master.commit()
-    legacy.close()
-
-    console.rule(style='dim')
-    console.print(f'  [dim]Migrated {total_genres} genre tags across {total_releases} releases[/dim]')
-
 # ── cmd: release variants ─────────────────────────────────────────────────────
 
 def _find_variant_groups(conn, include_linked=False):
@@ -3729,72 +3402,6 @@ def _blend_genres(
     return color, top
 
 
-def cmd_commits_refresh(args):
-    """Compute monthly genre profiles and cache to monthly_genre_profile table."""
-    import json
-    import os
-
-    tree_path = args.tree or os.path.join(os.path.expanduser('~'), 'genre_tree.txt')
-    if not os.path.exists(tree_path):
-        console.print(f'[red]Tree file not found: {tree_path}[/red]')
-        return
-
-    with managed_db(args.db or DB_PATH) as conn:
-        console.print('[dim]Building genre root map…[/dim]')
-        genre_root_map = _build_genre_root_map(tree_path)
-
-        months = conn.execute(
-            'SELECT DISTINCT year, month FROM listens ORDER BY year, month'
-        ).fetchall()
-        console.print(f'[dim]Processing {len(months)} months…[/dim]')
-
-        rows = []
-        for year, month in months:
-            listen_count = conn.execute(
-                'SELECT COUNT(*) FROM listens WHERE year=? AND month=?', (year, month)
-            ).fetchone()[0]
-
-            genre_rows = conn.execute('''
-                SELECT l.id, g.name
-                FROM listens l
-                JOIN tracks t          ON t.id = l.track_id AND t.hidden = 0
-                JOIN release_genres rg ON rg.release_id = t.release_id
-                JOIN genres g          ON g.aoty_id = rg.aoty_genre_id
-                WHERE l.year = ? AND l.month = ?
-            ''', (year, month)).fetchall()
-
-            if not genre_rows:
-                rows.append((year, month, listen_count, '#64748B', '#64748B', None, None))
-                continue
-
-            listen_genres: dict[int, list[str]] = {}
-            for lid, gname in genre_rows:
-                listen_genres.setdefault(lid, []).append(gname)
-
-            root_weights: dict[str, float] = {}
-            for genres in listen_genres.values():
-                genre_wt = 1.0 / len(genres)
-                for gname in genres:
-                    for root, rw in genre_root_map.get(gname, {gname: 1.0}).items():
-                        root_weights[root] = root_weights.get(root, 0.0) + genre_wt * rw
-
-            color, top = _blend_genres(root_weights)
-            dominant    = top[0]['genre'] if top else None
-            top_genre_color = _hsl_to_hex(*_TOP_GENRE_HSL.get(dominant, _DEFAULT_HSL)) if dominant else '#64748B'
-            genres_json = json.dumps(top) if top else None
-            rows.append((year, month, listen_count, color, top_genre_color, dominant, genres_json))
-
-        conn.execute('DELETE FROM monthly_genre_profile')
-        conn.executemany(
-            'INSERT INTO monthly_genre_profile '
-            '(year, month, listen_count, color_hex, top_genre_color_hex, dominant_genre, genres_json) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?)',
-            rows,
-        )
-        conn.commit()
-    console.print(f'  [green]✓ {len(rows)} months cached[/green]')
-
-
 def cmd_certs_refresh(args):
     """Recompute cert tiers for all artists based on all-time listen counts."""
     with managed_db(args.db or DB_PATH) as conn:
@@ -3860,13 +3467,6 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest='cmd', required=True)
-
-    # diff
-    p_diff = sub.add_parser('diff', help='Compare two or more Spotify, MusicBrainz, or DB releases')
-    p_diff.add_argument('albums', nargs='+', metavar='ALBUM',
-                        help='Spotify URLs/IDs, MusicBrainz URLs/UUIDs, or db:ULID / bare ULID (2 or more)')
-    p_diff.add_argument('--db', metavar='PATH', help='Path to master.sqlite (for DB releases)')
-    p_diff.set_defaults(func=cmd_diff)
 
     # import
     p = sub.add_parser('import', help='Import a release from any source URL')
@@ -4046,20 +3646,6 @@ def main():
     p_src.add_argument('--db', metavar='PATH')
     p_src.set_defaults(func=cmd_link_sources)
 
-    # migrate
-    p_migrate = sub.add_parser('migrate', help='One-time data migrations')
-    ms_       = p_migrate.add_subparsers(dest='migrate_cmd', required=True)
-    p_mg      = ms_.add_parser('genres', help='Copy genres from legacy overrides DB by MBID')
-    p_mg.add_argument('legacy_db', metavar='LEGACY_DB',
-                      help='Path to listening_history_overrides.sqlite')
-    p_mg.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
-    p_mg.set_defaults(func=cmd_migrate_genres)
-
-    p_mas = ms_.add_parser('artist-slugs',
-                           help='Backfill ULID ids + slug column for legacy artists')
-    p_mas.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
-    p_mas.set_defaults(func=cmd_migrate_artist_slugs)
-
     # alias
     p_alias = sub.add_parser('alias', help='Manage artist name aliases')
     als_    = p_alias.add_subparsers(dest='alias_cmd', required=True)
@@ -4121,30 +3707,11 @@ def main():
     p_c_ref.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
     p_c_ref.set_defaults(func=cmd_certs_refresh)
 
-    # audit
-    p_audit   = sub.add_parser('audit', help='Identify mismatched or suspicious metadata')
-    aud_      = p_audit.add_subparsers(dest='audit_cmd', required=True)
-    p_aud_aoty = aud_.add_parser('aoty', help='Find releases with likely bad AOTY matches')
-    p_aud_aoty.add_argument('--artist',      metavar='NAME_OR_ID', help='Limit to one artist')
-    p_aud_aoty.add_argument('--min-listens', dest='min_listens', type=int, default=0,
-                            help='Only include releases with at least N listens (default: 0)')
-    p_aud_aoty.add_argument('--fix',         action='store_true', help='Interactive correction mode')
-    p_aud_aoty.add_argument('--db',          metavar='PATH',      help='Path to master.sqlite')
-    p_aud_aoty.set_defaults(func=cmd_audit_aoty)
-
     # genre-relations
     p_gr = sub.add_parser('genre-relations', help='Populate genre parent/child relations from tree file')
     p_gr.add_argument('--tree', metavar='PATH', help='Path to tab-indented genre tree file')
     p_gr.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
     p_gr.set_defaults(func=cmd_genre_relations)
-
-    # commits
-    p_commits  = sub.add_parser('commits', help='Genre commit graph')
-    cs2_       = p_commits.add_subparsers(dest='commits_cmd', required=True)
-    p_c2_ref   = cs2_.add_parser('refresh', help='Compute monthly genre profiles and cache to DB')
-    p_c2_ref.add_argument('--tree', metavar='PATH', help='Path to tab-indented genre tree file')
-    p_c2_ref.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
-    p_c2_ref.set_defaults(func=cmd_commits_refresh)
 
     args = parser.parse_args()
     try:
