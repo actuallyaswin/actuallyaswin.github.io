@@ -942,6 +942,83 @@ def populate_genre_relations(conn: sqlite3.Connection, tree_path: str) -> tuple[
     return inserted, skipped
 
 
+# ── AOTY / Wikipedia DB persistence ───────────────────────────────────────────
+
+def save_aoty_data(conn: sqlite3.Connection, release_id: str, aoty_url: str, data: dict,
+                   force: bool = False,
+                   overwrite_date: bool = False, overwrite_type: bool = False) -> None:
+    """Persist AOTY scrape data for a release.
+
+    Pass force=True to overwrite all existing values, or use the granular
+    overwrite_date / overwrite_type booleans for partial control.
+    """
+    now      = int(time.time())
+    existing = conn.execute(
+        'SELECT release_date, type, date_source FROM releases WHERE id = ?', (release_id,)
+    ).fetchone()
+    ex_date   = existing['release_date'] if existing else None
+    ex_type   = existing['type']         if existing else None
+    ex_source = existing['date_source']  if existing else None
+
+    updates = {'aoty_url': aoty_url, 'updated_at': now}
+    if data['release_date'] and (force or overwrite_date
+            or _should_update_date(ex_date, ex_source, data['release_date'], 'aoty')):
+        updates['release_date'] = data['release_date']
+        updates['release_year'] = data['release_year']
+        updates['date_source']  = 'aoty'
+    if data['type'] and (force or overwrite_type or not ex_type):
+        updates['type'] = data['type']
+        if data['type_secondary'] is not None:
+            updates['type_secondary'] = data['type_secondary']
+    if data['score_critic']   is not None: updates['aoty_score_critic']   = data['score_critic']
+    if data['score_user']     is not None: updates['aoty_score_user']     = data['score_user']
+    if data['ratings_critic'] is not None: updates['aoty_ratings_critic'] = data['ratings_critic']
+    if data['ratings_user']   is not None: updates['aoty_ratings_user']   = data['ratings_user']
+
+    if updates:
+        set_clause = ', '.join(f'{k} = ?' for k in updates)
+        conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?',
+                     (*updates.values(), release_id))
+
+    for aoty_id, name, slug, is_primary in data['genres']:
+        conn.execute(
+            'INSERT INTO genres (aoty_id, name, slug) VALUES (?, ?, ?)'
+            ' ON CONFLICT(aoty_id) DO UPDATE SET name = excluded.name, slug = excluded.slug',
+            (aoty_id, name, slug)
+        )
+        conn.execute(
+            'INSERT INTO release_genres (release_id, aoty_genre_id, is_primary) VALUES (?, ?, ?)'
+            ' ON CONFLICT(release_id, aoty_genre_id) DO UPDATE SET is_primary = excluded.is_primary',
+            (release_id, aoty_id, int(is_primary))
+        )
+
+    conn.commit()
+
+
+def save_release_date(conn: sqlite3.Connection, release_id: str, date_str: str,
+                      wiki_page_id: 'int | None' = None, source: str = 'wikipedia') -> bool:
+    """Write a date to releases, respecting precision and source priority.
+
+    Returns True if the date was actually written, False if it was skipped
+    because an existing date took priority.  source='manual' always wins.
+    """
+    if source != 'manual':
+        row = conn.execute(
+            'SELECT release_date, date_source FROM releases WHERE id = ?', (release_id,)
+        ).fetchone()
+        if row and not _should_update_date(row['release_date'], row['date_source'], date_str, source):
+            return False
+    year    = int(date_str[:4]) if date_str else None
+    updates = {'release_date': date_str, 'release_year': year,
+               'date_source': source, 'updated_at': int(time.time())}
+    set_clause = ', '.join(f'{k} = ?' for k in updates)
+    conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?', (*updates.values(), release_id))
+    if wiki_page_id:
+        upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))
+    conn.commit()
+    return True
+
+
 # ── Listen matching ────────────────────────────────────────────────────────────
 
 def bulk_rematch(conn: sqlite3.Connection) -> int:

@@ -62,6 +62,7 @@ from mdb_ops import (
     upsert_external_link, EL_ARTIST, EL_RELEASE, EL_SVC_WIKIPEDIA,
     EL_SVC_BEATPORT, EL_SVC_BANDCAMP,
     resolve_artist,
+    save_aoty_data, save_release_date,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
@@ -84,8 +85,8 @@ from mdb_merge import (
 from mdb_websources import (
     AOTY_TYPE_MAP,
     find_aoty_url, scrape_aoty_page, fetch_aoty_data,
-    _has_aoty, _fmt_aoty, save_aoty_data,
-    fetch_wikipedia_date, search_wikipedia, fetch_date_candidates, _save_date,
+    _has_aoty, _fmt_aoty,
+    fetch_wikipedia_date, search_wikipedia, fetch_date_candidates,
     _wiki_url_to_id,
 )
 from mdb_cli import (
@@ -450,7 +451,7 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
         if candidates:
             best     = candidates[0]
             src      = 'wikipedia' if 'Wikipedia' in best['source'] else 'musicbrainz'
-            saved    = _save_date(conn, release_id, best['date'], wiki_page_id, source=src)
+            saved    = save_release_date(conn, release_id, best['date'], wiki_page_id, source=src)
             wiki_disp = (f'  [dim]https://en.wikipedia.org/wiki/?curid={wiki_page_id}[/dim]'
                          if wiki_page_id else '')
             if saved:
@@ -1946,7 +1947,7 @@ def cmd_enrich_dates(args):
                         console.print('  [dim]Skipped.[/dim]')
                         skipped += 1
                     else:
-                        _save_date(conn, release_id, choice, wiki_page_id, source='manual')
+                        save_release_date(conn, release_id, choice, wiki_page_id, source='manual')
                         console.print(f'  [green]Saved:[/green] {choice}')
                         updated += 1
     except KeyboardInterrupt:
