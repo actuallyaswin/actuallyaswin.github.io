@@ -341,6 +341,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN musical_key TEXT",
         "ALTER TABLE tracks ADD COLUMN beatport_genre TEXT",
         "ALTER TABLE tracks ADD COLUMN beatport_sub_genre TEXT",
+        # Listens columns added by sync.py in earlier versions — centralised here
+        "ALTER TABLE listens ADD COLUMN ms_played INTEGER",
+        "ALTER TABLE listens ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             conn.execute(ddl)
@@ -354,6 +357,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             child_aoty_id  INTEGER NOT NULL REFERENCES genres(aoty_id),
             PRIMARY KEY (parent_aoty_id, child_aoty_id)
         )
+    ''')
+    conn.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS listens_ts_src
+        ON listens(timestamp, raw_source_id)
     ''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS monthly_genre_profile (

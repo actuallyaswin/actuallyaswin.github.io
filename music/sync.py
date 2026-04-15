@@ -44,12 +44,14 @@ from mdb_strings import (
 )
 from mdb_apis import SpotifyRelease
 from mdb_cli  import render_diff
-from mdb_ops  import bulk_rematch, bulk_rematch_by_name, db_search_releases as _db_search_releases
+from mdb_ops  import (
+    bulk_rematch, bulk_rematch_by_name, db_search_releases as _db_search_releases,
+    DB_PATH, init_schema, open_db as _mdb_open_db,
+)
 
 console = Console(width=80, highlight=False)
 
 _DIR       = os.path.dirname(os.path.abspath(__file__))
-DB_PATH    = os.path.join(_DIR, 'master.sqlite')
 OLD_SQLITE = os.path.join(_DIR, 'listening_history.sqlite')
 MDB        = os.path.join(_DIR, 'mdb.py')
 PYTHON     = sys.executable
@@ -176,29 +178,15 @@ def _load_env():
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def open_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA foreign_keys=ON')
-    _migrate(conn)
+    """Open master.sqlite with WAL mode and run all schema migrations.
+
+    Delegates to mdb_ops.open_db (which sets WAL + synchronous=NORMAL)
+    then calls init_schema (which handles all column additions including
+    the listens unique index and ms_played/skipped columns).
+    """
+    conn = _mdb_open_db(DB_PATH)
+    init_schema(conn)
     return conn
-
-
-def _migrate(conn: sqlite3.Connection):
-    """Apply any schema additions needed by sync.py."""
-    # Unique index on (timestamp, raw_source_id) enables INSERT OR IGNORE dedup.
-    # raw_source_id is always non-null (MBID or artist|||track fallback).
-    conn.executescript('''
-        CREATE UNIQUE INDEX IF NOT EXISTS listens_ts_src
-            ON listens(timestamp, raw_source_id);
-    ''')
-    # Spotify-sourced columns (added later; safe to run every open).
-    cols = {row[1] for row in conn.execute('PRAGMA table_info(listens)').fetchall()}
-    if 'ms_played' not in cols:
-        conn.execute('ALTER TABLE listens ADD COLUMN ms_played INTEGER')
-    if 'skipped' not in cols:
-        conn.execute('ALTER TABLE listens ADD COLUMN skipped INTEGER DEFAULT 0')
-    conn.commit()
 
 
 def dedup_spotify_lastfm(conn: sqlite3.Connection) -> int:
