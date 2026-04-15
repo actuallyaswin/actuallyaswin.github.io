@@ -335,7 +335,76 @@ def fetch_wikipedia_date(wiki_url: 'str | None' = None,
     return _date_from_cell(m.group(1)) if m else None
 
 
-def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[int | None, str | None]':
+def _gemini_find_wiki_article(
+    artist: str,
+    title: str,
+    year: 'str | None' = None,
+    release_type: 'str | None' = None,
+) -> 'str | None':
+    """Ask Gemini for the Wikipedia article title for a specific music release.
+
+    Returns:
+      'Article Title'  — Gemini found a specific article (use it)
+      ''               — Gemini ran and confirmed no article exists (don't keyword-search)
+      None             — Gemini unavailable (no API key / error) → fall back to search_wikipedia
+    """
+    import os, json as _json, re as _re, time as _time
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError:
+        return None
+
+    year_str = f' ({year})' if year else ''
+    type_str = f' [{release_type}]' if release_type else ''
+
+    prompt = (
+        'You are a music metadata assistant. '
+        'Return the exact Wikipedia article title for this specific music release, '
+        'or "NONE" if no Wikipedia article exists for it.\n\n'
+        f'Artist: {artist or "Unknown"}\n'
+        f'Release: {title}{year_str}{type_str}\n\n'
+        'Rules:\n'
+        '- Return the article for THIS SPECIFIC RELEASE (album/EP/single), '
+        'not the artist biography page.\n'
+        '- If the artist or title matches a non-music entity (TV show, film, person, '
+        'place, etc.) do NOT return that entity\'s article — return "NONE".\n'
+        '- Return "NONE" if you are not highly confident the article exists.\n'
+        '- Respond with ONLY JSON: {"article": "Title"} or {"article": "NONE"}'
+    )
+
+    _MAX_RETRIES = 3
+    for attempt in range(_MAX_RETRIES):
+        try:
+            client   = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash-lite',
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    response_mime_type='application/json',
+                ),
+            )
+            data    = _json.loads(response.text)
+            article = (data.get('article') or '').strip()
+            if not article or article.upper() == 'NONE':
+                return ''
+            return article
+        except Exception as exc:
+            msg = str(exc)
+            m   = _re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", msg)
+            wait = float(m.group(1)) + 1 if m else 2 ** (attempt + 1)
+            if attempt < _MAX_RETRIES - 1 and ('429' in msg or '503' in msg):
+                _time.sleep(wait)
+            else:
+                log.debug('Gemini wiki lookup failed: %s', exc)
+                return None
+    return None
+
+
+
     """Return (page_id, date). page_id is the permanent Wikipedia integer page ID."""
     query = f'{release_name} {artist_name}'.strip() if artist_name else release_name
     url   = ('https://en.wikipedia.org/w/api.php?'
@@ -359,8 +428,16 @@ def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[int
 
 
 def fetch_date_candidates(mbid: str, release_name: str = None,
-                          artist_name: str = None) -> 'tuple[list, int | None]':
-    """Return (candidates, wiki_page_id). Each candidate is {'date', 'source', 'notes'}."""
+                          artist_name: str = None,
+                          release_year: str = None,
+                          release_type: str = None) -> 'tuple[list, int | None]':
+    """Return (candidates, wiki_page_id). Each candidate is {'date', 'source', 'notes'}.
+
+    Wikipedia article discovery order:
+      1. MB url-rels  — curated, most reliable
+      2. Gemini       — semantic disambiguation (requires GEMINI_API_KEY)
+      3. search_wikipedia — keyword fallback (only when Gemini unavailable)
+    """
     release_date, rg_first, wiki_url = mb_fetch_release_data(mbid)
     mb_dates, seen = [], set()
     for date, label in [(rg_first, 'MusicBrainz (release group)'),
@@ -372,11 +449,25 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
     wiki_page_id = None
     wiki_date    = None
     if wiki_url:
+        # MB provided a curated Wikipedia link — use it directly
         wiki_page_id = _wiki_url_to_id(wiki_url)
         if wiki_page_id:
             wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
     elif release_name:
-        wiki_page_id, wiki_date = search_wikipedia(release_name, artist_name)
+        # Try Gemini first for semantic disambiguation
+        article = _gemini_find_wiki_article(
+            artist_name or '', release_name, release_year, release_type
+        )
+        if article is None:
+            # Gemini unavailable → keyword search fallback
+            wiki_page_id, wiki_date = search_wikipedia(release_name, artist_name)
+        elif article:
+            # Gemini returned an article title — resolve to page_id
+            # _wiki_url_to_id also works with bare titles (no /wiki/ prefix)
+            wiki_page_id = _wiki_url_to_id(article)
+            if wiki_page_id:
+                wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
+        # else article == '' → Gemini confirmed no article; don't keyword-search
 
     candidates = []
     if wiki_date:
