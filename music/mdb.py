@@ -957,10 +957,16 @@ def _discover_sources(
 ) -> 'tuple[dict, dict]':
     """Parse URL, fetch initial source, GTIN-broadcast to discover others.
 
+    The initial source is fetched first to get the UPC.  Secondary sources
+    (Spotify, MusicBrainz, iTunes) are then fetched in parallel — each has an
+    independent rate limiter so they safely overlap.
+
     Returns (source_data, sp_full) where:
       source_data = {'sp': album_dict, 'mb': MusicBrainzRelease, 'bp': BeatportRelease, ...}
       sp_full     = {track_id: full_track_dict}
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     source, source_id = _parse_import_url(url_or_id)
     source_data: dict = {}
     sp_full: dict = {}
@@ -975,7 +981,7 @@ def _discover_sources(
             client = SpotifyClient(cid, csc)
         return client
 
-    # Fetch initial source
+    # Fetch initial source (sequential — needed before GTIN broadcast)
     try:
         if source == 'sp':
             sp = _sp_client()
@@ -1000,7 +1006,7 @@ def _discover_sources(
     except Exception as e:
         console.print(f'  [red]Failed to fetch {source}:{source_id}: {e}[/red]')
 
-    # GTIN broadcast
+    # GTIN broadcast — build parallel fetch tasks for all secondary sources
     if not no_gtin:
         upc = _extract_upc_from_initial(source, source_data.get(source))
         if upc:
@@ -1010,29 +1016,41 @@ def _discover_sources(
             except Exception:
                 discovered = {}
 
-            if 'sp' in discovered and 'sp' not in source_data:
+            def _fetch_sp(sp_id):
                 sp = _sp_client()
-                if sp:
-                    try:
-                        source_data['sp'] = sp.get_album(discovered['sp'])
-                    except Exception as e:
-                        console.print(f'  [dim]Spotify: {e}[/dim]')
+                return 'sp', sp.get_album(sp_id) if sp else None
 
+            def _fetch_mb(mb_id):
+                rel = MusicBrainzRelease(mb_id)
+                rel._ensure_full()
+                return 'mb', rel
+
+            def _fetch_am(am_id):
+                rel = ItunesRelease(am_id)
+                rel._ensure_full()
+                return 'am', rel
+
+            tasks = {}
+            if 'sp' in discovered and 'sp' not in source_data:
+                tasks['sp'] = (_fetch_sp, discovered['sp'])
             if 'mb' in discovered and 'mb' not in source_data:
-                try:
-                    rel = MusicBrainzRelease(discovered['mb'])
-                    rel._ensure_full()
-                    source_data['mb'] = rel
-                except Exception as e:
-                    console.print(f'  [dim]MusicBrainz: {e}[/dim]')
-
+                tasks['mb'] = (_fetch_mb, discovered['mb'])
             if 'am' in discovered and 'am' not in source_data:
-                try:
-                    rel = ItunesRelease(discovered['am'])
-                    rel._ensure_full()
-                    source_data['am'] = rel
-                except Exception as e:
-                    console.print(f'  [dim]iTunes: {e}[/dim]')
+                tasks['am'] = (_fetch_am, discovered['am'])
+
+            if tasks:
+                labels = {'sp': 'Spotify', 'mb': 'MusicBrainz', 'am': 'iTunes'}
+                with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
+                    futs = {ex.submit(fn, arg): key
+                            for key, (fn, arg) in tasks.items()}
+                    for fut in as_completed(futs):
+                        key = futs[fut]
+                        try:
+                            _, result = fut.result()
+                            if result is not None:
+                                source_data[key] = result
+                        except Exception as e:
+                            console.print(f'  [dim]{labels.get(key, key)}: {e}[/dim]')
 
     # Fetch Spotify full-track data (ISRCs, popularity)
     sp_album = source_data.get('sp')
@@ -1500,7 +1518,7 @@ def cmd_enrich_art(args):
                 where = 'WHERE r.id = ? AND r.hidden = 0'
                 params = [args.release_id]
             else:
-                art_clause    = '' if args.overwrite else "AND (r.album_art_url IS NULL OR r.album_art_url = '')"
+                art_clause    = '' if args.force else "AND (r.album_art_url IS NULL OR r.album_art_url = '')"
                 artist_clause = ''
                 if args.artist:
                     row = resolve_artist(conn, args.artist)
@@ -1712,7 +1730,7 @@ def cmd_enrich_aoty(args):
                 console.print(f'[dim]Artist: {row["name"]} ({artist_filter})[/dim]')
 
             not_found_clause = "AND aoty_url != 'not_found'" if args.force else ''
-            done = set() if args.overwrite_genre else set(
+            done = set() if args.force else set(
                 r[0] for r in conn.execute(f'''
                     SELECT DISTINCT release_id FROM release_genres
                     UNION
@@ -1787,8 +1805,7 @@ def cmd_enrich_aoty(args):
                     if args.auto:
                         if _has_aoty(data):
                             save_aoty_data(conn, release_id, aoty_url, data,
-                                           overwrite_date=args.overwrite_date,
-                                           overwrite_type=args.overwrite_type)
+                                           force=args.force)
                             type_str  = f'  [{data["aoty_type"]}]' if data['aoty_type'] else ''
                             date_str  = f'  {data["release_date"]}' if data['release_date'] else ''
                             primary   = [n for _, n, _, p in data['genres'] if p]
@@ -1836,18 +1853,14 @@ def cmd_enrich_aoty(args):
                             continue
                         action2, _, val_data2 = _aoty_prompt(release_name, artist_name, new_url, new_data)
                         if action2 == 'save':
-                            save_aoty_data(conn, release_id, new_url, val_data2,
-                                           overwrite_date=args.overwrite_date,
-                                           overwrite_type=args.overwrite_type)
+                            save_aoty_data(conn, release_id, new_url, val_data2, force=args.force)
                             console.print(f'  [green]Saved.[/green]')
                             updated += 1
                         else:
                             skipped += 1
                         i += 1
                     elif action == 'save':
-                        save_aoty_data(conn, release_id, val_url, val_data,
-                                       overwrite_date=args.overwrite_date,
-                                       overwrite_type=args.overwrite_type)
+                        save_aoty_data(conn, release_id, val_url, val_data, force=args.force)
                         primary = [n for _, n, _, p in val_data['genres'] if p]
                         console.print(f'  [green]Saved:[/green] {", ".join(primary) or "(no genres)"}')
                         updated += 1
@@ -1881,7 +1894,7 @@ def cmd_enrich_dates(args):
                 release_clause = 'AND r.id = ?'
                 params         = [args.release_id]
 
-            overwrite_clause = '' if args.overwrite else 'AND (r.release_date IS NULL OR r.release_date = \'\')'
+            overwrite_clause = '' if args.force else 'AND (r.release_date IS NULL OR r.release_date = \'\')'
 
             rows = conn.execute(f'''
                 SELECT DISTINCT r.id, r.title, r.release_year, a.name
@@ -2077,7 +2090,7 @@ def cmd_enrich_popularity(args):
         console.print('[red]SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET not set[/red]')
         return
     client    = SpotifyClient(cid, csc)
-    overwrite = getattr(args, 'overwrite', False)
+    overwrite = getattr(args, 'force', False)
 
     a_updated = r_updated = t_updated = 0
     with managed_db(args.db or DB_PATH) as conn:
@@ -2410,7 +2423,7 @@ def cmd_enrich_artists(args):
         with managed_db(args.db or DB_PATH) as conn:
             where  = 'WHERE 1=1'
             params = []
-            if not args.overwrite:
+            if not args.force:
                 # Skip artists already attempted (mb_attempted=1 covers both "searched but no match"
                 # and "successfully enriched"). Artists imported via mdb import have mbid set but
                 # mb_attempted=0, so they are correctly included here.
@@ -2526,7 +2539,7 @@ def cmd_enrich_soundtracks_wrapper(args):
             skip=args.skip,
             limit=args.limit,
             release_id=getattr(args, 'release_id', None),
-            overwrite=getattr(args, 'overwrite', False),
+            overwrite=getattr(args, 'force', False),
         )
 
 # ── cmd: hide ─────────────────────────────────────────────────────────────────
@@ -4136,48 +4149,46 @@ def main():
 
     p_aoty = es.add_parser('aoty', help='Scrape Album of the Year for genres/dates/types')
     _add_filter_args(p_aoty)
-    p_aoty.add_argument('--auto',           action='store_true', help='Auto-accept without prompting')
-    p_aoty.add_argument('--overwrite-date', action='store_true', help='Overwrite existing dates')
-    p_aoty.add_argument('--overwrite-type', action='store_true', help='Overwrite existing types')
-    p_aoty.add_argument('--overwrite-genre',action='store_true', help='Re-process already-tagged releases')
-    p_aoty.add_argument('--force',          action='store_true', help='Re-try releases previously marked as not-found')
-    p_aoty.add_argument('--verbose',        action='store_true', help='Debug scraping output')
+    p_aoty.add_argument('--auto',    action='store_true', help='Auto-accept without prompting')
+    p_aoty.add_argument('--force',   action='store_true', help='Re-process and overwrite even if already enriched')
+    p_aoty.add_argument('--verbose', action='store_true', help='Debug scraping output')
     p_aoty.set_defaults(func=cmd_enrich_aoty)
 
     p_dates = es.add_parser('dates', help='Look up release dates via Wikipedia + MusicBrainz')
     _add_filter_args(p_dates)
-    p_dates.add_argument('--overwrite', action='store_true', help='Overwrite existing dates')
-    p_dates.add_argument('--verbose',   action='store_true', help='Debug output')
+    p_dates.add_argument('--force',   action='store_true', help='Overwrite existing dates')
+    p_dates.add_argument('--verbose', action='store_true', help='Debug output')
     p_dates.set_defaults(func=cmd_enrich_dates)
 
     p_tracks = es.add_parser('tracks', help='Fetch track MBIDs from MusicBrainz')
     _add_filter_args(p_tracks)
+    p_tracks.add_argument('--force', action='store_true', help='Re-fetch even if MBID already present')
     p_tracks.set_defaults(func=cmd_enrich_tracks)
 
     p_audio = es.add_parser('audio', help='Fetch Spotify audio features (BPM, energy, etc.)')
     _add_filter_args(p_audio)
+    p_audio.add_argument('--force', action='store_true', help='Re-fetch even if already populated')
     p_audio.set_defaults(func=cmd_enrich_audio)
 
     p_artists_enrich = es.add_parser('artists', help='Fetch artist metadata from MusicBrainz')
-    p_artists_enrich.add_argument('--artist',    metavar='NAME_OR_ID', help='Limit to one artist')
-    p_artists_enrich.add_argument('--overwrite', action='store_true',  help='Re-fetch even if already populated')
-    p_artists_enrich.add_argument('--db',        metavar='PATH',       help='Path to master.sqlite')
+    _add_filter_args(p_artists_enrich)
+    p_artists_enrich.add_argument('--force', action='store_true', help='Re-fetch even if already populated')
     p_artists_enrich.set_defaults(func=cmd_enrich_artists)
 
     p_art = es.add_parser('art', help='Fill in or replace album art (CAA → Spotify → manual URL)')
     _add_filter_args(p_art)
-    p_art.add_argument('--overwrite',    action='store_true', help='Re-process releases that already have art')
-    p_art.add_argument('--interactive',  action='store_true', help='Prompt for each release instead of auto-applying')
+    p_art.add_argument('--force',       action='store_true', help='Re-process releases that already have art')
+    p_art.add_argument('--interactive', action='store_true', help='Prompt for each release instead of auto-applying')
     p_art.set_defaults(func=cmd_enrich_art)
 
     p_soundtracks = es.add_parser('soundtracks', help='Tag soundtrack releases with source type, region, and language')
     _add_filter_args(p_soundtracks)
-    p_soundtracks.add_argument('--overwrite', action='store_true', help='Re-prompt releases already fully tagged')
+    p_soundtracks.add_argument('--force', action='store_true', help='Re-prompt releases already fully tagged')
     p_soundtracks.set_defaults(func=cmd_enrich_soundtracks_wrapper)
 
     p_popularity = es.add_parser('popularity', help='Refresh Spotify popularity snapshots for artists, releases, and tracks')
     _add_filter_args(p_popularity)
-    p_popularity.add_argument('--overwrite', action='store_true', help='Re-fetch even if already populated')
+    p_popularity.add_argument('--force', action='store_true', help='Re-fetch even if already populated')
     p_popularity.set_defaults(func=cmd_enrich_popularity)
 
     # hide
