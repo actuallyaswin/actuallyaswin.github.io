@@ -60,14 +60,14 @@ from mdb_ops import (
     populate_genre_relations,
     bulk_rematch, bulk_rematch_by_name,
     upsert_external_link, EL_ARTIST, EL_RELEASE, EL_SVC_WIKIPEDIA,
-    EL_SVC_BEATPORT, EL_SVC_BANDCAMP,
+    EL_SVC_BEATPORT, EL_SVC_BANDCAMP, EL_SVC_DEEZER,
     resolve_artist,
     save_aoty_data, save_release_date,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
     MusicBrainzRelease,
-    BeatportRelease, ItunesRelease, BandcampRelease,
+    BeatportRelease, ItunesRelease, BandcampRelease, DeezerRelease,
     MB_API, MB_UA, SP_TOKEN,
     AOTY_AHEAD, DATES_AHEAD,
     caa_fetch_front_image_url,
@@ -86,7 +86,7 @@ from mdb_websources import (
     AOTY_TYPE_MAP,
     find_aoty_url, scrape_aoty_page, fetch_aoty_data,
     _has_aoty, _fmt_aoty,
-    fetch_wikipedia_date, search_wikipedia, fetch_date_candidates,
+    fetch_wikipedia_date, fetch_date_candidates,
     _wiki_url_to_id,
 )
 from mdb_cli import (
@@ -287,18 +287,48 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
     console.rule('[dim]Wikipedia[/dim]', style='dim')
     with managed_db(db_path) as conn:
         row  = conn.execute(
-            'SELECT mbid, release_date, date_source FROM releases WHERE id = ?', (release_id,)
+            'SELECT mbid, release_date, date_source, type, type_secondary FROM releases WHERE id = ?',
+            (release_id,)
         ).fetchone()
         if not row or not row['mbid']:
             console.print('  [dim]no MBID — skipped[/dim]')
             return
+        # Skip singles and remixes: they rarely have their own Wikipedia articles,
+        # causing the search to land on a parent album's page and apply that date.
+        # Spotify/MB dates are reliable enough for these release types.
+        rtype = (row['type'] or '').lower()
+        rsec  = (row['type_secondary'] or '').lower()
+        if rtype == 'single' or rsec in ('remix', 'dj-mix'):
+            console.print(f'  [dim]skipped ({rtype or "?"}{f"/{rsec}" if rsec else ""}) — '
+                          f'singles/remixes rarely have own Wikipedia articles[/dim]')
+            return
         mbid        = row['mbid']
         ex_date     = row['release_date']
         ex_source   = row['date_source']
-        candidates, wiki_page_id = fetch_date_candidates(mbid, release_title, artist_name)
+        release_year = (ex_date or '')[:4] or None
+        candidates, wiki_page_id = fetch_date_candidates(
+            mbid, release_title, artist_name,
+            release_year=release_year,
+            release_type=rtype or None,
+        )
         if candidates:
-            best     = candidates[0]
-            src      = 'wikipedia' if 'Wikipedia' in best['source'] else 'musicbrainz'
+            best = candidates[0]
+            src  = 'wikipedia' if 'Wikipedia' in best['source'] else 'musicbrainz'
+
+            # Sanity check: reject Wikipedia dates implausibly far from the existing
+            # stored date (>10 years). Catches wrong-page matches.
+            if src == 'wikipedia' and ex_date:
+                try:
+                    year_diff = abs(int(best['date'][:4]) - int(ex_date[:4]))
+                    if year_diff > 10:
+                        console.print(
+                            f'  [yellow]Wikipedia date {best["date"]} is {year_diff}y from '
+                            f'existing {ex_date} — likely wrong page match, skipped[/yellow]'
+                        )
+                        return
+                except (ValueError, TypeError):
+                    pass
+
             saved    = save_release_date(conn, release_id, best['date'], wiki_page_id, source=src)
             wiki_disp = (f'  [dim]https://en.wikipedia.org/wiki/?curid={wiki_page_id}[/dim]'
                          if wiki_page_id else '')
@@ -559,10 +589,43 @@ def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title
         ''').fetchall()
 
         name_n = 0
+        already_matched_groups = set()
         for raw_artist, raw_album in groups:
             k = _norm(raw_album)
             if k == target_key or target_key in k or k in target_key:
                 name_n += bulk_rematch_by_name(conn, [release_id], raw_artist, raw_album)
+                already_matched_groups.add((raw_artist, raw_album))
+
+        # Supplementary pass: catch listens scrobbled from a single whose
+        # raw_album_name matches a track title on this album rather than the
+        # album title itself.  Handles two patterns:
+        #   1. Exact:  raw_album="Cheval"        → track "Cheval"
+        #   2. Feat:   raw_album="BUZZCUT (feat. Danny Brown)" → track "BUZZCUT"
+        #      The remainder after the track title must look like a feat credit,
+        #      NOT a sequel ("SATURATION II") or subtitle ("DEAR LORD, PT. 2").
+        _FEAT_PREFIX_RE = re.compile(
+            r'^[ (]+(feat(?:uring)?|ft|with|x)\b', re.IGNORECASE
+        )
+        track_keys = {
+            _norm(r[0])
+            for r in conn.execute(
+                'SELECT title FROM tracks WHERE release_id=? AND hidden=0', [release_id]
+            ).fetchall()
+            if r[0]
+        }
+        for raw_artist, raw_album in groups:
+            if (raw_artist, raw_album) in already_matched_groups:
+                continue
+            k = _norm(raw_album)
+            # Exact match
+            if k in track_keys:
+                name_n += bulk_rematch_by_name(conn, [release_id], raw_artist, raw_album)
+                continue
+            # Feat-credit prefix match: "BUZZCUT feat. Danny Brown" → track "BUZZCUT"
+            for tk in track_keys:
+                if len(tk) >= 4 and k.startswith(tk) and _FEAT_PREFIX_RE.match(k[len(tk):]):
+                    name_n += bulk_rematch_by_name(conn, [release_id], raw_artist, raw_album)
+                    break
 
         total = mbid_n + name_n
         if total:
@@ -585,6 +648,7 @@ _BP_RELEASE_URL_RE2 = re.compile(r'beatport\.com/release/', re.I)
 _AM_URL_RE2 = re.compile(r'music\.apple\.com/[a-z]{2}/album/[^/]+/(\d{7,12})', re.I)
 _AM_BARE_RE2 = re.compile(r'^\d{7,12}$')
 _BC_URL_RE2 = re.compile(r'https?://[^./]+\.bandcamp\.com/album/', re.I)
+_DZ_URL_RE2 = re.compile(r'deezer\.com/(?:[a-z]{2}/)?album/(\d+)', re.I)
 
 _ART_SOURCE_RANK = {'apple_music': 0, 'bandcamp': 1, 'beatport': 2,
                     'coverartarchive': 3, 'spotify': 4}
@@ -604,6 +668,9 @@ def _parse_import_url(url_or_id: str) -> 'tuple[str, str]':
         return 'am', m.group(1)
     if _BC_URL_RE2.match(s):
         return 'bc', s
+    m = _DZ_URL_RE2.search(s)
+    if m:
+        return 'dz', m.group(1)
     m = _MB_RELEASE_URL_RE2.search(s)
     if m:
         return 'mb', m.group(1).lower()
@@ -633,6 +700,8 @@ def _extract_upc_from_initial(source: str, obj) -> 'str | None':
         raw = data.get('upc')
         return str(raw) if raw else None
     if source == 'bc':
+        return obj.upc if hasattr(obj, 'upc') else None
+    if source == 'dz':
         return obj.upc if hasattr(obj, 'upc') else None
     return None  # 'am' — iTunes API doesn't return UPC in lookup response
 
@@ -691,6 +760,10 @@ def _discover_sources(
             rel = BandcampRelease(url_or_id)
             rel._ensure_full()
             source_data['bc'] = rel
+        elif source == 'dz':
+            rel = DeezerRelease(source_id)
+            rel._ensure_full()
+            source_data['dz'] = rel
     except Exception as e:
         console.print(f'  [red]Failed to fetch {source}:{source_id}: {e}[/red]')
 
@@ -850,8 +923,9 @@ def _build_enrich_diff(cur, release_id: str, mdb_r: MDBRelease, mdb_tracks: list
     if new_label and not get('label'):
         diffs.append(('label', '—', new_label, mdb_r.source_map.get('label', '')))
 
-    # Track-level enrichments
+    # Track-level enrichments — collect preview data for bpm/key rows
     bp_new = mx_new = gn_new = 0
+    bpm_preview: list = []   # [(track_number, display_title, bpm, key, camelot)]
     for t in mdb_tracks:
         if not t.isrc:
             continue
@@ -862,17 +936,31 @@ def _build_enrich_diff(cur, release_id: str, mdb_r: MDBRelease, mdb_tracks: list
         if ex:
             if t.bpm is not None and not ex['tempo_bpm']:
                 bp_new += 1
+                # Build display title: base + (mix_name) unless it's "Original Mix"
+                display_title = t.title
+                if t.mix_name and t.mix_name != 'Original Mix':
+                    display_title = f'{t.title} ({t.mix_name})'
+                bpm_preview.append((
+                    t.track_number or 0,
+                    display_title,
+                    t.bpm,
+                    t.musical_key or '',
+                    t.key_camelot or '',
+                ))
             if t.mix_name and not ex['mix_name']:
                 mx_new += 1
             if t.beatport_genre and not ex['beatport_genre']:
                 gn_new += 1
 
     if bp_new:
-        diffs.append(('tracks.bpm/key', f'NULL ({bp_new} tracks)', f'filled ({bp_new} tracks)', 'bp'))
+        diffs.append(('tracks.bpm/key', f'NULL ({bp_new} tracks)',
+                      f'filled ({bp_new} tracks)', 'bp', bpm_preview))
     if mx_new:
-        diffs.append(('tracks.mix_name', f'NULL ({mx_new} tracks)', f'filled ({mx_new} tracks)', 'bp'))
+        diffs.append(('tracks.mix_name', f'NULL ({mx_new} tracks)',
+                      f'filled ({mx_new} tracks)', 'bp', None))
     if gn_new:
-        diffs.append(('tracks.genre', f'NULL ({gn_new} tracks)', f'filled ({gn_new} tracks)', 'bp'))
+        diffs.append(('tracks.genre', f'NULL ({gn_new} tracks)',
+                      f'filled ({gn_new} tracks)', 'bp', None))
 
     return diffs
 
@@ -886,21 +974,52 @@ def _show_enrich_diff(mdb_r: MDBRelease, diffs: list, source_data: dict) -> None
     fw, cw, pw = 20, 28, 26
     console.print(f"  [dim]{'Field':<{fw}}  {'Current':<{cw}}  Proposed [source][/dim]")
     console.print(f"  {'─' * (fw + cw + pw + 4)}")
-    for field, current, proposed, src in diffs:
+
+    for d in diffs:
+        field, current, proposed, src = d[0], d[1], d[2], d[3]
+        preview = d[4] if len(d) > 4 else None
         src_tag = f' [{src}]' if src else ''
         console.print(f"  {field:<{fw}}  {str(current or '—')[:cw]:<{cw}}  "
                       f"[green]{str(proposed)[:pw]}{src_tag}[/green]")
+
+        # BPM/key track preview — per-track for ≤8, compact summary for >8
+        if field == 'tracks.bpm/key' and preview:
+            if len(preview) <= 8:
+                for tnum, title, bpm, key, camelot in sorted(preview):
+                    short    = (title[:34] + '…') if len(title) > 35 else title
+                    key_str  = f'{key:<12}' if key else f'{"?":12}'
+                    cam_str  = f' [{camelot}]' if camelot else ''
+                    console.print(
+                        f"    [dim]{tnum:>2}.[/dim]  {short:<35} "
+                        f"[dim]{bpm:>4} bpm  {key_str}{cam_str}[/dim]"
+                    )
+            else:
+                bpms     = sorted({bpm for _, _, bpm, _, _ in preview if bpm})
+                keys     = [k for _, _, _, k, _ in preview if k]
+                unique_k = list(dict.fromkeys(keys))   # preserve order, deduplicate
+                bpm_str  = (f'{bpms[0]} bpm' if len(bpms) == 1
+                            else f'{bpms[0]}–{bpms[-1]} bpm') if bpms else ''
+                key_str  = ', '.join(unique_k[:5])
+                if len(set(keys)) > 5:
+                    key_str += f' +{len(set(keys)) - 5} more'
+                console.print(f"    [dim]{bpm_str}  ·  {key_str}[/dim]")
+
     console.print()
 
 
 def _store_external_links_mdb(conn, release_id: str, source_data: dict) -> None:
-    """Store Bandcamp URL in external_links after import."""
+    """Store Bandcamp URL and Deezer ID in external_links after import."""
     if 'bc' in source_data:
         bc = source_data['bc']
         bc_url = bc.url if hasattr(bc, 'url') else None
         if bc_url:
             upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_BANDCAMP, bc_url)
-            conn.commit()
+    if 'dz' in source_data:
+        dz = source_data['dz']
+        dz_id = dz.deezer_id if hasattr(dz, 'deezer_id') else None
+        if dz_id:
+            upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_DEEZER, dz_id)
+    conn.commit()
 
 
 def _select_variants_unified(
@@ -938,9 +1057,68 @@ def _select_variants_unified(
     if not candidates and not in_db:
         return
 
+    # Filter candidates that are same-content pressings (same date + same track count
+    # as the release we just imported). These are MB data artifacts — separate release
+    # IDs for the same digital/physical pressing across regions. Our DB works at
+    # release-group granularity, so they're not genuine variants worth importing.
+    with managed_db(db_path) as _vconn:
+        cur_row = _vconn.execute(
+            'SELECT release_date, total_tracks FROM releases WHERE id = ?',
+            [current_release_id]
+        ).fetchone()
+    cur_date   = (cur_row['release_date'] or '')   if cur_row else ''
+    cur_tracks = (cur_row['total_tracks']  or 0)   if cur_row else 0
+
+    candidates = [
+        (mbid_r, title, date, status, country, n)
+        for (mbid_r, title, date, status, country, n) in candidates
+        if not (date == cur_date and n == cur_tracks)
+    ]
+
+    if not candidates and not in_db:
+        return
+
     console.rule('[dim]Release Group Variants[/dim]', style='dim')
     for db_id, title, date in in_db:
         console.print(f'  [dim]in DB:[/dim] {title}  [{date}]  [dim]{db_id}[/dim]')
+
+    # Offer to link already-imported same-group releases as variants
+    unlinked_in_db = []
+    if in_db:
+        with managed_db(db_path) as conn:
+            for db_id, title, date in in_db:
+                already = conn.execute(
+                    'SELECT 1 FROM release_variants'
+                    ' WHERE (canonical_id = ? AND variant_id = ?)'
+                    '    OR (canonical_id = ? AND variant_id = ?)',
+                    [current_release_id, db_id, db_id, current_release_id]
+                ).fetchone()
+                if not already:
+                    unlinked_in_db.append((db_id, title, date))
+
+    if unlinked_in_db:
+        console.print()
+        for db_id, title, date in unlinked_in_db:
+            console.print(f'  [dim]unlinked:[/dim] {title}  [{date}]  [dim]{db_id}[/dim]')
+        raw_link = console.input(
+            f'  Link {len(unlinked_in_db)} existing release(s) as variant(s)? [Y/n]: '
+        ).strip().lower()
+        if raw_link in ('', 'y', 'yes'):
+            with managed_db(db_path) as conn:
+                for db_id, title, date in unlinked_in_db:
+                    vtypes = detect_variant_types(title)
+                    vtype_val = ','.join(vtypes) if vtypes else 'reissue'
+                    conn.execute(
+                        'INSERT INTO release_variants'
+                        ' (canonical_id, variant_id, variant_type, sort_order)'
+                        ' VALUES (?, ?, ?, ?)'
+                        ' ON CONFLICT(canonical_id, variant_id) DO UPDATE SET'
+                        '   variant_type = COALESCE(excluded.variant_type, variant_type)',
+                        (current_release_id, db_id, vtype_val, 0),
+                    )
+                    conn.commit()
+                    console.print(f'  [green]Linked:[/green] {title}  [dim]{db_id}[/dim]')
+
     if not candidates:
         return
 
@@ -948,18 +1126,54 @@ def _select_variants_unified(
         console.print(f'  [bold]{i}.[/bold] {title}  '
                       f'[dim]{date} · {country or "?"} · {n} tracks · {status or "?"}[/dim]')
     console.print()
-    raw = console.input('  Import variants? Numbers (e.g. "1 2") or Enter to skip: ').strip()
+    raw = console.input(
+        '  Import variants? Numbers (e.g. "1 2"), db:ULID to link existing, or Enter to skip: '
+    ).strip()
     if not raw:
         return
 
-    selected_mbids: list[str] = []
+    selected_mbids: list[str] = []   # candidates to import from MB
+    direct_links:   list[str] = []   # existing DB IDs to link directly
+
+    _ulid_re = re.compile(r'^[0-9A-Z]{26}$')
     for token in raw.replace(',', ' ').split():
+        token = token.strip()
+        if not token:
+            continue
+        # db:ULID or bare 26-char ULID → link an existing release directly
+        bare = token[3:] if token.lower().startswith('db:') else token
+        if _ulid_re.match(bare):
+            direct_links.append(bare)
+            continue
         try:
             idx = int(token) - 1
             if 0 <= idx < len(candidates):
                 selected_mbids.append(candidates[idx][0])
         except ValueError:
             pass
+
+    # Link existing DB releases directly (no import needed)
+    if direct_links:
+        with managed_db(db_path) as conn:
+            for db_id in direct_links:
+                row = conn.execute(
+                    'SELECT title FROM releases WHERE id = ?', [db_id]
+                ).fetchone()
+                if not row:
+                    console.print(f'  [red]Not found:[/red] {db_id}')
+                    continue
+                vtypes = detect_variant_types(row[0])
+                vtype_val = ','.join(vtypes) if vtypes else None
+                conn.execute(
+                    'INSERT INTO release_variants'
+                    ' (canonical_id, variant_id, variant_type, sort_order)'
+                    ' VALUES (?, ?, ?, ?)'
+                    ' ON CONFLICT(canonical_id, variant_id) DO UPDATE SET'
+                    '   variant_type = COALESCE(excluded.variant_type, variant_type)',
+                    (current_release_id, db_id, vtype_val, 0),
+                )
+                conn.commit()
+                console.print(f'  [green]Linked:[/green] {row[0]}  [dim]{db_id}[/dim]')
 
     for mbid_r in selected_mbids:
         try:
@@ -1016,6 +1230,32 @@ def import_album_unified(
     mdb_r = merge.release()
     mdb_tracks = merge.tracks()
 
+    # ISRC guard: if this is a 1-track single and the ISRC already exists on a
+    # non-variant album in the DB, skip importing and rematch listens there instead.
+    # Prevents importing singles that were later absorbed into full albums
+    # (e.g. BUZZCUT exists as track 1 of ROADRUNNER with the same ISRC).
+    if len(mdb_tracks) == 1 and mdb_tracks[0].isrc:
+        with managed_db(db_path) as _chk:
+            existing_t = _chk.execute('''
+                SELECT t.id, t.release_id, r.title
+                FROM tracks t JOIN releases r ON r.id = t.release_id
+                WHERE t.isrc = ? AND t.hidden = 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id
+                  )
+            ''', (mdb_tracks[0].isrc,)).fetchone()
+        if existing_t:
+            console.print(
+                f'  [dim]ISRC {mdb_tracks[0].isrc} already on '
+                f'"{existing_t["title"]}" — skipping single import[/dim]'
+            )
+            _auto_rematch(db_path, existing_t['release_id'],
+                          mdb_r.primary_artist.name if mdb_r.primary_artist else '',
+                          mdb_r.title)
+            return existing_t['release_id'], existing_t['title'], \
+                   (mdb_r.primary_artist.name if mdb_r.primary_artist else ''), \
+                   mdb_r.release_date or ''
+
     artist_name = mdb_r.primary_artist.name if mdb_r.primary_artist else ''
     console.print(
         f"[bold]{mdb_r.title}[/bold]  "
@@ -1040,8 +1280,8 @@ def import_album_unified(
                 if auto:
                     apply = True
                 else:
-                    raw = console.input('  Apply these changes? [y/N]: ').strip().lower()
-                    apply = raw in ('y', 'yes')
+                    raw = console.input('  Apply these changes? [Y/n]: ').strip().lower()
+                    apply = raw in ('', 'y', 'yes')
                 if apply:
                     upsert_release_mdb(cur, mdb_r, primary_artist_id)
                     upsert_tracks_mdb(cur, existing_id, mdb_tracks)
@@ -2141,16 +2381,33 @@ def _resolve_for_delete(conn, raw: str, entity: str):
 
 
 def _gather_release_impact(conn, release_id: str) -> dict:
-    """Return counts of tracks, listens, and variant link rows for a release."""
-    track_ids = [r[0] for r in conn.execute(
-        'SELECT id FROM tracks WHERE release_id = ?', [release_id]
-    ).fetchall()]
+    """Return counts of tracks, listens, and variant link rows for a release.
+
+    Also returns per-track listen counts for the interactive unlink prompt.
+    """
+    track_rows = conn.execute(
+        'SELECT id, title FROM tracks WHERE release_id = ? ORDER BY disc_number, track_number',
+        [release_id]
+    ).fetchall()
+    track_ids = [r[0] for r in track_rows]
+
     listens = 0
+    per_track = []   # [(title, listen_count)] for tracks that have listens
     if track_ids:
-        ph      = ','.join('?' * len(track_ids))
+        ph = ','.join('?' * len(track_ids))
         listens = conn.execute(
             f'SELECT COUNT(*) FROM listens WHERE track_id IN ({ph})', track_ids
         ).fetchone()[0]
+        # Per-track breakdown for display
+        counts = {
+            r[0]: r[1]
+            for r in conn.execute(
+                f'SELECT track_id, COUNT(*) FROM listens WHERE track_id IN ({ph})'
+                f' GROUP BY track_id', track_ids
+            ).fetchall()
+        }
+        per_track = [(r[1], counts[r[0]]) for r in track_rows if r[0] in counts]
+
     rv_rows = conn.execute(
         'SELECT canonical_id, variant_id FROM release_variants'
         ' WHERE canonical_id = ? OR variant_id = ?', [release_id, release_id]
@@ -2159,22 +2416,34 @@ def _gather_release_impact(conn, release_id: str) -> dict:
         'track_ids':    track_ids,
         'tracks':       len(track_ids),
         'listens':      listens,
+        'per_track':    per_track,        # [(title, count)] for tracks with >0 listens
         'variant_rows': [(r[0], r[1]) for r in rv_rows],
     }
 
 
-def _execute_delete_release(conn, release_id: str) -> dict:
-    """Delete a release and its exclusive tracks. Returns stats dict.
-    Caller is responsible for pre-flight listen checks."""
+def _execute_delete_release(conn, release_id: str, purge: bool = False) -> dict:
+    """Delete a release and its tracks.
+
+    purge=False (default): unlinks listens (track_id → NULL), preserving raw
+      scrobble history in the match queue.
+    purge=True: hard-deletes listen rows.
+
+    Returns {'tracks': n, 'listens': n} counts.
+    """
     impact    = _gather_release_impact(conn, release_id)
     track_ids = impact['track_ids']
 
-    deleted_listens = 0
+    affected_listens = 0
     if track_ids:
         ph = ','.join('?' * len(track_ids))
-        deleted_listens = conn.execute(
-            f'DELETE FROM listens WHERE track_id IN ({ph})', track_ids
-        ).rowcount
+        if purge:
+            affected_listens = conn.execute(
+                f'DELETE FROM listens WHERE track_id IN ({ph})', track_ids
+            ).rowcount
+        else:
+            affected_listens = conn.execute(
+                f'UPDATE listens SET track_id = NULL WHERE track_id IN ({ph})', track_ids
+            ).rowcount
         conn.execute(f'DELETE FROM legacy_track_map WHERE track_id IN ({ph})', track_ids)
         conn.execute(f'DELETE FROM track_artists WHERE track_id IN ({ph})', track_ids)
         # Unlink other tracks that pointed to our tracks as canonical
@@ -2200,14 +2469,15 @@ def _execute_delete_release(conn, release_id: str) -> dict:
         [release_id],
     )
     conn.execute('DELETE FROM releases WHERE id = ?', [release_id])
-    return {'tracks': impact['tracks'], 'listens': deleted_listens}
+    return {'tracks': impact['tracks'], 'listens': affected_listens}
 
 
 def cmd_delete(args):
     db_path = getattr(args, 'db', None) or DB_PATH
     with managed_db(db_path) as conn:
-        force   = args.force
-        entity  = args.entity  # 'releases' or 'artists'
+        purge  = getattr(args, 'purge', False)
+        yes    = getattr(args, 'yes',   False)
+        entity = args.entity  # 'releases' or 'artists'
 
         # ── Resolve all IDs ────────────────────────────────────────────────────────
         resolved = []
@@ -2227,32 +2497,32 @@ def cmd_delete(args):
                 impacts[rid] = imp
                 total_tracks  += imp['tracks']
                 total_listens += imp['listens']
-                listen_tag = ''
-                if imp['listens'] > 0:
-                    listen_tag = (
-                        f'  [red]{imp["listens"]} listen(s)[/red]' if not force
-                        else f'  [yellow]{imp["listens"]} listen(s) will be deleted[/yellow]'
-                    )
                 console.print(
-                    f'  [bold]{rname}[/bold]  [dim]{imp["tracks"]} track(s)[/dim]{listen_tag}'
+                    f'  [bold]{rname}[/bold]  '
+                    f'[dim]{imp["tracks"]} track(s)[/dim]'
+                    + (f'  [dim]{imp["listens"]} listen(s)[/dim]' if imp['listens'] else '')
                 )
                 if imp['variant_rows']:
                     console.print(
                         f'    [dim]→ {len(imp["variant_rows"])} variant link(s) will be removed[/dim]'
                     )
+                # Per-track breakdown when listens exist and we're not purging
+                if imp['listens'] and not purge:
+                    for title, count in imp['per_track']:
+                        short = (title[:42] + '…') if len(title) > 43 else title
+                        console.print(f'    [dim]{short:<43} {count:>4} listen(s)[/dim]')
 
-            if total_listens > 0 and not force:
-                console.print(
-                    f'\n[red]Aborted:[/red] {total_listens} listen(s) would be lost. '
-                    f'Pass [bold]--force[/bold] to delete them too.'
-                )
-                sys.exit(1)
-
-            console.print(
-                f'\n[dim]Will delete: {len(resolved)} release(s) · '
-                f'{total_tracks} track(s)'
-                + (f' · {total_listens} listen(s)' if total_listens else '') + '[/dim]'
-            )
+            if total_listens:
+                if purge:
+                    console.print(
+                        f'\n  [red]⚠  {total_listens} listen(s) will be permanently deleted.[/red]'
+                    )
+                else:
+                    console.print(
+                        f'\n  {total_listens} listen(s) will be [bold]unlinked[/bold] '
+                        f'→ returned to the match queue'
+                        f'\n  [dim]Run \'sync match\' afterwards to re-assign them.[/dim]'
+                    )
 
         else:  # artists
             artist_releases = {}
@@ -2278,56 +2548,63 @@ def cmd_delete(args):
                         f'SELECT COUNT(*) FROM listens WHERE track_id IN ({ph})', all_track_ids
                     ).fetchone()[0]
 
-                listen_tag = ''
-                if lcount > 0:
-                    listen_tag = (
-                        f'  [red]{lcount} listen(s)[/red]' if not force
-                        else f'  [yellow]{lcount} listen(s) will be deleted[/yellow]'
-                    )
                 console.print(
                     f'  [bold]{aname}[/bold]  '
-                    f'[dim]{len(rel_rows)} release(s) · {rel_track_count} track(s)[/dim]{listen_tag}'
+                    f'[dim]{len(rel_rows)} release(s) · {rel_track_count} track(s)[/dim]'
+                    + (f'  [dim]{lcount} listen(s)[/dim]' if lcount else '')
                 )
                 total_releases += len(rel_rows)
                 total_tracks   += rel_track_count
                 total_listens  += lcount
 
-            if total_listens > 0 and not force:
-                console.print(
-                    f'\n[red]Aborted:[/red] {total_listens} listen(s) would be lost. '
-                    f'Pass [bold]--force[/bold] to delete them too.'
-                )
-                sys.exit(1)
+            if total_listens:
+                if purge:
+                    console.print(
+                        f'\n  [red]⚠  {total_listens} listen(s) will be permanently deleted.[/red]'
+                    )
+                else:
+                    console.print(
+                        f'\n  {total_listens} listen(s) will be [bold]unlinked[/bold] '
+                        f'→ returned to the match queue'
+                    )
 
-            console.print(
-                f'\n[dim]Will delete: {len(resolved)} artist(s) · '
-                f'{total_releases} release(s) · {total_tracks} track(s)'
-                + (f' · {total_listens} listen(s)' if total_listens else '') + '[/dim]'
-            )
+        console.print(
+            f'\n[dim]Will delete: {len(resolved)} {entity} · {total_tracks} track(s)'
+            + (f' · {total_listens} listen(s) '
+               + ('purged' if purge else 'unlinked') if total_listens else '')
+            + '[/dim]'
+        )
 
         # ── Confirm ────────────────────────────────────────────────────────────────
-        try:
-            answer = input('\n  Proceed? [y/N] ').strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            console.print('\n[dim]Cancelled.[/dim]')
-            sys.exit(0)
-        if answer != 'y':
-            console.print('[dim]Cancelled.[/dim]')
-            return
+        if not yes:
+            try:
+                answer = input('\n  Proceed? [Y/n] ').strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                console.print('\n[dim]Cancelled.[/dim]')
+                sys.exit(0)
+            if answer not in ('', 'y', 'yes'):
+                console.print('[dim]Cancelled.[/dim]')
+                return
 
         # ── Execute ────────────────────────────────────────────────────────────────
         if entity == 'releases':
             for rid, rname in resolved:
-                s = _execute_delete_release(conn, rid)
-                console.print(f'  [green]deleted[/green]  {rname}')
+                s = _execute_delete_release(conn, rid, purge=purge)
+                listen_note = ''
+                if s['listens']:
+                    listen_note = (
+                        f'  [dim]{s["listens"]} listen(s) purged[/dim]' if purge
+                        else f'  [dim]{s["listens"]} listen(s) unlinked[/dim]'
+                    )
+                console.print(f'  [green]deleted[/green]  {rname}{listen_note}')
 
         else:
             for aid, aname in resolved:
-                deleted_tracks = deleted_listens = 0
+                deleted_tracks = affected_listens = 0
                 for rel in artist_releases[aid]:
-                    s = _execute_delete_release(conn, rel[0])
-                    deleted_tracks  += s['tracks']
-                    deleted_listens += s['listens']
+                    s = _execute_delete_release(conn, rel[0], purge=purge)
+                    deleted_tracks   += s['tracks']
+                    affected_listens += s['listens']
                 # Remove feature/co-artist credits on any remaining releases
                 conn.execute('DELETE FROM track_artists   WHERE artist_id = ?', [aid])
                 conn.execute('DELETE FROM release_artists WHERE artist_id = ?', [aid])
@@ -2346,8 +2623,9 @@ def cmd_delete(args):
                 )
                 conn.execute('DELETE FROM artists WHERE id = ?', [aid])
                 detail = f'{len(artist_releases[aid])} release(s) · {deleted_tracks} track(s)'
-                if deleted_listens:
-                    detail += f' · {deleted_listens} listen(s)'
+                if affected_listens:
+                    verb = 'purged' if purge else 'unlinked'
+                    detail += f' · {affected_listens} listen(s) {verb}'
                 console.print(f'  [green]deleted[/green]  {aname}  [dim]({detail})[/dim]')
 
         conn.commit()
@@ -3549,8 +3827,10 @@ def main():
     p_del.add_argument('entity', choices=['releases', 'artists'])
     p_del.add_argument('ids', nargs='+', metavar='ID',
                        help='One or more: sp:SPOTIFY_ID, SPOTIFY_ID, db:ULID, or bare ULID')
-    p_del.add_argument('--force', action='store_true',
-                       help='Also delete listens that reference the affected tracks')
+    p_del.add_argument('--purge',  action='store_true',
+                       help='Hard-delete listen rows instead of unlinking them')
+    p_del.add_argument('-y', '--yes', action='store_true',
+                       help='Skip confirmation prompt')
     p_del.add_argument('--db', metavar='PATH')
     p_del.set_defaults(func=cmd_delete)
 
