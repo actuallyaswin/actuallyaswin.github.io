@@ -9,6 +9,7 @@ __all__ = [
     'BeatportRelease',
     'ItunesRelease',
     'BandcampRelease',
+    'DeezerRelease',
     'compare_releases',
     'MB_API', 'MB_UA', 'SP_TOKEN', 'SP_BASE',
     'CAA_API',
@@ -150,7 +151,7 @@ class SpotifyClient:
             if d.get('client_id') == self.client_id and time.time() < d.get('expiry', 0) - 60:
                 self._token  = d['access_token']
                 self._expiry = d['expiry']
-        except (FileNotFoundError, (json.JSONDecodeError, KeyError)):
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
             pass
 
     def _ensure_token(self) -> None:
@@ -944,12 +945,17 @@ def mb_fetch_artist_data(mbid: str) -> dict:
 
 
 def mb_fetch_release_group_releases(rg_mbid: str) -> list:
-    """Fetch all releases in a MusicBrainz release group.
+    """Fetch all releases in a MusicBrainz release group, including track counts.
 
-    Returns a list of dicts: {id, title, date, status, country, track-count, packaging}.
-    Sorted by date ascending (oldest first).  Empty list on any error.
+    Uses the release browse endpoint (/release?release-group=…&inc=media) so
+    each release stub includes its media/track-count data.
+    Returns a list sorted by date ascending (oldest first).  Empty list on error.
     """
-    data = _mb_get_safe(f'/release-group/{rg_mbid}', {'inc': 'releases'})
+    data = _mb_get_safe('/release', {
+        'release-group': rg_mbid,
+        'inc': 'media',
+        'limit': 100,
+    })
     if not data:
         return []
     releases = data.get('releases') or []
@@ -1275,3 +1281,127 @@ def _parse_bc_date(raw: str) -> str:
     # Just return whatever year we can find
     m = re.search(r'\b(\d{4})\b', raw)
     return m.group(1) if m else ''
+
+
+# ── Deezer ─────────────────────────────────────────────────────────────────────
+
+DZ_API      = 'https://api.deezer.com'
+DZ_INTERVAL = 1.0
+_dz_lim     = RateLimiter(DZ_INTERVAL)
+_DZ_URL_RE  = re.compile(r'deezer\.com/(?:[a-z]{2}/)?album/(\d+)', re.IGNORECASE)
+
+
+class DeezerRelease:
+    """
+    Lazy-loading wrapper around a Deezer album.
+
+    Uses the public Deezer API — no authentication required.
+    Main contributions: UPC (for GTIN broadcast), ISRCs, release date, label,
+    and 1000×1000 cover art.  Track durations are in whole seconds (lower
+    precision than Spotify); they serve only as a last-resort fallback.
+    """
+
+    def __init__(self, url_or_id: str):
+        m = _DZ_URL_RE.search(str(url_or_id))
+        if m:
+            self.deezer_id = m.group(1)
+        elif re.match(r'^\d+$', str(url_or_id).strip()):
+            self.deezer_id = str(url_or_id).strip()
+        else:
+            raise ValueError(f'Cannot parse Deezer album ID from: {url_or_id!r}')
+        self.url   = f'https://www.deezer.com/album/{self.deezer_id}'
+        self._data: 'dict | None' = None
+
+    def _ensure_full(self) -> None:
+        if self._data is not None:
+            return
+        album = _http_get_json(f'{DZ_API}/album/{self.deezer_id}', lim=_dz_lim)
+        if album.get('error'):
+            raise RuntimeError(f'Deezer API error for album {self.deezer_id}: {album["error"]}')
+
+        tracks_resp = _http_get_json(
+            f'{DZ_API}/album/{self.deezer_id}/tracks?limit=200', lim=_dz_lim
+        )
+        track_list = []
+        for i, t in enumerate(tracks_resp.get('data') or []):
+            dur_s = t.get('duration') or 0
+            track_list.append({
+                'name':             t.get('title', ''),
+                'duration_ms':      dur_s * 1000 if dur_s else None,  # seconds → ms
+                '_isrcs':           [t['isrc']] if t.get('isrc') else [],
+                '_disc_number':     t.get('disk_number', 1),
+                '_track_number':    t.get('track_position', i + 1),
+                '_artist_credit':   [
+                    {'artist': {'id': str(c.get('id', '')), 'name': c.get('name', '')}}
+                    for c in (t.get('contributors') or [])
+                ],
+            })
+
+        album['_track_list'] = track_list
+        self._data = album
+
+    # -- properties --
+
+    @property
+    def name(self) -> str:
+        self._ensure_full()
+        return (self._data.get('title') or '').strip()
+
+    @property
+    def artist(self) -> str:
+        self._ensure_full()
+        return (self._data.get('artist') or {}).get('name', '')
+
+    @property
+    def year(self) -> str:
+        return (self.date or '')[:4]
+
+    @property
+    def date(self) -> str:
+        self._ensure_full()
+        return (self._data.get('release_date') or '').strip()
+
+    @property
+    def tracks(self) -> list:
+        self._ensure_full()
+        return self._data['_track_list']
+
+    @property
+    def track_count(self) -> int:
+        self._ensure_full()
+        return self._data.get('nb_tracks') or len(self.tracks)
+
+    @property
+    def explicit_count(self) -> int:
+        return 0
+
+    @property
+    def total_ms(self) -> int:
+        return sum(t.get('duration_ms') or 0 for t in self.tracks)
+
+    @property
+    def label(self) -> str:
+        self._ensure_full()
+        return (self._data.get('label') or '').strip()
+
+    @property
+    def upc(self) -> 'str | None':
+        self._ensure_full()
+        return self._data.get('upc') or None
+
+    @property
+    def album_type(self) -> str:
+        self._ensure_full()
+        rt = (self._data.get('record_type') or '').lower()
+        return rt if rt in ('album', 'ep', 'single') else 'album'
+
+    @property
+    def image_url(self) -> 'str | None':
+        """1000×1000 cover art (cover_xl)."""
+        self._ensure_full()
+        return self._data.get('cover_xl') or self._data.get('cover_big') or None
+
+    def canonical_score(self) -> tuple:
+        d    = self.date
+        prec = (3 if len(d) == 10 else (2 if len(d) == 7 else 1))
+        return (-prec, d, self.track_count, 0, 0)
