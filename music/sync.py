@@ -1089,12 +1089,19 @@ def cmd_match(args):
                 for p in preview[:5]
             )
             more = f'  +{len(preview)-5} more' if len(preview) > 5 else ''
+            # Truncate the joined line before Rich wraps mid-token
+            snippet_line = track_snippets + more
+            max_w = (console.width or 80) - 6
+            if len(snippet_line) > max_w:
+                snippet_line = snippet_line[:max_w - 1] + '…'
+
+            console.rule(style='dim')
             console.print(
                 f'[dim]  ←[/dim]  [bold white]{count:,} listens[/bold white]'
                 f'  [dim]({tracks} unique tracks)  ·  "{album}" by {artist}[/dim]'
             )
-            if track_snippets:
-                console.print(f'     [dim]{track_snippets}{more}[/dim]')
+            if snippet_line.strip():
+                console.print(f'     [dim]{snippet_line}[/dim]')
             console.print()
 
             # DB results (already-imported releases that match this album)
