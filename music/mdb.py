@@ -74,6 +74,8 @@ from mdb_apis import (
     _mb_get, _mb_get_safe,
     mb_find_release, mb_fetch_recording_ids, mb_fetch_artist_data,
     mb_fetch_release_group_releases,
+    mb_canonical_score,
+    mb_release_reasons,
     _EDITION_RE,
 )
 from mdb_merge import (
@@ -447,31 +449,25 @@ def import_album_from_mb(db_path: str, mbid: str, *,
                          use_wiki: bool = True) -> 'tuple[str, str, str, str]':
     """Import a MusicBrainz release into master.sqlite.
     Returns (release_id, title, artist_name, release_date)."""
+    from rich.table import Table as _RichTable
+    import rich.box as _box
+
     rel = MusicBrainzRelease(mbid)
     rel._ensure_full()
 
-    console.print(f"[bold]{rel.name}[/bold]  "
-                  f"[dim]{rel.artist} · {rel.year} · {rel.track_count} tracks[/dim]")
-    console.print(f"  [dim]source: MusicBrainz  {mbid}[/dim]")
-
-    # Cover Art Archive
-    console.print('  [dim]Fetching cover art from Cover Art Archive…[/dim]')
     try:
         image_url = caa_fetch_front_image_url(mbid)
     except Exception as e:
         log.debug('CAA fetch failed: %s', e)
         image_url = None
-    console.print(f'  [dim]cover art: {image_url[:70] if image_url else "not found"}[/dim]')
 
     conn = open_db(db_path)
     cur  = conn.cursor()
     init_schema(conn)
 
     try:
-        console.rule('[dim]Artists[/dim]', style='dim')
-
         # Collect all unique MB artist IDs from release + track credits
-        artist_credits_seen: dict = {}  # {mb_artist_id: mb_artist_dict}
+        artist_credits_seen: dict = {}
         for credit in (rel._data.get('artist-credit') or []):
             if isinstance(credit, dict) and 'artist' in credit:
                 mb_a = credit['artist']
@@ -484,14 +480,11 @@ def import_album_from_mb(db_path: str, mbid: str, *,
                     if mb_aid not in artist_credits_seen:
                         artist_credits_seen[mb_aid] = mb_a
 
-        artist_map: dict = {}  # {mb_artist_id: our_artist_id}
+        artist_map: dict = {}
         for mb_aid, mb_a in artist_credits_seen.items():
             our_id, created = upsert_artist_mb(cur, mb_a)
             artist_map[mb_aid] = our_id
-            tag = '[green]new[/green]' if created else '[dim]upd[/dim]'
-            console.print(f"  {tag}  {mb_a.get('name', ''):<28} [dim]{our_id}[/dim]")
 
-        # Primary artist: first non-join credit on the release
         primary_id = None
         for credit in (rel._data.get('artist-credit') or []):
             if isinstance(credit, dict) and 'artist' in credit:
@@ -499,8 +492,6 @@ def import_album_from_mb(db_path: str, mbid: str, *,
                 break
 
         release_id, r_new = upsert_release_mb(cur, rel._data, primary_id, image_url)
-        tag = '[green]new[/green]' if r_new else '[dim]upd[/dim]'
-        console.print(f"\n  {tag}  [bold]{rel.name}[/bold] [dim]→ {release_id}[/dim]")
 
         cur.execute('DELETE FROM release_artists WHERE release_id = ?', (release_id,))
         for credit in (rel._data.get('artist-credit') or []):
@@ -516,32 +507,44 @@ def import_album_from_mb(db_path: str, mbid: str, *,
                     except sqlite3.IntegrityError:
                         pass
 
-        console.rule('[dim]Tracks[/dim]', style='dim')
         n_created, n_updated = upsert_tracks_mb(cur, release_id, rel.tracks, artist_map)
-
         conn.commit()
     finally:
         conn.close()
 
-    # ── Tracklist display ────────────────────────────────────────────────────
+    # ── Result header (matches import_album_unified style) ────────────────────
+    art_note = f'  [dim]art: {image_url.split("/")[-1][:20]}[/dim]' if image_url else ''
+    status   = '[green]→ imported[/green]' if n_created else '[dim]→ updated[/dim]'
+    console.print(
+        f'[bold]{rel.name}[/bold]  '
+        f'[dim]{rel.artist}  ·  {rel.year}  ·  {rel.track_count} tracks[/dim]  '
+        f'[dim][MB][/dim]  {status}{art_note}'
+    )
+
+    # ── Tracklist (Rich table, no box) ────────────────────────────────────────
+    console.rule(style='dim')
+    tbl = _RichTable(box=None, padding=(0, 1, 0, 0), show_header=False, show_edge=False)
+    tbl.add_column('#',     style='dim',  width=3,  justify='right', no_wrap=True)
+    tbl.add_column('Title', style='',     min_width=10, max_width=38, no_wrap=True)
+    tbl.add_column('Dur',   style='dim',  width=6,  justify='right', no_wrap=True)
+    tbl.add_column('ISRC',  style='dim',  width=13, no_wrap=True)
+
     max_disc = max((t.get('_disc_number') or 1) for t in rel.tracks) if rel.tracks else 1
-    any_isrc = any(t.get('_isrcs') for t in rel.tracks)
     cur_disc = None
     for t in rel.tracks:
         disc  = t.get('_disc_number') or 1
-        num   = t.get('_track_number', '?')
+        num   = str(t.get('_track_number', '?'))
         title = t.get('name', '?')
         dur   = _fmt_dur(t.get('duration_ms'))
         isrcs = t.get('_isrcs') or []
         isrc  = isrcs[0] if isrcs else ''
         if max_disc > 1 and disc != cur_disc:
             cur_disc = disc
-            console.print(f'\n  [bold dim]Disc {disc}[/bold dim]')
-        isrc_col = f'  [dim]{isrc:<12}[/dim]' if any_isrc else ''
-        console.print(f"  [dim]{num:>2}.[/dim]  {_trunc(title, 40):<40}  "
-                      f"[dim]{dur:>5}[/dim]{isrc_col}")
-    console.print(f'\n  [dim]{n_created} created · {n_updated} updated[/dim]  '
-                  f'[bold]{os.path.basename(db_path)}[/bold]')
+            tbl.add_row('', f'[bold dim]Disc {disc}[/bold dim]', '', '')
+        tbl.add_row(num, _trunc(title, 38), dur, isrc)
+    console.print(tbl)
+    console.rule(style='dim')
+    console.print(f'  [dim]{n_created} created · {n_updated} updated[/dim]')
 
     return release_id, rel.name, rel.artist, rel.date
 
@@ -946,6 +949,16 @@ def _build_enrich_diff(cur, release_id: str, mdb_r: MDBRelease, mdb_tracks: list
             if t.beatport_genre and not ex['beatport_genre']:
                 gn_new += 1
 
+    # Missing tracks — release in DB has 0 tracks but we have data
+    db_track_count = cur.execute(
+        'SELECT COUNT(*) FROM tracks WHERE release_id = ?',
+        (release_id,),
+    ).fetchone()[0]
+    if db_track_count == 0 and mdb_tracks:
+        src = 'mb' if any(t.mbid for t in mdb_tracks) else 'sp'
+        diffs.append(('tracks', '0 tracks in DB',
+                      f'{len(mdb_tracks)} tracks', src, None))
+
     if bp_new:
         diffs.append(('tracks.bpm/key', f'NULL ({bp_new} tracks)',
                       f'filled ({bp_new} tracks)', 'bp', bpm_preview))
@@ -1132,11 +1145,89 @@ def _select_variants_unified(
     if not candidates:
         return
 
+    # ── Score + reason generation ──────────────────────────────────────────────
+    # Identify which candidate is most canonical so we can label the
+    # already-imported release and annotate each candidate with a reason.
+    all_mb = []
+    with managed_db(db_path) as _sc:
+        cur_row2 = _sc.execute(
+            'SELECT release_date, total_tracks, mbid FROM releases WHERE id = ?',
+            [current_release_id],
+        ).fetchone()
+    cur_mbid = (cur_row2['mbid'] or '') if cur_row2 else ''
+
+    # Build a synthetic MB dict for the already-imported release so it
+    # participates in scoring alongside the candidates.
+    imported_stub = {
+        'id':     cur_mbid,
+        'title':  (cur_row2 and cur_row2['release_date'] and cur_row2) and '',
+        'date':   (cur_row2['release_date'] or '') if cur_row2 else '',
+        'status': 'Official',
+        'country': 'XW',
+        'media':  [{'track-count': (cur_row2['total_tracks'] or 0) if cur_row2 else 0}],
+    }
+    # Fetch title from DB properly
+    with managed_db(db_path) as _sc2:
+        title_row = _sc2.execute(
+            'SELECT title FROM releases WHERE id = ?', [current_release_id]
+        ).fetchone()
+    imported_stub['title'] = title_row['title'] if title_row else ''
+
+    candidate_dicts = [
+        {'id': mbid_r, 'title': title, 'date': date,
+         'status': status, 'country': country,
+         'media': [{'track-count': n}]}
+        for mbid_r, title, date, status, country, n in candidates
+    ]
+    all_mb_pool = [imported_stub] + candidate_dicts
+    all_mb_pool.sort(key=mb_canonical_score)
+    pool_canonical = all_mb_pool[0]
+    reasons = mb_release_reasons(
+        [r for r in all_mb_pool if r['id'] != pool_canonical['id']],
+        pool_canonical,
+    )
+    imported_is_canonical = (pool_canonical['id'] == cur_mbid)
+
+    # ── Variant display ────────────────────────────────────────────────────────
     console.print(f'      [dim]·  Variants:[/dim]')
-    for i, (_, title, date, status, country, n) in enumerate(candidates, 1):
-        # Shorten to distinguishing info only (strip repeated parent title prefix where possible)
-        console.print(f'         [dim]{i}.[/dim]  [dim]{title}  '
-                      f'{date or "?"}  ·  {n} tracks[/dim]')
+    for i, (mbid_r, title, date, status, country, n) in enumerate(candidates, 1):
+        rs = reasons.get(mbid_r) or []
+        reason_str = ('; '.join(rs)) if rs else ''
+        console.print(
+            f'         [dim]{i}.[/dim]  [dim]{title}  {date or "?"}  ·  {n} tracks[/dim]'
+            + (f'\n             [dim]→ {reason_str}[/dim]' if reason_str else '')
+        )
+    # Show canonical label referencing the already-imported release
+    imp_title = imported_stub['title']
+    imp_date  = imported_stub['date']
+    imp_n     = (cur_row2['total_tracks'] or 0) if cur_row2 else 0
+    if imported_is_canonical:
+        console.print(
+            f'         [green]✓ canonical:[/green]  '
+            f'[dim]{imp_title}  {imp_date}  ·  {imp_n} tracks  (already imported)[/dim]'
+        )
+    else:
+        imp_rs = reasons.get(cur_mbid) or []
+        imp_reason = ('; '.join(imp_rs)) if imp_rs else ''
+        console.print(
+            f'         [dim]  imported:[/dim]  '
+            f'[dim]{imp_title}  {imp_date}  ·  {imp_n} tracks[/dim]'
+            + (f'  [dim]→ {imp_reason}[/dim]' if imp_reason else '')
+        )
+        pool_c_n = sum(m.get('track-count', 0) for m in (pool_canonical.get('media') or []))
+        # Find which numbered candidate the pool canonical is
+        canon_num = next(
+            (i for i, (mbid_r, *_) in enumerate(candidates, 1)
+             if mbid_r == pool_canonical['id']),
+            None,
+        )
+        num_hint = f'  [dim](= {canon_num})[/dim]' if canon_num else ''
+        console.print(
+            f'         [green]✓ canonical:[/green]  '
+            f'[dim]{pool_canonical["title"]}  {pool_canonical["date"]}  '
+            f'·  {pool_c_n} tracks[/dim]{num_hint}'
+        )
+
     raw = console.input(
         '         [dim]Import? number(s) · db:ULID · or Enter to skip:[/dim] '
     ).strip()
