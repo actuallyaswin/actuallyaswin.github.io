@@ -680,18 +680,21 @@ def _parse_user_date(text: str) -> 'str | None':
 # -- UPC / GTIN normalization ------------------------------------------------
 
 def normalize_upc(upc: 'str | None') -> 'str | None':
-    """Normalize a UPC/GTIN to its canonical form, preserving the original length.
+    """Normalize a UPC/GTIN to 13-digit EAN-13 canonical form.
 
-    Spotify often returns 12-digit UPC-A (strips leading zero from EAN-13).
-    Beatport and MusicBrainz return the full 13-digit EAN-13.
-    Valid lengths: 8 (EAN-8), 12 (UPC-A), 13 (EAN-13), 14 (GTIN-14).
+    Spotify returns 13 digits; MusicBrainz often omits the leading zero and
+    returns 12 digits (UPC-A). Both represent the same barcode — canonicalize
+    to EAN-13 by zero-padding 12-digit values.
 
-    Returns the digit-only string at original length, or None if empty/invalid.
+    Valid input lengths: 8 (EAN-8), 12 (UPC-A → padded to 13), 13 (EAN-13),
+    14 (GTIN-14). Returns None if empty or not a recognized GTIN length.
     """
     if not upc:
         return None
     digits = re.sub(r'\D', '', str(upc))
-    if len(digits) in (8, 12, 13, 14):
+    if len(digits) == 12:
+        digits = '0' + digits  # UPC-A → EAN-13
+    if len(digits) in (8, 13, 14):
         return digits
     return None  # not a recognized GTIN length
 

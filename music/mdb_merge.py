@@ -594,6 +594,16 @@ class ReleaseMerge:
 
         all_isrcs = (set(mb_by_isrc) | set(sp_by_isrc) | set(bp_by_isrc) | set(dz_by_isrc)) - {'', None}
 
+        # Fallback for releases where no source has ISRCs (e.g. self-released mixtapes
+        # on MusicBrainz).  Build tracks positionally from MB, supplemented by Spotify
+        # duration data matched on normalised title.
+        if not all_isrcs:
+            merged = self._build_tracks_positional(
+                mb_tracks, sp_tracks, bp_tracks, conflicts
+            )
+            merged.sort(key=lambda t: (t.disc_number, t.track_number))
+            return merged
+
         merged: list[MDBTrack] = []
         for isrc in all_isrcs:
             mb_t = mb_by_isrc.get(isrc)
@@ -707,6 +717,85 @@ class ReleaseMerge:
 
         merged.sort(key=lambda t: (t.disc_number, t.track_number))
         return merged
+
+    def _build_tracks_positional(
+        self, mb_tracks: list, sp_tracks: list, bp_tracks: list, conflicts: list
+    ) -> list[MDBTrack]:
+        """Fallback when no source has ISRCs — build tracks by position from MB.
+
+        Matches Spotify tracks by normalised title to fill in duration_ms and
+        spotify_id; Beatport by position for BPM/key.  Used for releases like
+        self-released mixtapes that lack ISRC registration.
+        """
+        # Spotify title lookup (normalised) for duration/id supplementation
+        sp_by_title: dict = {}
+        for t in sp_tracks:
+            full = self._sp_full.get(t.get('id'), t)
+            key = normalize_text(t.get('name', ''))
+            if key:
+                sp_by_title[key] = (t, full)
+
+        # Beatport by position
+        bp_by_pos: dict = {}
+        for t in bp_tracks:
+            bp_by_pos[(t.get('_disc_number', 1), t.get('_track_number', 0))] = t
+
+        tracks: list[MDBTrack] = []
+        for mb_t in sorted(mb_tracks, key=lambda t: (t.get('_disc_number', 1), t.get('_track_number', 0))):
+            title     = mb_t.get('name', '')
+            mix_name  = None
+            track_num = mb_t.get('_track_number', 0)
+            disc_num  = mb_t.get('_disc_number', 1)
+            mbid      = mb_t.get('_mb_recording_id')
+
+            # Try to supplement from Spotify by title match
+            sp_pair  = sp_by_title.get(normalize_text(title))
+            sp_t     = sp_pair[0] if sp_pair else None
+            sp_full_t = sp_pair[1] if sp_pair else None
+
+            bp_t     = bp_by_pos.get((disc_num, track_num))
+
+            duration_ms = (
+                (sp_full_t.get('duration_ms') if sp_full_t else None)
+                or mb_t.get('duration_ms')
+                or (bp_t.get('duration_ms') if bp_t else None)
+            )
+            spotify_id  = sp_t.get('id') if sp_t else None
+            bpm         = bp_t.get('_bpm') if bp_t else None
+            musical_key = bp_t.get('_key') if bp_t else None
+            key_camelot = bp_t.get('_key_camelot') if bp_t else None
+            is_explicit = bool((sp_full_t or {}).get('explicit', False))
+
+            sources: set = {'mb'}
+            if sp_t:
+                sources.add('sp')
+            if bp_t:
+                sources.add('bp')
+
+            artists = self._merge_track_artists(mb_t, sp_t, bp_t)
+
+            tracks.append(MDBTrack(
+                isrc=None,  # no ISRCs available
+                track_number=track_num,
+                disc_number=disc_num,
+                title=title,
+                mix_name=mix_name,
+                duration_ms=duration_ms,
+                is_explicit=is_explicit,
+                mbid=mbid,
+                spotify_id=spotify_id,
+                bpm=bpm,
+                musical_key=musical_key,
+                key_camelot=key_camelot,
+                beatport_genre=bp_t.get('_genre') if bp_t else None,
+                beatport_sub_genre=bp_t.get('_sub_genre') if bp_t else None,
+                beatport_track_id=bp_t.get('_track_id') if bp_t else None,
+                spotify_popularity=(sp_full_t or {}).get('popularity') if sp_full_t else None,
+                artists=artists,
+                sources=sources,
+                source_map={'title': 'mb', 'duration_ms': 'sp' if sp_full_t else 'mb'},
+            ))
+        return tracks
 
     def _merge_track_artists(self, mb_t, sp_t, bp_t) -> list[MDBArtistCredit]:
         """Merge artist credits from all sources, unifying by normalized name."""
