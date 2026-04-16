@@ -962,6 +962,68 @@ def mb_fetch_release_group_releases(rg_mbid: str) -> list:
     return sorted(releases, key=lambda r: (r.get('date') or '9999'))
 
 
+def mb_canonical_score(r: dict) -> tuple:
+    """Sortable score for an MB release dict — lower = more canonical.
+
+    Criteria (in order):
+      1. Clean title (no edition qualifiers)
+      2. Official status
+      3. Worldwide release (country == 'XW' preferred)
+      4. Earliest date
+      5. Smaller track count (no bonus-disc inflation)
+    """
+    from mdb_strings import detect_variant_type
+    title   = r.get('title') or ''
+    status  = (r.get('status') or '').lower()
+    country = r.get('country') or ''
+    date    = r.get('date') or '9999'
+    n       = sum(m.get('track-count', 0) for m in (r.get('media') or []))
+
+    has_edition = 1 if detect_variant_type(title) is not None else 0
+    not_official = 0 if status == 'official' else 1
+    not_worldwide = 0 if country == 'XW' else (1 if country else 2)
+    return (has_edition, not_official, not_worldwide, date, n)
+
+
+def mb_release_reasons(candidates: list, canonical: dict) -> dict:
+    """Return {mbid: [reason, ...]} explaining why each candidate is non-canonical.
+
+    candidates: list of MB release dicts (the non-canonical ones)
+    canonical:  the MB release dict scored as canonical
+    """
+    from mdb_strings import detect_variant_type
+    can_date = canonical.get('date') or ''
+    can_n    = sum(m.get('track-count', 0) for m in (canonical.get('media') or []))
+    can_status = (canonical.get('status') or '').lower()
+
+    reasons = {}
+    for r in candidates:
+        mbid  = r.get('id') or ''
+        title = r.get('title') or ''
+        date  = r.get('date') or ''
+        n     = sum(m.get('track-count', 0) for m in (r.get('media') or []))
+        status  = (r.get('status') or '').lower()
+        country = r.get('country') or ''
+
+        rs = []
+        if date and can_date and date > can_date:
+            rs.append(f'later release ({date} > {can_date})')
+        elif date and can_date and date == can_date and n == can_n:
+            rs.append('same date and tracklist — re-upload artifact')
+        if n > can_n:
+            rs.append(f'{n - can_n} bonus track(s)')
+        vtype = detect_variant_type(title)
+        if vtype and not detect_variant_type(canonical.get('title') or ''):
+            rs.append(f'edition qualifier ({vtype})')
+        if status and status != 'official' and can_status == 'official':
+            rs.append(f'status: {status}')
+        can_country = canonical.get('country') or ''
+        if country and country != 'XW' and can_country == 'XW':
+            rs.append(f'regional pressing ({country})')
+        reasons[mbid] = rs
+    return reasons
+
+
 # ── iTunes / Apple Music ───────────────────────────────────────────────────────
 
 ITUNES_LOOKUP = 'https://itunes.apple.com/lookup'
