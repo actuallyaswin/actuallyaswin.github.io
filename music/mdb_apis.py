@@ -900,21 +900,32 @@ def mb_find_release(title: str, artist: str, track_count: int, year: int) -> 'tu
 def mb_find_release_group(title: str, artist: str, year: int = 0) -> 'str | None':
     """Search MB for a release group matching title/artist.
     Returns the release-group MBID of the best match, or None."""
+    from mdb_strings import normalize_text
     try:
         query = f'releasegroup:"{title}"'
         if artist:
             query += f' AND artist:"{artist}"'
-        data = _mb_get('/release-group', {'query': query, 'limit': 5})
+        data = _mb_get('/release-group', {'query': query, 'limit': 10})
     except Exception:
         return None
+    norm_artist = normalize_text(artist) if artist else ''
     for rg in (data.get('release-groups') or []):
         score = int(rg.get('score') or 0)
-        if score < 80:
+        if score < 75:
             continue
-        # Optionally verify the year against first-release-date
+        # Verify artist credit when one is provided
+        if norm_artist:
+            credits = rg.get('artist-credit') or []
+            rg_artist = ' '.join(
+                (c.get('artist') or {}).get('name', '') if isinstance(c, dict) else ''
+                for c in credits
+            )
+            if norm_artist not in normalize_text(rg_artist):
+                continue
+        # Verify year (with tolerance)
         if year:
             rg_year = int((rg.get('first-release-date') or '0')[:4] or '0')
-            if rg_year and abs(rg_year - year) > 1:
+            if rg_year and abs(rg_year - year) > 2:
                 continue
         return rg['id']
     return None

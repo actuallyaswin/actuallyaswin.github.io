@@ -1576,7 +1576,7 @@ def cmd_discography(args):
         return
 
     db_path = args.db or DB_PATH
-    use_aoty = not args.no_aoty and _has_aoty()
+    use_aoty = not args.no_aoty and _AOTY_AVAILABLE
     use_wiki = not getattr(args, 'no_wiki', False)
     artist_hint = getattr(args, 'artist', None) or ''
 
@@ -1590,6 +1590,14 @@ def cmd_discography(args):
         url    = (entry.get('url') or '').strip()
         artist = (entry.get('artist') or artist_hint).strip()
         manual_date = (entry.get('release_date') or '').strip()
+
+        # Extract artist hint from Wikipedia URL disambiguator, e.g.
+        # .../Jazz_(Queen_album) → "Queen"  when no artist is known
+        if not artist and wiki:
+            import re as _re
+            m = _re.search(r'\(([^)]+)_album\)', wiki)
+            if m:
+                artist = urllib.parse.unquote(m.group(1)).replace('_', ' ')
 
         console.rule(style='dim')
         console.print(f'[dim]{idx}/{total}[/dim]  [bold]{title or "(untitled)"}[/bold]'
@@ -4006,6 +4014,447 @@ def cmd_track_variants_wrapper(args):
         cmd_track_variants(conn, include_linked=include_linked)
 
 
+# ── cmd: dedup ─────────────────────────────────────────────────────────────────
+
+_EL_NAMES = {0: 'Wikipedia', 1: 'MusicBrainz', 2: 'Spotify', 3: 'Apple Music',
+             4: 'Deezer', 5: 'Tidal', 6: 'Bandcamp', 7: 'Beatport'}
+
+
+def _dedup_find_groups(cur) -> list[list[dict]]:
+    """Return groups of visible releases that share the same base title + artist."""
+    from mdb_strings import _base_title, normalize_text
+    from collections import defaultdict
+    rows = cur.execute('''
+        SELECT r.id, r.title, r.primary_artist_id, a.name AS artist_name,
+               r.release_date, r.date_source, r.mbid, r.spotify_id, r.apple_music_id,
+               r.aoty_url, r.aoty_id, r.wikipedia_url, r.album_art_url, r.album_art_source,
+               r.type, r.type_secondary, r.release_group_mbid, r.label, r.notes,
+               r.total_tracks, r.aoty_score_critic, r.aoty_score_user,
+               r.aoty_ratings_critic, r.aoty_ratings_user,
+               (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id) AS track_count,
+               (SELECT COUNT(*) FROM listens l JOIN tracks t ON t.id = l.track_id
+                WHERE t.release_id = r.id) AS listen_count
+        FROM releases r LEFT JOIN artists a ON a.id = r.primary_artist_id
+        WHERE r.hidden = 0
+        ORDER BY a.name, r.title
+    ''').fetchall()
+
+    by_key: dict = defaultdict(list)
+    by_rg: dict  = defaultdict(list)
+    for row in rows:
+        d = dict(row)
+        key = (_base_title(d['title']).lower().strip(),
+               normalize_text(d['artist_name'] or ''))
+        by_key[key].append(d)
+        if d['release_group_mbid']:
+            by_rg[d['release_group_mbid']].append(d)
+
+    seen: list = []
+    groups: list = []
+    for releases in list(by_key.values()) + list(by_rg.values()):
+        if len(releases) < 2:
+            continue
+        id_set = frozenset(r['id'] for r in releases)
+        if id_set not in seen:
+            seen.append(id_set)
+            groups.append(releases)
+    return groups
+
+
+def _dedup_load_tracks(cur, release_id: str) -> list[dict]:
+    rows = cur.execute('''
+        SELECT t.id, t.title, t.isrc, t.disc_number, t.track_number,
+               t.duration_ms, t.tempo_bpm, t.musical_key, t.mix_name,
+               t.spotify_id, t.mbid, t.release_id,
+               COALESCE(COUNT(l.id), 0) AS listen_count
+        FROM tracks t
+        LEFT JOIN listens l ON l.track_id = t.id
+        WHERE t.release_id = ? AND (t.hidden IS NULL OR t.hidden = 0)
+        GROUP BY t.id
+        ORDER BY t.disc_number, t.track_number, t.title
+    ''', (release_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _dedup_load_ext(cur, release_id: str) -> dict:
+    rows = cur.execute(
+        'SELECT service, link_value FROM external_links WHERE entity_type=1 AND entity_id=?',
+        (release_id,),
+    ).fetchall()
+    return {r['service']: r['link_value'] for r in rows}
+
+
+def _dedup_match_tracks(
+    tracks_a: list, tracks_b: list
+) -> tuple[list[tuple], list, list]:
+    """Match tracks between two lists by ISRC then normalized title.
+    Returns (matched_pairs, unmatched_a, unmatched_b).
+    Each matched pair is (track_dict_from_a, track_dict_from_b).
+    """
+    from mdb_strings import normalize_text
+    matched: list[tuple] = []
+    used_b: set = set()
+
+    # Pass 1 — ISRC
+    for ta in tracks_a:
+        if not ta['isrc']:
+            continue
+        for tb in tracks_b:
+            if tb['id'] in used_b:
+                continue
+            if tb['isrc'] and tb['isrc'].upper() == ta['isrc'].upper():
+                matched.append((ta, tb))
+                used_b.add(tb['id'])
+                break
+
+    matched_a = {ta['id'] for ta, _ in matched}
+
+    # Pass 2 — normalized title
+    for ta in tracks_a:
+        if ta['id'] in matched_a:
+            continue
+        norm_a = normalize_text(ta['title'])
+        for tb in tracks_b:
+            if tb['id'] in used_b:
+                continue
+            if normalize_text(tb['title']) == norm_a:
+                matched.append((ta, tb))
+                used_b.add(tb['id'])
+                matched_a.add(ta['id'])
+                break
+
+    unmatched_a = [t for t in tracks_a if t['id'] not in matched_a]
+    unmatched_b = [t for t in tracks_b if t['id'] not in used_b]
+    return matched, unmatched_a, unmatched_b
+
+
+def _dedup_suggest_canonical(releases: list[dict]) -> int:
+    """Return index of the release most suitable to be canonical."""
+    # Score: listens × 4 + tracks × 2 + (has_mbid + has_sp + has_am + has_aoty + has_wiki) × 1
+    def score(r):
+        ids = (bool(r['mbid']) + bool(r['spotify_id']) + bool(r['apple_music_id'])
+               + bool(r['aoty_url']) + bool(r['wikipedia_url']))
+        return r['listen_count'] * 4 + r['track_count'] * 2 + ids
+    best = max(range(len(releases)), key=lambda i: score(releases[i]))
+    return best
+
+
+def _dedup_show_preview(releases: list[dict], all_tracks: list[list[dict]],
+                        all_ext: list[list[dict]], matched: list,
+                        unmatched: list[list]) -> None:
+    from rich.table import Table
+    from rich import box as rbox
+
+    labels = [chr(ord('A') + i) for i in range(len(releases))]
+    total_listens = sum(r['listen_count'] for r in releases)
+    artist = releases[0]['artist_name'] or 'unknown artist'
+
+    console.print()
+    console.rule(
+        f'[bold]{releases[0]["title"]}[/bold]  [dim]({artist})[/dim]'
+        f'  [dim]{total_listens} listens[/dim]',
+        style='bright_blue',
+    )
+
+    # Release comparison table
+    t = Table(box=rbox.SIMPLE_HEAD, show_header=True, pad_edge=False,
+              show_edge=False)
+    t.add_column('', style='dim', min_width=16, no_wrap=True)
+    for label, r in zip(labels, releases):
+        hdr = (f'[bold cyan]{label}[/bold cyan]  [dim]{r["id"][:12]}…[/dim]'
+               f'  [dim]{r["listen_count"]}L {r["track_count"]}T[/dim]')
+        t.add_column(hdr, min_width=22, no_wrap=False)
+
+    def yn(v):
+        return '[green]✓[/green]' if v else '[dim]—[/dim]'
+
+    field_rows = [
+        ('Title',       lambda r, e: r['title']),
+        ('Date',        lambda r, e: (
+            f"{r['release_date'] or '—'}  [dim][{r['date_source'] or '?'}][/dim]")),
+        ('Type',        lambda r, e: (
+            ' · '.join(filter(None, [r['type'], r['type_secondary']])) or '[dim]—[/dim]')),
+        ('MBID',        lambda r, e: (r['mbid'][:16] if r['mbid'] else '[dim]—[/dim]')),
+        ('Spotify',     lambda r, e: yn(r['spotify_id'])),
+        ('Apple Music', lambda r, e: yn(r['apple_music_id'])),
+        ('AOTY',        lambda r, e: yn(r['aoty_url'])),
+        ('Wikipedia',   lambda r, e: yn(r['wikipedia_url'])),
+        ('Beatport',    lambda r, e: yn(e.get(7))),
+        ('Bandcamp',    lambda r, e: yn(e.get(6))),
+        ('Art source',  lambda r, e: r['album_art_source'] or '[dim]—[/dim]'),
+        ('Label',       lambda r, e: r['label'] or '[dim]—[/dim]'),
+        ('AOTY score',  lambda r, e: (
+            f"{r['aoty_score_critic'] or '—'} / {r['aoty_score_user'] or '—'}"
+            if (r['aoty_score_critic'] or r['aoty_score_user']) else '[dim]—[/dim]')),
+        ('RG MBID',     lambda r, e: (
+            r['release_group_mbid'][:16] if r['release_group_mbid'] else '[dim]—[/dim]')),
+    ]
+    for fname, fval in field_rows:
+        t.add_row(fname, *[fval(r, e) for r, e in zip(releases, all_ext)])
+    console.print(t)
+
+    # Track comparison (two-release groups only)
+    if len(releases) == 2 and (all_tracks[0] or all_tracks[1]):
+        console.print()
+        if matched:
+            console.print(f'  [dim]Matched[/dim]  {len(matched)} tracks')
+            for ta, tb in matched[:6]:
+                how = ('ISRC' if (ta['isrc'] and ta['isrc'] == tb['isrc']) else 'title')
+                tot = ta['listen_count'] + tb['listen_count']
+                console.print(
+                    f'    [dim]{ta["disc_number"]}:{ta["track_number"]:02d}[/dim]  '
+                    f'{ta["title"]}  [dim]←[{how}]→  {tot}L[/dim]'
+                )
+            if len(matched) > 6:
+                console.print(f'    [dim]… {len(matched) - 6} more[/dim]')
+        for label, ulist in zip(labels, unmatched):
+            if ulist:
+                console.print(
+                    f'  [dim]Only in {label}[/dim]  {len(ulist)} tracks'
+                    + (' [dim](will move to canonical)[/dim]' if len(ulist) <= 6 else '')
+                )
+                for tr in ulist[:4]:
+                    console.print(
+                        f'    [dim]{tr["disc_number"]}:{tr["track_number"]:02d}[/dim]  '
+                        f'{tr["title"]}  [dim]{tr["listen_count"]}L[/dim]'
+                    )
+                if len(ulist) > 4:
+                    console.print(f'    [dim]… {len(ulist) - 4} more[/dim]')
+
+
+def _dedup_merge(conn, canonical: dict, loser: dict,
+                 matched: list[tuple], unmatched_loser: list,
+                 canon_idx: int) -> None:
+    """Merge loser into canonical. canonical/loser are full release dicts.
+    matched:         [(track_a, track_b), …] — canon track is at canon_idx in each pair
+    unmatched_loser: tracks from loser with no match in canonical
+    """
+    cur = conn.cursor()
+
+    # -- 1. COALESCE release fields (canonical wins; fill from loser where NULL) -
+    coalesce_fields = [
+        'mbid', 'spotify_id', 'apple_music_id', 'aoty_id', 'aoty_url',
+        'aoty_score_critic', 'aoty_score_user', 'aoty_ratings_critic',
+        'aoty_ratings_user', 'wikipedia_url', 'album_art_url', 'album_art_source',
+        'album_art_position', 'release_date', 'date_source', 'release_year',
+        'release_group_mbid', 'type', 'type_secondary', 'label',
+        'total_tracks', 'notes', 'spotify_popularity',
+    ]
+    updates: dict = {}
+    for field in coalesce_fields:
+        cv, lv = canonical.get(field), loser.get(field)
+        if (cv is None or cv == '') and (lv is not None and lv != ''):
+            updates[field] = lv
+    # Special: pick higher-precision / higher-priority date
+    if canonical.get('release_date') and loser.get('release_date'):
+        from mdb_strings import _should_update_date
+        if _should_update_date(
+            canonical['release_date'], canonical.get('date_source') or 'musicbrainz',
+            loser['release_date'],     loser.get('date_source') or 'musicbrainz',
+        ):
+            updates['release_date'] = loser['release_date']
+            updates['date_source']  = loser['date_source']
+    if updates:
+        cur.execute(
+            f'UPDATE releases SET {", ".join(f"{k}=?" for k in updates)} WHERE id=?',
+            [*updates.values(), canonical['id']],
+        )
+
+    # -- 2. Copy missing external links from loser to canonical --------------------
+    ext_canon = _dedup_load_ext(cur, canonical['id'])
+    ext_loser = _dedup_load_ext(cur, loser['id'])
+    for svc, val in ext_loser.items():
+        if svc not in ext_canon:
+            cur.execute(
+                'INSERT OR REPLACE INTO external_links'
+                ' (entity_type, entity_id, service, link_value) VALUES (1,?,?,?)',
+                (canonical['id'], svc, val),
+            )
+
+    # -- 3. Copy genres if canonical has none -------------------------------------
+    if not cur.execute(
+        'SELECT 1 FROM release_genres WHERE release_id=?', (canonical['id'],)
+    ).fetchone():
+        for row in cur.execute(
+            'SELECT aoty_genre_id, is_primary FROM release_genres WHERE release_id=?',
+            (loser['id'],),
+        ).fetchall():
+            cur.execute(
+                'INSERT OR IGNORE INTO release_genres'
+                ' (release_id, aoty_genre_id, is_primary) VALUES (?,?,?)',
+                (canonical['id'], row['aoty_genre_id'], row['is_primary']),
+            )
+
+    # -- 4. Migrate listens + set canonical_track_id on matched pairs --------------
+    loser_idx = 1 - canon_idx
+    for pair in matched:
+        canon_track = pair[canon_idx]
+        loser_track = pair[loser_idx]
+        cur.execute('UPDATE listens SET track_id=? WHERE track_id=?',
+                    (canon_track['id'], loser_track['id']))
+        cur.execute('UPDATE tracks SET canonical_track_id=? WHERE id=?',
+                    (canon_track['id'], loser_track['id']))
+
+    # -- 5. Move unmatched loser tracks to canonical release -----------------------
+    for t in unmatched_loser:
+        cur.execute('UPDATE tracks SET release_id=? WHERE id=?',
+                    (canonical['id'], t['id']))
+
+    # -- 6. Fix release_variants references ----------------------------------------
+    # Rows where loser was canonical → redirect to new canonical
+    cur.execute('UPDATE release_variants SET canonical_id=? WHERE canonical_id=?',
+                (canonical['id'], loser['id']))
+    # Remove self-referencing row if it appeared
+    cur.execute('DELETE FROM release_variants WHERE canonical_id=? AND variant_id=?',
+                (canonical['id'], canonical['id']))
+    # Rows where loser was variant → re-point
+    cur.execute('UPDATE release_variants SET variant_id=? WHERE variant_id=?',
+                (canonical['id'], loser['id']))
+    # Remove any remaining self-reference
+    cur.execute('DELETE FROM release_variants WHERE canonical_id=? AND variant_id=?',
+                (canonical['id'], canonical['id']))
+
+    # -- 7. Hide loser ------------------------------------------------------------
+    cur.execute('UPDATE releases SET hidden=1 WHERE id=?', (loser['id'],))
+    conn.commit()
+
+
+def cmd_dedup(args):
+    """Find and resolve duplicate releases interactively."""
+    db_path = getattr(args, 'db', None) or DB_PATH
+    only_artist = (getattr(args, 'artist', None) or '').strip().lower()
+
+    with managed_db(db_path) as conn:
+        cur = conn.cursor()
+        groups = _dedup_find_groups(cur)
+
+    if not groups:
+        console.print('[green]No duplicate groups found.[/green]')
+        return
+
+    # Optionally filter to a specific artist
+    if only_artist:
+        from mdb_strings import normalize_text
+        groups = [
+            g for g in groups
+            if any(normalize_text(r.get('artist_name') or '') == normalize_text(only_artist)
+                   for r in g)
+        ]
+
+    console.print(
+        f'  [bold]{len(groups)}[/bold] duplicate group(s)'
+        + (f'  ·  [dim]filtering: {only_artist}[/dim]' if only_artist else '')
+    )
+
+    merged = skipped = linked = 0
+
+    for gi, group in enumerate(groups, 1):
+        with managed_db(db_path) as conn:
+            cur = conn.cursor()
+            # Reload fresh (previous merges may have hidden some)
+            live = []
+            for r in group:
+                row = cur.execute(
+                    'SELECT hidden FROM releases WHERE id=?', (r['id'],)
+                ).fetchone()
+                if row and not row['hidden']:
+                    live.append(r)
+            if len(live) < 2:
+                continue
+
+            all_tracks = [_dedup_load_tracks(cur, r['id']) for r in live]
+            all_ext    = [_dedup_load_ext(cur, r['id'])    for r in live]
+
+        # For groups of exactly 2, compute track matches
+        if len(live) == 2:
+            matched, unmatched_a, unmatched_b = _dedup_match_tracks(
+                all_tracks[0], all_tracks[1]
+            )
+            unmatched = [unmatched_a, unmatched_b]
+        else:
+            matched, unmatched = [], [[] for _ in live]
+
+        _dedup_show_preview(live, all_tracks, all_ext, matched, unmatched)
+
+        labels = [chr(ord('A') + i) for i in range(len(live))]
+        sugg   = _dedup_suggest_canonical(live)
+        loser_label = labels[1 - sugg] if len(live) == 2 else '?'
+        canon_label = labels[sugg]
+
+        if len(live) == 2:
+            hint = (f'  [dim]Suggestion: merge [bold]{loser_label}[/bold] → '
+                    f'[bold]{canon_label}[/bold]'
+                    f' (keep {canon_label})[/dim]')
+            console.print(hint)
+            console.print(
+                f'  [bold]m[/bold] merge {loser_label}→{canon_label} '
+                f'[dim]·[/dim]  [bold]r[/bold] reverse ({canon_label}→{loser_label}) '
+                f'[dim]·[/dim]  [bold]v[/bold] link as variants  '
+                f'[dim]·[/dim]  [bold]s[/bold] skip  '
+                f'[dim]·[/dim]  [bold]q[/bold] quit'
+            )
+        else:
+            console.print(
+                f'  [bold]s[/bold] skip  '
+                f'[dim]·[/dim]  [bold]q[/bold] quit  '
+                f'[dim]  (3+-way groups: use `mdb release variants` to link first)[/dim]'
+            )
+            try:
+                ch = console.input('  Action: ').strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if ch == 'q':
+                break
+            skipped += 1
+            continue
+
+        try:
+            ch = console.input(f'  Action [{gi}/{len(groups)}]: ').strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if ch == 'q':
+            break
+        elif ch in ('m', 'r'):
+            canon_idx = sugg if ch == 'm' else (1 - sugg)
+            loser_idx = 1 - canon_idx
+            canonical = live[canon_idx]
+            loser     = live[loser_idx]
+            loser_unmatched = unmatched[loser_idx]
+            with managed_db(db_path) as conn:
+                _dedup_merge(conn, canonical, loser, matched, loser_unmatched, canon_idx)
+            console.print(
+                f'  [green]✓[/green]  Merged [dim]{loser["id"][:12]}…[/dim] → '
+                f'[bold]{canonical["title"]}[/bold]  [dim]{canonical["id"][:12]}…[/dim]'
+                + (f'  ({len(matched)} track pairs, {len(loser_unmatched)} moved)' if matched else '')
+            )
+            merged += 1
+        elif ch == 'v':
+            # Link as variants (no track merge)
+            with managed_db(db_path) as conn:
+                canon_r = live[sugg]
+                others  = [r for i, r in enumerate(live) if i != sugg]
+                _write_variant_links(
+                    conn,
+                    canon_r['id'],
+                    [(r['id'], r['title'], i) for i, r in enumerate(others)],
+                )
+            console.print(
+                f'  [cyan]→[/cyan]  Linked as variants under '
+                f'[bold]{live[sugg]["title"]}[/bold]'
+            )
+            linked += 1
+        else:
+            skipped += 1
+
+    console.print()
+    parts = []
+    if merged:  parts.append(f'[green]{merged} merged[/green]')
+    if linked:  parts.append(f'[cyan]{linked} linked[/cyan]')
+    if skipped: parts.append(f'[dim]{skipped} skipped[/dim]')
+    console.print('  ' + '  ·  '.join(parts) if parts else '[dim]Done.[/dim]')
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='mdb',
@@ -4271,6 +4720,11 @@ def main():
     p_gr.add_argument('--tree', metavar='PATH', help='Path to tab-indented genre tree file')
     p_gr.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
     p_gr.set_defaults(func=cmd_genre_relations)
+
+    p_dedup = sub.add_parser('dedup', help='Find and resolve duplicate releases interactively')
+    p_dedup.add_argument('--artist', metavar='NAME', help='Limit to a specific artist')
+    p_dedup.add_argument('--db',     metavar='PATH', help='Path to master.sqlite')
+    p_dedup.set_defaults(func=cmd_dedup)
 
     args = parser.parse_args()
     try:
