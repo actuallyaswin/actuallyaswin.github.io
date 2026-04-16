@@ -383,6 +383,16 @@ class ReleaseMerge:
         candidates: dict[str, list[str]] = {}
 
         d_mb = (mb.get('date') or '').strip()
+        # Prefer release-group first-release-date when it's earlier (and different from
+        # the specific pressing's date) — avoids storing a 2014 reissue date for a 1973 album.
+        rg_first = ((mb.get('release-group') or {}).get('first-release-date') or '').strip()
+        if rg_first and d_mb and rg_first < d_mb[:len(rg_first)]:
+            # RG first-release is earlier — use it; note the discarded pressing date
+            if d_mb:
+                conflicts.append(
+                    f"release_date: using rg first-release ({rg_first}) over pressing ({d_mb})"
+                )
+            d_mb = rg_first
         if d_mb and _date_prec(d_mb) > 0:
             candidates.setdefault(d_mb, []).append('mb')
 

@@ -76,6 +76,8 @@ from mdb_apis import (
     mb_fetch_release_group_releases,
     mb_canonical_score,
     mb_release_reasons,
+    mb_rg_from_wiki_url,
+    mb_find_release_group,
     _EDITION_RE,
 )
 from mdb_merge import (
@@ -1538,6 +1540,150 @@ def cmd_import(args):
         console.print(f'  [dim]Batch:[/dim] {ok}/{total} succeeded'
                       + (f'  [red]{errors} failed[/red]' if errors else ''))
 
+
+# ── cmd: discography ──────────────────────────────────────────────────────────
+
+def cmd_discography(args):
+    """Import a full discography from a YAML file.
+
+    Each entry must have `album_title` and at least one of:
+      - `article`  — Wikipedia URL (most reliable; resolved to MB release group)
+      - `spotify_id` / `mb_release_id` / any URL  — passed directly to import
+
+    Optional fields: `release_date` (used as manual date override after import),
+    `artist` (used as MB search fallback when Wikipedia lookup fails).
+
+    Lookup order per entry:
+      1. `article` Wikipedia URL → MB release group → canonical release MBID
+      2. Any explicit `url` field → passed straight to import_album_unified
+      3. MB title+artist search fallback via mb_find_release
+    """
+    import yaml as _yaml
+
+    path = args.discography
+    try:
+        with open(path, encoding='utf-8') as f:
+            entries = _yaml.safe_load(f)
+    except FileNotFoundError:
+        console.print(f'[red]File not found:[/red] {path}')
+        return
+    except Exception as e:
+        console.print(f'[red]YAML parse error:[/red] {e}')
+        return
+
+    if not isinstance(entries, list):
+        console.print('[red]YAML must be a list of album entries[/red]')
+        return
+
+    db_path = args.db or DB_PATH
+    use_aoty = not args.no_aoty and _has_aoty()
+    use_wiki = not getattr(args, 'no_wiki', False)
+    artist_hint = getattr(args, 'artist', None) or ''
+
+    total = len(entries)
+    console.print(f'── Discography import  ·  {total} entries  ·  {path}')
+
+    ok = skipped = errors = 0
+    for idx, entry in enumerate(entries, 1):
+        title  = (entry.get('album_title') or entry.get('title') or '').strip()
+        wiki   = (entry.get('article') or '').strip()
+        url    = (entry.get('url') or '').strip()
+        artist = (entry.get('artist') or artist_hint).strip()
+        manual_date = (entry.get('release_date') or '').strip()
+
+        console.rule(style='dim')
+        console.print(f'[dim]{idx}/{total}[/dim]  [bold]{title or "(untitled)"}[/bold]'
+                      + (f'  [dim]{manual_date}[/dim]' if manual_date else ''))
+
+        import_url: str | None = None
+
+        # 1. Wikipedia URL → MB release group → canonical MBID
+        if wiki:
+            rg_mbid = mb_rg_from_wiki_url(wiki)
+            if rg_mbid:
+                releases = mb_fetch_release_group_releases(rg_mbid)
+                if releases:
+                    releases_sorted = sorted(releases, key=mb_canonical_score)
+                    canonical_r = releases_sorted[0]
+                    import_url = canonical_r.get('id')  # bare MBID
+                    if not import_url:
+                        console.print(f'      [yellow]Wikipedia → RG found but no release MBID[/yellow]')
+                else:
+                    console.print(f'      [yellow]Wikipedia → RG {rg_mbid[:16]}… has no releases[/yellow]')
+            else:
+                console.print(f'      [yellow]Wikipedia URL not found in MB, trying title search[/yellow]')
+
+        # 2. Explicit URL field
+        if not import_url and url:
+            import_url = url
+
+        # 3. MB release-group title+artist search fallback
+        if not import_url and title:
+            year = None
+            if manual_date:
+                import re as _re
+                m = _re.search(r'\b(\d{4})\b', manual_date)
+                year = int(m.group(1)) if m else None
+            rg_mbid = mb_find_release_group(title, artist, year or 0)
+            if rg_mbid:
+                releases = mb_fetch_release_group_releases(rg_mbid)
+                if releases:
+                    releases_sorted = sorted(releases, key=mb_canonical_score)
+                    canonical_r = releases_sorted[0]
+                    import_url = canonical_r.get('id')
+            if not import_url:
+                console.print(f'      [yellow]MB title search found nothing, skipping[/yellow]')
+
+        if not import_url:
+            console.print(f'      [red]Could not resolve import URL — skipped[/red]')
+            skipped += 1
+            continue
+
+        try:
+            release_id, imp_title, imp_artist, imp_date = import_album_unified(
+                db_path,
+                import_url,
+                client=None,
+                use_aoty=use_aoty,
+                use_wiki=use_wiki,
+                no_gtin=False,
+                no_variants=True,   # never prompt for variants in batch mode
+                auto=True,          # apply enrichment without prompting
+            )
+
+            # Apply manual date override if provided and more precise than what was stored
+            if manual_date and release_id:
+                from mdb_strings import _parse_user_date, _should_update_date
+                parsed = _parse_user_date(manual_date)
+                if parsed:
+                    with managed_db(db_path) as _conn:
+                        row = _conn.execute(
+                            'SELECT release_date, date_source FROM releases WHERE id = ?',
+                            [release_id],
+                        ).fetchone()
+                        if row and _should_update_date(
+                            row['release_date'], row['date_source'], parsed, 'manual'
+                        ):
+                            _conn.execute(
+                                'UPDATE releases SET release_date=?, date_source=? WHERE id=?',
+                                [parsed, 'manual', release_id],
+                            )
+                            _conn.commit()
+                            console.print(f'      [dim]·  date overridden → {parsed} [manual][/dim]')
+
+            ok += 1
+
+        except Exception as e:  # noqa: BLE001
+            console.print(f'      [red]Error:[/red] {e}')
+            errors += 1
+
+    console.rule(style='dim')
+    parts = [f'[green]{ok} imported[/green]']
+    if skipped:
+        parts.append(f'[yellow]{skipped} skipped[/yellow]')
+    if errors:
+        parts.append(f'[red]{errors} errors[/red]')
+    console.print('  ' + '  ·  '.join(parts))
 
 
 # ── cmd: enrich art ──────────────────────────────────────────────────────────
@@ -3880,6 +4026,17 @@ def main():
     p.add_argument('--auto',        action='store_true', help='Apply enrichment without prompting')
     p.add_argument('--db',          metavar='PATH',      help='Path to master.sqlite')
     p.set_defaults(func=cmd_import)
+
+    # discography
+    p_disc = sub.add_parser('discography', help='Import a full discography from a YAML file')
+    p_disc.add_argument('discography', metavar='FILE',
+                        help='YAML file with album_title + article (Wikipedia URL) per entry')
+    p_disc.add_argument('--artist',   metavar='NAME', default='',
+                        help='Artist name hint for MB title-search fallback')
+    p_disc.add_argument('--no-aoty',  action='store_true', help='Skip AOTY enrichment')
+    p_disc.add_argument('--no-wiki',  action='store_true', help='Skip Wikipedia date lookup')
+    p_disc.add_argument('--db',       metavar='PATH',      help='Path to master.sqlite')
+    p_disc.set_defaults(func=cmd_discography)
 
     # enrich
     p_enrich = sub.add_parser('enrich', help='Enrich existing DB entries')

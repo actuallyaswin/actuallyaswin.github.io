@@ -20,6 +20,9 @@ __all__ = [
     'mb_find_release', 'mb_fetch_recording_ids',
     'mb_fetch_release_data', 'mb_fetch_artist_data',
     'mb_fetch_release_group_releases',
+    'mb_find_release_group',
+    'mb_canonical_score', 'mb_release_reasons',
+    'mb_rg_from_wiki_url',
 ]
 
 import json
@@ -851,6 +854,26 @@ def _mb_get_safe(path: str, params: dict = None) -> 'dict | None':
 
 # ── MusicBrainz query functions ────────────────────────────────────────────────
 
+def mb_rg_from_wiki_url(wiki_url: str) -> 'str | None':
+    """Resolve a Wikipedia article URL to a MusicBrainz release-group MBID.
+
+    MB stores Wikipedia URL relations on release groups.  We look up the URL
+    entity, then follow the release-group relation back to its MBID.
+    Returns the MBID string or None if not found.
+    """
+    # Normalise URL: ensure https, strip anchors/query, decode %xx
+    url = re.sub(r'^http:', 'https:', wiki_url.split('#')[0].split('?')[0])
+    data = _mb_get_safe('/url', {'resource': url, 'inc': 'release-group-rels'})
+    if not data:
+        return None
+    for rel in (data.get('relations') or []):
+        if rel.get('target-type') == 'release-group':
+            rg = rel.get('release-group') or {}
+            if rg.get('id'):
+                return rg['id']
+    return None
+
+
 def mb_find_release(title: str, artist: str, track_count: int, year: int) -> 'tuple[str | None, int]':
     """Search MB for a release matching title/artist/track_count/year.
     Returns (mbid, score) or (None, 0)."""
@@ -872,6 +895,29 @@ def mb_find_release(title: str, artist: str, track_count: int, year: int) -> 'tu
         if score > best:
             best, best_id = score, r['id']
     return (best_id, round(best)) if best_id and best >= 65 else (None, 0)
+
+
+def mb_find_release_group(title: str, artist: str, year: int = 0) -> 'str | None':
+    """Search MB for a release group matching title/artist.
+    Returns the release-group MBID of the best match, or None."""
+    try:
+        query = f'releasegroup:"{title}"'
+        if artist:
+            query += f' AND artist:"{artist}"'
+        data = _mb_get('/release-group', {'query': query, 'limit': 5})
+    except Exception:
+        return None
+    for rg in (data.get('release-groups') or []):
+        score = int(rg.get('score') or 0)
+        if score < 80:
+            continue
+        # Optionally verify the year against first-release-date
+        if year:
+            rg_year = int((rg.get('first-release-date') or '0')[:4] or '0')
+            if rg_year and abs(rg_year - year) > 1:
+                continue
+        return rg['id']
+    return None
 
 
 def mb_fetch_recording_ids(release_mbid: str) -> 'tuple[dict, dict, str | None]':

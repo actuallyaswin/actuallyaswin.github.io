@@ -459,8 +459,26 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
             artist_name or '', release_name, release_year, release_type
         )
         if article is None:
-            # Gemini unavailable → keyword search fallback
-            wiki_page_id, wiki_date = search_wikipedia(release_name, artist_name)
+            # Gemini unavailable → keyword search fallback via Wikipedia opensearch
+            query = f'{release_name} {artist_name or ""}'.strip()
+            try:
+                _wiki_lim.wait()
+                search_url = ('https://en.wikipedia.org/w/api.php?'
+                              + urllib.parse.urlencode({
+                                  'action': 'opensearch', 'search': query,
+                                  'limit': 3, 'format': 'json', 'redirects': 'resolve',
+                              }))
+                req = urllib.request.Request(search_url, headers={'User-Agent': MB_UA})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    results = json.loads(r.read())
+                # results[3] = URLs, results[1] = titles
+                if results and len(results) > 3 and results[3]:
+                    first_url = results[3][0]
+                    wiki_page_id = _wiki_url_to_id(first_url)
+                    if wiki_page_id:
+                        wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
+            except Exception as e:
+                log.debug('Wikipedia keyword search error: %s', e)
         elif article:
             # Gemini returned an article title — resolve to page_id
             # _wiki_url_to_id also works with bare titles (no /wiki/ prefix)
