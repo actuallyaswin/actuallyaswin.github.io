@@ -13,6 +13,7 @@ from mdb_strings import (
     resolve_title,
     ascii_key,
     normalize_text,
+    normalize_upc,
     parse_track_title as _parse_track_title,
     _should_update_date,
     is_soundtrack_title,
@@ -344,6 +345,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         # Listens columns added by sync.py in earlier versions — centralised here
         "ALTER TABLE listens ADD COLUMN ms_played INTEGER",
         "ALTER TABLE listens ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE releases ADD COLUMN upc TEXT",
     ]:
         try:
             conn.execute(ddl)
@@ -701,6 +703,9 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
             label = lbl
             break
 
+    barcode = (mb_data.get('barcode') or '').strip()
+    upc = normalize_upc(barcode) if barcode else None
+
     total_tracks = sum(
         len(m.get('tracks') or []) for m in (mb_data.get('media') or [])
     )
@@ -718,10 +723,11 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
         cur.execute(
             f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?,'
             f' type_secondary = COALESCE(type_secondary, ?){date_fields},'
-            f' label = ?, release_group_mbid = ?, total_tracks = ?, updated_at = ?'
+            f' label = ?, release_group_mbid = ?, total_tracks = ?,'
+            f' upc = COALESCE(upc, ?), updated_at = ?'
             f' WHERE id = ?',
             (title, primary_artist_id, rg_type, type_secondary, *date_vals,
-             label or None, rg_mbid, total_tracks, now, row['id']),
+             label or None, rg_mbid, total_tracks, upc, now, row['id']),
         )
         if image_url and not row['album_art_url']:
             cur.execute(
@@ -740,13 +746,13 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
     cur.execute(
         'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
         ' release_date, release_year, label, mbid, release_group_mbid, album_art_url,'
-        ' album_art_source, total_tracks, date_source, created_at, updated_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ' album_art_source, total_tracks, upc, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (release_id, slug, title, primary_artist_id, rg_type, type_secondary,
          date_raw or None, rel_year, label or None,
          mbid or None, rg_mbid,
          image_url, 'coverartarchive' if image_url else None,
-         total_tracks, 'musicbrainz' if date_raw else None,
+         total_tracks, upc, 'musicbrainz' if date_raw else None,
          now, now),
     )
     return release_id, True
@@ -1225,7 +1231,7 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         conn.commit()
 
     # Phase 3: fuzzy ascii_key matching (full MB-normalized title, not stripped clean title)
-    _FUZZY_THRESHOLD = 0.85
+    _FUZZY_THRESHOLD = 85  # rapidfuzz uses 0-100 scale
     fuzzy_map = {}
     for t in db_tracks:
         k = _mb_key(t['title'])
@@ -1241,19 +1247,39 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     ''', [*artist_names, *album_params]).fetchall()
 
     fuzzy_matched = 0
-    for listen in still_unmatched:
-        raw_key = _mb_key(listen['raw_track_name'])
-        if not raw_key:
-            continue
-        best_ratio, best_id = 0.0, None
-        for db_key, tid in fuzzy_map.items():
-            ratio = difflib.SequenceMatcher(None, raw_key, db_key).ratio()
-            if ratio > best_ratio:
-                best_ratio, best_id = ratio, tid
-        if best_ratio >= _FUZZY_THRESHOLD and best_id:
-            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
-                         [best_id, listen['id']])
-            fuzzy_matched += 1
+    if still_unmatched and fuzzy_map:
+        try:
+            from rapidfuzz import process as _rfprocess, fuzz as _rffuzz
+            _use_rapidfuzz = True
+        except ImportError:
+            _use_rapidfuzz = False
+
+        fuzzy_keys = list(fuzzy_map.keys())
+        for listen in still_unmatched:
+            raw_key = _mb_key(listen['raw_track_name'])
+            if not raw_key:
+                continue
+            if _use_rapidfuzz:
+                result = _rfprocess.extractOne(
+                    raw_key, fuzzy_keys,
+                    scorer=_rffuzz.ratio,
+                    score_cutoff=_FUZZY_THRESHOLD,
+                )
+                if result:
+                    best_id = fuzzy_map[result[0]]
+                    conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                                 [best_id, listen['id']])
+                    fuzzy_matched += 1
+            else:
+                best_ratio, best_id = 0.0, None
+                for db_key, tid in fuzzy_map.items():
+                    ratio = difflib.SequenceMatcher(None, raw_key, db_key).ratio() * 100
+                    if ratio > best_ratio:
+                        best_ratio, best_id = ratio, tid
+                if best_ratio >= _FUZZY_THRESHOLD and best_id:
+                    conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                                 [best_id, listen['id']])
+                    fuzzy_matched += 1
     if fuzzy_matched:
         conn.commit()
 

@@ -878,7 +878,7 @@ def resolve_by_gtin(upc: str, skip: frozenset = frozenset()) -> dict[str, str]:
         skip:  Provider keys to skip (e.g. frozenset({'sp'}) if you already have Spotify)
 
     Returns:
-        Dict with subset of {'sp': spotify_album_id, 'mb': mbid, 'am': itunes_id}
+        Dict with subset of {'sp': spotify_album_id, 'mb': mbid, 'am': itunes_id, 'dz': deezer_id}
     """
     normalized = normalize_upc(upc)
     if not normalized:
@@ -927,6 +927,21 @@ def resolve_by_gtin(upc: str, skip: frozenset = frozenset()) -> dict[str, str]:
                 if item.get('wrapperType') == 'collection':
                     result['am'] = str(item['collectionId'])
                     break
+        except Exception:
+            pass
+
+    if 'dz' not in skip:
+        try:
+            import json
+            import urllib.request
+            req = urllib.request.Request(
+                f'https://api.deezer.com/album/upc:{normalized}',
+                headers={'User-Agent': 'mdb/1.0'},
+            )
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read())
+            if data.get('id') and not data.get('error'):
+                result['dz'] = str(data['id'])
         except Exception:
             pass
 
@@ -1040,12 +1055,12 @@ def upsert_release_mdb(cur: sqlite3.Cursor,
             f'UPDATE releases SET title=?, primary_artist_id=?, type=?,'
             f' type_secondary=COALESCE(type_secondary, ?){date_fields},'
             f' label=?, mbid=COALESCE(mbid, ?), release_group_mbid=COALESCE(release_group_mbid, ?),'
-            f' apple_music_id=COALESCE(apple_music_id, ?),'
+            f' apple_music_id=COALESCE(apple_music_id, ?), upc=COALESCE(upc, ?),'
             f' total_tracks=?, spotify_popularity=?, updated_at=? WHERE id=?',
             (release.title, primary_artist_id, release.primary_type,
              release.type_secondary, *date_vals,
              label_str, release.mbid, release.release_group_mbid,
-             release.apple_music_id,
+             release.apple_music_id, release.upc,
              release.total_tracks, release.spotify_popularity, now, release_id),
         )
         if release.album_art_url and not row['album_art_url']:
@@ -1065,14 +1080,14 @@ def upsert_release_mdb(cur: sqlite3.Cursor,
         cur.execute(
             'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
             ' release_date, release_year, date_source, label, spotify_id, mbid,'
-            ' release_group_mbid, apple_music_id, album_art_url, album_art_source,'
+            ' release_group_mbid, apple_music_id, upc, album_art_url, album_art_source,'
             ' total_tracks, spotify_popularity, created_at, updated_at)'
-            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (release_id, slug, release.title, primary_artist_id,
              release.primary_type, release.type_secondary,
              release.release_date, rel_year, release.date_source or None,
              label_str, release.spotify_id, release.mbid,
-             release.release_group_mbid, release.apple_music_id,
+             release.release_group_mbid, release.apple_music_id, release.upc,
              release.album_art_url, release.album_art_source,
              release.total_tracks, release.spotify_popularity,
              now, now),
