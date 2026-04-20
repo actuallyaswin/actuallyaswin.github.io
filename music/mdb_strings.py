@@ -37,6 +37,11 @@ _LOWERCASE_WORDS = _ARTICLES | _COORD_CONJ | _SHORT_PREPS
 _WORD_STRIP_RE = re.compile(r'^([^A-Za-z0-9]*)(.*?)([^A-Za-z0-9]*)$', re.DOTALL)
 # Apostrophe compound: o'clock, n'sync, rock'n'roll ...
 _APOS_RE = re.compile(r"^([A-Za-z]+)(['''])([A-Za-z].*)$")
+# Contraction suffixes that should stay lowercase after an apostrophe
+# (e.g. "she's", "you've", "I'm", "we'll", "don't", "I'd")
+_CONTRACTION_SUFFIXES: frozenset[str] = frozenset({
+    's', 't', 'm', 'd', 've', 're', 'll', 'nt',
+})
 
 
 def _tc_word(word: str, force_cap: bool, is_last: bool) -> str:
@@ -51,11 +56,16 @@ def _tc_word(word: str, force_cap: bool, is_last: bool) -> str:
     if not core:
         return word
 
-    # Apostrophe compounds: both parts capitalised (O'Clock rule)
+    # Apostrophe compounds: O'Clock/O'Brien rule — capitalise both parts.
+    # Exception: common contraction suffixes (s, t, m, d, ve, re, ll, nt)
+    # stay lowercase, e.g. "she's" → "She's", "you've" → "You've".
     apos = _APOS_RE.match(core)
     if apos:
         p1, apos_char, p2 = apos.group(1), apos.group(2), apos.group(3)
-        cap = p1[0].upper() + p1[1:].lower() + apos_char + p2[0].upper() + p2[1:].lower()
+        if p2.lower() in _CONTRACTION_SUFFIXES:
+            cap = p1[0].upper() + p1[1:].lower() + apos_char + p2.lower()
+        else:
+            cap = p1[0].upper() + p1[1:].lower() + apos_char + p2[0].upper() + p2[1:].lower()
         return prefix + cap + suffix
 
     lower = core.lower()
@@ -165,11 +175,12 @@ _ETI_DESCRIPTORS: frozenset[str] = frozenset({
     'arrangement', 'interlude', 'intro', 'outro',
 })
 
-# Regex: trailing ETI descriptor word (word boundary + descriptor + end)
+# Regex: trailing ETI descriptor word, optionally followed by a 4-digit year
+# Matches: "Remastered", "Remastered 2011", "Live at X" — but not bare years
 _ETI_END_RE = re.compile(
     r'\b(?:' +
     '|'.join(re.escape(w) for w in sorted(_ETI_DESCRIPTORS, key=len, reverse=True)) +
-    r')\s*$',
+    r')\s*(?:\d{4})?\s*$',
     re.IGNORECASE,
 )
 

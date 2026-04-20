@@ -301,6 +301,7 @@ def open_db(path=None) -> sqlite3.Connection:
     conn.execute('PRAGMA foreign_keys = ON')
     conn.execute('PRAGMA journal_mode = WAL')
     conn.execute('PRAGMA synchronous = NORMAL')
+    conn.execute('PRAGMA busy_timeout = 10000')
     return conn
 
 
@@ -819,11 +820,14 @@ def upsert_release_beatport(cur, beatport_id: int, title: str,
 
 
 def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
-                     artist_map: dict) -> 'tuple[int, int]':
+                     artist_map: dict, *,
+                     no_release_reassign: bool = False) -> 'tuple[int, int]':
     """Upsert tracks from a MusicBrainzRelease's .tracks list.
     Each track dict has: name, duration_ms, _mb_recording_id, _isrcs,
     _disc_number, _track_number, _artist_credit.
     artist_map: {mb_artist_id: our_artist_id}.
+    no_release_reassign: if True, skip (don't move) tracks already owned by
+      a different release — avoids ping-pong when called from --missing-tracks.
     Returns (created_count, updated_count)."""
     created = updated = 0
     now     = int(time.time())
@@ -840,14 +844,17 @@ def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
         row = None
         if rec_id:
             row = cur.execute(
-                'SELECT id, title FROM tracks WHERE mbid = ?', (rec_id,)
+                'SELECT id, title, release_id FROM tracks WHERE mbid = ?', (rec_id,)
             ).fetchone()
         if not row and isrc:
             row = cur.execute(
-                'SELECT id, title FROM tracks WHERE isrc = ?', (isrc,)
+                'SELECT id, title, release_id FROM tracks WHERE isrc = ?', (isrc,)
             ).fetchone()
 
         if row:
+            # Skip tracks owned by a different release when reassignment is forbidden
+            if no_release_reassign and row[2] and row[2] != release_id:
+                continue
             track_id       = row[0]
             title_to_store = resolve_title(title, row[1])
             cur.execute(

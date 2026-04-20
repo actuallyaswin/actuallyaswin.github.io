@@ -869,9 +869,8 @@ class ReleaseMerge:
 def resolve_by_gtin(upc: str, skip: frozenset = frozenset()) -> dict[str, str]:
     """Given a UPC/GTIN, return {provider_key: id} for all discoverable sources.
 
-    Uses the GTIN broadcast approach from Harmony: one UPC queries Spotify,
-    MusicBrainz, iTunes, etc. simultaneously.  Bandcamp does not support GTIN
-    lookups and is never auto-discovered.
+    Queries Spotify, MusicBrainz, iTunes, and Deezer in parallel.  Bandcamp
+    does not support GTIN lookups and is never auto-discovered.
 
     Args:
         upc:   UPC/GTIN string (any format; normalized internally)
@@ -880,70 +879,79 @@ def resolve_by_gtin(upc: str, skip: frozenset = frozenset()) -> dict[str, str]:
     Returns:
         Dict with subset of {'sp': spotify_album_id, 'mb': mbid, 'am': itunes_id, 'dz': deezer_id}
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     normalized = normalize_upc(upc)
     if not normalized:
         return {}
 
+    def _sp_lookup():
+        import os
+        from mdb_apis import SpotifyClient
+        from mdb_ops import load_dotenv
+        load_dotenv()
+        cid = os.environ.get('SPOTIFY_CLIENT_ID', '')
+        csc = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
+        if cid and csc:
+            client = SpotifyClient(cid, csc)
+            data = client.get(f'/search?q=upc:{normalized}&type=album&limit=1')
+            items = (data.get('albums') or {}).get('items') or []
+            if items:
+                return 'sp', items[0]['id']
+        return 'sp', None
+
+    def _mb_lookup():
+        from mdb_apis import _mb_get
+        data = _mb_get('/release', {'query': f'barcode:{normalized}', 'limit': 1})
+        releases = data.get('releases') or []
+        if releases:
+            return 'mb', releases[0]['id']
+        return 'mb', None
+
+    def _am_lookup():
+        import json
+        import urllib.request
+        req = urllib.request.Request(
+            f'https://itunes.apple.com/lookup?upc={normalized}&entity=album&limit=1',
+            headers={'User-Agent': 'mdb/1.0'},
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+        for item in (data.get('results') or []):
+            if item.get('wrapperType') == 'collection':
+                return 'am', str(item['collectionId'])
+        return 'am', None
+
+    def _dz_lookup():
+        import json
+        import urllib.request
+        req = urllib.request.Request(
+            f'https://api.deezer.com/album/upc:{normalized}',
+            headers={'User-Agent': 'mdb/1.0'},
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+        if data.get('id') and not data.get('error'):
+            return 'dz', str(data['id'])
+        return 'dz', None
+
+    workers = []
+    if 'sp' not in skip: workers.append(_sp_lookup)
+    if 'mb' not in skip: workers.append(_mb_lookup)
+    if 'am' not in skip: workers.append(_am_lookup)
+    if 'dz' not in skip: workers.append(_dz_lookup)
+
     result: dict[str, str] = {}
-
-    if 'sp' not in skip:
-        try:
-            import os
-            from mdb_apis import SpotifyClient
-            from mdb_ops import load_dotenv
-            load_dotenv()
-            cid = os.environ.get('SPOTIFY_CLIENT_ID', '')
-            csc = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
-            if cid and csc:
-                client = SpotifyClient(cid, csc)
-                data = client.get(f'/search?q=upc:{normalized}&type=album&limit=1')
-                items = (data.get('albums') or {}).get('items') or []
-                if items:
-                    result['sp'] = items[0]['id']
-        except Exception:
-            pass
-
-    if 'mb' not in skip:
-        try:
-            from mdb_apis import _mb_get
-            data = _mb_get('/release', {'query': f'barcode:{normalized}', 'limit': 1})
-            releases = data.get('releases') or []
-            if releases:
-                result['mb'] = releases[0]['id']
-        except Exception:
-            pass
-
-    if 'am' not in skip:
-        try:
-            import json
-            import urllib.request
-            req = urllib.request.Request(
-                f'https://itunes.apple.com/lookup?upc={normalized}&entity=album&limit=1',
-                headers={'User-Agent': 'mdb/1.0'},
-            )
-            with urllib.request.urlopen(req, timeout=8) as r:
-                data = json.loads(r.read())
-            for item in (data.get('results') or []):
-                if item.get('wrapperType') == 'collection':
-                    result['am'] = str(item['collectionId'])
-                    break
-        except Exception:
-            pass
-
-    if 'dz' not in skip:
-        try:
-            import json
-            import urllib.request
-            req = urllib.request.Request(
-                f'https://api.deezer.com/album/upc:{normalized}',
-                headers={'User-Agent': 'mdb/1.0'},
-            )
-            with urllib.request.urlopen(req, timeout=8) as r:
-                data = json.loads(r.read())
-            if data.get('id') and not data.get('error'):
-                result['dz'] = str(data['id'])
-        except Exception:
-            pass
+    if workers:
+        with ThreadPoolExecutor(max_workers=len(workers)) as ex:
+            futs = [ex.submit(fn) for fn in workers]
+            for fut in as_completed(futs):
+                try:
+                    key, val = fut.result()
+                    if val is not None:
+                        result[key] = val
+                except Exception:
+                    pass
 
     return result
 

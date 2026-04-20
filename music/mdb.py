@@ -1437,10 +1437,19 @@ def import_album_unified(
             use_aoty=use_aoty, use_wiki=use_wiki,
         )
 
-    if use_aoty:
-        _import_aoty_step(db_path, release_id, mdb_r.title, artist_name)
-    if use_wiki:
-        _import_wiki_step(db_path, release_id, mdb_r.title, artist_name)
+    if use_aoty or use_wiki:
+        from concurrent.futures import ThreadPoolExecutor, wait as _wait
+        _enrichment_futs = []
+        with ThreadPoolExecutor(max_workers=2) as _ex:
+            if use_aoty:
+                _enrichment_futs.append(
+                    _ex.submit(_import_aoty_step, db_path, release_id, mdb_r.title, artist_name)
+                )
+            if use_wiki:
+                _enrichment_futs.append(
+                    _ex.submit(_import_wiki_step, db_path, release_id, mdb_r.title, artist_name)
+                )
+            _wait(_enrichment_futs)
     _auto_rematch(db_path, release_id, artist_name, mdb_r.title)
 
     return release_id, mdb_r.title, artist_name, mdb_r.release_date or ''
@@ -2234,9 +2243,14 @@ def cmd_enrich_tracks(args):
                     our_id, _ = _upsert_artist_mb(cur, mb_a)
                     artist_map[mb_aid] = our_id
 
-                n_created, n_updated = _upsert_tracks_mb(cur, release_id, rel.tracks, artist_map)
+                n_created, n_updated = _upsert_tracks_mb(
+                    cur, release_id, rel.tracks, artist_map,
+                    no_release_reassign=True,
+                )
                 conn.commit()
-                console.print(f'  [dim]{n_created} created, {n_updated} updated ({len(rel.tracks)} total)[/dim]')
+                skipped = len(rel.tracks) - n_created - n_updated
+                note = f'  [dim yellow]{skipped} already on other release[/dim yellow]' if skipped else ''
+                console.print(f'  [dim]{n_created} created, {n_updated} updated ({len(rel.tracks)} total)[/dim]{note}')
                 total_created += n_created
             console.rule(style='dim')
             console.print(f'  [dim]Created {total_created} tracks across {len(queue)} releases[/dim]')
