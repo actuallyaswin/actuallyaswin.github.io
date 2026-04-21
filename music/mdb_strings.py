@@ -705,6 +705,8 @@ def normalize_upc(upc: 'str | None') -> 'str | None':
     digits = re.sub(r'\D', '', str(upc))
     if len(digits) == 12:
         digits = '0' + digits  # UPC-A → EAN-13
+    if len(digits) == 14 and digits[0] == '0':
+        digits = digits[1:]    # GTIN-14 indicator-0 → EAN-13
     if len(digits) in (8, 13, 14):
         return digits
     return None  # not a recognized GTIN length
