@@ -1738,6 +1738,14 @@ def cmd_status(args):
             SELECT   raw_album_name, raw_artist_name, COUNT(*) AS n
             FROM     listens
             WHERE    track_id IS NULL
+              AND    NOT EXISTS (
+                         SELECT 1 FROM legacy_track_map ltm
+                         WHERE  ltm.lastfm_id = 'album|||'
+                                    || lower(raw_artist_name)
+                                    || '|||'
+                                    || lower(raw_album_name)
+                           AND  ltm.match_method = 'hide'
+                     )
             GROUP BY raw_album_name, raw_artist_name
             ORDER BY n DESC
             LIMIT    15
@@ -1747,6 +1755,31 @@ def cmd_status(args):
                 f'    [dim]{r["n"]:4d}x[/dim]  '
                 f'{r["raw_artist_name"]} — {r["raw_album_name"]}'
             )
+
+        hidden_rows = conn.execute('''
+            SELECT   raw_album_name, raw_artist_name, COUNT(*) AS n
+            FROM     listens
+            WHERE    track_id IS NULL
+              AND    EXISTS (
+                         SELECT 1 FROM legacy_track_map ltm
+                         WHERE  ltm.lastfm_id = 'album|||'
+                                    || lower(raw_artist_name)
+                                    || '|||'
+                                    || lower(raw_album_name)
+                           AND  ltm.match_method = 'hide'
+                     )
+            GROUP BY raw_album_name, raw_artist_name
+            ORDER BY n DESC
+            LIMIT    15
+        ''').fetchall()
+        if hidden_rows:
+            console.print()
+            console.print('  Hidden albums (unresolved listens):')
+            for r in hidden_rows:
+                console.print(
+                    f'    [dim]{r["n"]:4d}x  '
+                    f'{r["raw_artist_name"]} — {r["raw_album_name"]}[/dim]'
+                )
 
     conn.close()
 
