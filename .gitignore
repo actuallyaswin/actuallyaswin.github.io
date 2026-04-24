@@ -1,8 +1,7 @@
 .DS_Store
 music/.env
-
-# Development documentation (context files)
-**/context.md
+*.md
+!**/README.md
 
 # Python cache
 **/__pycache__/
