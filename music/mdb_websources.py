@@ -1,4 +1,7 @@
-"""mdb_websources — Web scrapers for AOTY and Wikipedia."""
+"""mdb_websources — Web scrapers for AOTY and Wikipedia.
+
+DB persistence (save_aoty_data, save_release_date) lives in mdb_ops.
+"""
 
 import difflib
 import json
@@ -22,7 +25,6 @@ from mdb_apis import (
     AOTY_SEARCH, AOTY_UA, AOTY_RETRY, MB_UA,
     mb_fetch_release_data,
 )
-from mdb_ops import upsert_external_link, EL_RELEASE, EL_SVC_WIKIPEDIA
 
 log = logging.getLogger(__name__)
 
@@ -254,50 +256,8 @@ def _fmt_aoty(data: dict) -> str:
     return '\n'.join(parts)
 
 
-def save_aoty_data(conn, release_id: str, aoty_url: str, data: dict,
-                   overwrite_date: bool = False, overwrite_type: bool = False) -> None:
-    now      = int(time.time())
-    existing = conn.execute(
-        'SELECT release_date, type, date_source FROM releases WHERE id = ?', (release_id,)
-    ).fetchone()
-    ex_date   = existing['release_date'] if existing else None
-    ex_type   = existing['type']         if existing else None
-    ex_source = existing['date_source']  if existing else None
-
-    updates = {'aoty_url': aoty_url, 'updated_at': now}
-    if data['release_date'] and (overwrite_date
-            or _should_update_date(ex_date, ex_source, data['release_date'], 'aoty')):
-        updates['release_date'] = data['release_date']
-        updates['release_year'] = data['release_year']
-        updates['date_source']  = 'aoty'
-    if data['type'] and (overwrite_type or not ex_type):
-        updates['type'] = data['type']
-        if data['type_secondary'] is not None:
-            updates['type_secondary'] = data['type_secondary']
-    if data['score_critic']   is not None: updates['aoty_score_critic']   = data['score_critic']
-    if data['score_user']     is not None: updates['aoty_score_user']     = data['score_user']
-    if data['ratings_critic'] is not None: updates['aoty_ratings_critic'] = data['ratings_critic']
-    if data['ratings_user']   is not None: updates['aoty_ratings_user']   = data['ratings_user']
-
-    if updates:
-        set_clause = ', '.join(f'{k} = ?' for k in updates)
-        conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?',
-                     (*updates.values(), release_id))
-
-    for aoty_id, name, slug, is_primary in data['genres']:
-        conn.execute(
-            'INSERT INTO genres (aoty_id, name, slug) VALUES (?, ?, ?)'
-            ' ON CONFLICT(aoty_id) DO UPDATE SET name = excluded.name, slug = excluded.slug',
-            (aoty_id, name, slug)
-        )
-        conn.execute(
-            'INSERT INTO release_genres (release_id, aoty_genre_id, is_primary) VALUES (?, ?, ?)'
-            ' ON CONFLICT(release_id, aoty_genre_id) DO UPDATE SET is_primary = excluded.is_primary',
-            (release_id, aoty_id, int(is_primary))
-        )
-
-    conn.commit()
-
+# NOTE: save_aoty_data and save_release_date live in mdb_ops (not here) to
+# keep scraping logic separate from DB write logic.
 
 # ── Wikipedia ──────────────────────────────────────────────────────────────────
 
@@ -375,7 +335,76 @@ def fetch_wikipedia_date(wiki_url: 'str | None' = None,
     return _date_from_cell(m.group(1)) if m else None
 
 
-def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[int | None, str | None]':
+def _gemini_find_wiki_article(
+    artist: str,
+    title: str,
+    year: 'str | None' = None,
+    release_type: 'str | None' = None,
+) -> 'str | None':
+    """Ask Gemini for the Wikipedia article title for a specific music release.
+
+    Returns:
+      'Article Title'  — Gemini found a specific article (use it)
+      ''               — Gemini ran and confirmed no article exists (don't keyword-search)
+      None             — Gemini unavailable (no API key / error) → fall back to search_wikipedia
+    """
+    import os, json as _json, re as _re, time as _time
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError:
+        return None
+
+    year_str = f' ({year})' if year else ''
+    type_str = f' [{release_type}]' if release_type else ''
+
+    prompt = (
+        'You are a music metadata assistant. '
+        'Return the exact Wikipedia article title for this specific music release, '
+        'or "NONE" if no Wikipedia article exists for it.\n\n'
+        f'Artist: {artist or "Unknown"}\n'
+        f'Release: {title}{year_str}{type_str}\n\n'
+        'Rules:\n'
+        '- Return the article for THIS SPECIFIC RELEASE (album/EP/single), '
+        'not the artist biography page.\n'
+        '- If the artist or title matches a non-music entity (TV show, film, person, '
+        'place, etc.) do NOT return that entity\'s article — return "NONE".\n'
+        '- Return "NONE" if you are not highly confident the article exists.\n'
+        '- Respond with ONLY JSON: {"article": "Title"} or {"article": "NONE"}'
+    )
+
+    _MAX_RETRIES = 3
+    for attempt in range(_MAX_RETRIES):
+        try:
+            client   = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash-lite',
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    response_mime_type='application/json',
+                ),
+            )
+            data    = _json.loads(response.text)
+            article = (data.get('article') or '').strip()
+            if not article or article.upper() == 'NONE':
+                return ''
+            return article
+        except Exception as exc:
+            msg = str(exc)
+            m   = _re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", msg)
+            wait = float(m.group(1)) + 1 if m else 2 ** (attempt + 1)
+            if attempt < _MAX_RETRIES - 1 and ('429' in msg or '503' in msg):
+                _time.sleep(wait)
+            else:
+                log.debug('Gemini wiki lookup failed: %s', exc)
+                return None
+    return None
+
+
+
     """Return (page_id, date). page_id is the permanent Wikipedia integer page ID."""
     query = f'{release_name} {artist_name}'.strip() if artist_name else release_name
     url   = ('https://en.wikipedia.org/w/api.php?'
@@ -399,8 +428,16 @@ def search_wikipedia(release_name: str, artist_name: 'str | None') -> 'tuple[int
 
 
 def fetch_date_candidates(mbid: str, release_name: str = None,
-                          artist_name: str = None) -> 'tuple[list, int | None]':
-    """Return (candidates, wiki_page_id). Each candidate is {'date', 'source', 'notes'}."""
+                          artist_name: str = None,
+                          release_year: str = None,
+                          release_type: str = None) -> 'tuple[list, int | None]':
+    """Return (candidates, wiki_page_id). Each candidate is {'date', 'source', 'notes'}.
+
+    Wikipedia article discovery order:
+      1. MB url-rels  — curated, most reliable
+      2. Gemini       — semantic disambiguation (requires GEMINI_API_KEY)
+      3. search_wikipedia — keyword fallback (only when Gemini unavailable)
+    """
     release_date, rg_first, wiki_url = mb_fetch_release_data(mbid)
     mb_dates, seen = [], set()
     for date, label in [(rg_first, 'MusicBrainz (release group)'),
@@ -412,38 +449,48 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
     wiki_page_id = None
     wiki_date    = None
     if wiki_url:
+        # MB provided a curated Wikipedia link — use it directly
         wiki_page_id = _wiki_url_to_id(wiki_url)
         if wiki_page_id:
             wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
     elif release_name:
-        wiki_page_id, wiki_date = search_wikipedia(release_name, artist_name)
+        # Try Gemini first for semantic disambiguation
+        article = _gemini_find_wiki_article(
+            artist_name or '', release_name, release_year, release_type
+        )
+        if article is None:
+            # Gemini unavailable → keyword search fallback via Wikipedia opensearch
+            query = f'{release_name} {artist_name or ""}'.strip()
+            try:
+                _wiki_lim.wait()
+                search_url = ('https://en.wikipedia.org/w/api.php?'
+                              + urllib.parse.urlencode({
+                                  'action': 'opensearch', 'search': query,
+                                  'limit': 3, 'format': 'json', 'redirects': 'resolve',
+                              }))
+                req = urllib.request.Request(search_url, headers={'User-Agent': MB_UA})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    results = json.loads(r.read())
+                # results[3] = URLs, results[1] = titles
+                if results and len(results) > 3 and results[3]:
+                    first_url = results[3][0]
+                    wiki_page_id = _wiki_url_to_id(first_url)
+                    if wiki_page_id:
+                        wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
+            except Exception as e:
+                log.debug('Wikipedia keyword search error: %s', e)
+        elif article:
+            # Gemini returned an article title — resolve to page_id
+            # _wiki_url_to_id also works with bare titles (no /wiki/ prefix)
+            wiki_page_id = _wiki_url_to_id(article)
+            if wiki_page_id:
+                wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
+        # else article == '' → Gemini confirmed no article; don't keyword-search
 
-    candidates = []
-    if wiki_date:
-        notes_url = f'https://en.wikipedia.org/wiki/?curid={wiki_page_id}' if wiki_page_id else ''
-        candidates.append({'date': wiki_date, 'source': 'Wikipedia ★', 'notes': notes_url})
-    for c in mb_dates:
-        if c['date'] not in {x['date'] for x in candidates}:
-            candidates.append(c)
+    # Wikipedia date intentionally excluded — wiki article matching can return
+    # wrong-entity pages (e.g. "Cherry" for "Butterfly"). wiki_page_id is still
+    # returned so callers can store it as an external link.
+    candidates = list(mb_dates)
     return candidates, wiki_page_id
 
-
-def _save_date(conn, release_id: str, date_str: str,
-               wiki_page_id: 'int | None' = None, source: str = 'wikipedia') -> bool:
-    """Write a date to releases, respecting precision and source priority.
-    source='manual' always wins (user explicitly confirmed)."""
-    if source != 'manual':
-        row = conn.execute(
-            'SELECT release_date, date_source FROM releases WHERE id = ?', (release_id,)
-        ).fetchone()
-        if row and not _should_update_date(row['release_date'], row['date_source'], date_str, source):
-            return False
-    year    = int(date_str[:4]) if date_str else None
-    updates = {'release_date': date_str, 'release_year': year,
-               'date_source': source, 'updated_at': int(time.time())}
-    set_clause = ', '.join(f'{k} = ?' for k in updates)
-    conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?', (*updates.values(), release_id))
-    if wiki_page_id:
-        upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))
-    conn.commit()
-    return True
+# NOTE: _save_date / save_release_date lives in mdb_ops.

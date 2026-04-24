@@ -367,17 +367,17 @@ def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
                 console.print(f'    + {t}')
     console.print()
 
-    console.print('[bold]Recommendation[/bold]')
-    console.print('─' * 78)
     console.print(
-        f'  [green]Canonical:[/green]  [bold]{canon.name}[/bold]  '
+        f'  [green]·  Canonical:[/green]  [bold]{canon.name}[/bold]  '
         f'[dim]({canon.id[:12]}…)  {canon.date}  {canon.track_count} tracks[/dim]'
     )
     for alt in ranked[1:]:
-        reason_str = '; '.join(reasons.get(alt.id) or []) or 'lower canonical score'
+        rs = [r for r in (reasons.get(alt.id) or []) if r != 'lower canonical score']
+        reason_str = ('; '.join(rs)) if rs else ''
         console.print(
-            f'  [red]Hide:[/red]  [dim]{alt.name}  ({alt.id[:12]}…)  '
-            f'{alt.date or "?"}  {alt.track_count} tracks[/dim]  — {reason_str}'
+            f'  [red]·  Hide:[/red]  [dim]{alt.name}  ({alt.id[:12]}…)  '
+            f'{alt.date or "?"}  {alt.track_count} tracks[/dim]'
+            + (f'  — {reason_str}' if reason_str else '')
         )
     console.print()
 

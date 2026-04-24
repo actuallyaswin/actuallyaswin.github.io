@@ -13,6 +13,7 @@ from mdb_strings import (
     resolve_title,
     ascii_key,
     normalize_text,
+    normalize_upc,
     parse_track_title as _parse_track_title,
     _should_update_date,
     is_soundtrack_title,
@@ -195,6 +196,10 @@ CREATE TABLE IF NOT EXISTS tracks (
     isrc         TEXT,
     tempo_bpm    REAL,
     audio_features TEXT,
+    mix_name     TEXT,
+    musical_key  TEXT,
+    beatport_genre TEXT,
+    beatport_sub_genre TEXT,
     canonical_track_id  TEXT REFERENCES tracks(id),
     track_variant_type  TEXT,
     hidden       INTEGER NOT NULL DEFAULT 0,
@@ -294,6 +299,9 @@ def open_db(path=None) -> sqlite3.Connection:
     conn = sqlite3.connect(path or DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
+    conn.execute('PRAGMA journal_mode = WAL')
+    conn.execute('PRAGMA synchronous = NORMAL')
+    conn.execute('PRAGMA busy_timeout = 10000')
     return conn
 
 
@@ -331,6 +339,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE artists ADD COLUMN spotify_followers INTEGER",
         "ALTER TABLE releases ADD COLUMN spotify_popularity INTEGER",
         "ALTER TABLE tracks ADD COLUMN spotify_popularity INTEGER",
+        "ALTER TABLE tracks ADD COLUMN mix_name TEXT",
+        "ALTER TABLE tracks ADD COLUMN musical_key TEXT",
+        "ALTER TABLE tracks ADD COLUMN beatport_genre TEXT",
+        "ALTER TABLE tracks ADD COLUMN beatport_sub_genre TEXT",
+        # Listens columns added by sync.py in earlier versions — centralised here
+        "ALTER TABLE listens ADD COLUMN ms_played INTEGER",
+        "ALTER TABLE listens ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE releases ADD COLUMN upc TEXT",
     ]:
         try:
             conn.execute(ddl)
@@ -344,6 +360,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             child_aoty_id  INTEGER NOT NULL REFERENCES genres(aoty_id),
             PRIMARY KEY (parent_aoty_id, child_aoty_id)
         )
+    ''')
+    conn.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS listens_ts_src
+        ON listens(timestamp, raw_source_id)
     ''')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS monthly_genre_profile (
@@ -684,6 +704,9 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
             label = lbl
             break
 
+    barcode = (mb_data.get('barcode') or '').strip()
+    upc = normalize_upc(barcode) if barcode else None
+
     total_tracks = sum(
         len(m.get('tracks') or []) for m in (mb_data.get('media') or [])
     )
@@ -701,10 +724,11 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
         cur.execute(
             f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?,'
             f' type_secondary = COALESCE(type_secondary, ?){date_fields},'
-            f' label = ?, release_group_mbid = ?, total_tracks = ?, updated_at = ?'
+            f' label = ?, release_group_mbid = ?, total_tracks = ?,'
+            f' upc = COALESCE(upc, ?), updated_at = ?'
             f' WHERE id = ?',
             (title, primary_artist_id, rg_type, type_secondary, *date_vals,
-             label or None, rg_mbid, total_tracks, now, row['id']),
+             label or None, rg_mbid, total_tracks, upc, now, row['id']),
         )
         if image_url and not row['album_art_url']:
             cur.execute(
@@ -723,24 +747,87 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
     cur.execute(
         'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
         ' release_date, release_year, label, mbid, release_group_mbid, album_art_url,'
-        ' album_art_source, total_tracks, date_source, created_at, updated_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ' album_art_source, total_tracks, upc, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (release_id, slug, title, primary_artist_id, rg_type, type_secondary,
          date_raw or None, rel_year, label or None,
          mbid or None, rg_mbid,
          image_url, 'coverartarchive' if image_url else None,
-         total_tracks, 'musicbrainz' if date_raw else None,
+         total_tracks, upc, 'musicbrainz' if date_raw else None,
+         now, now),
+    )
+    return release_id, True
+
+
+def upsert_release_beatport(cur, beatport_id: int, title: str,
+                            primary_artist_id: 'str | None',
+                            date_raw: str, label: str,
+                            image_url: 'str | None',
+                            total_tracks: int,
+                            album_type: str) -> 'tuple[str, bool]':
+    """Insert or update a release from Beatport data.
+    Identifies existing releases via the external_links table (EL_SVC_BEATPORT).
+    Returns (release_id, created)."""
+    now = int(time.time())
+
+    row = cur.execute(
+        'SELECT el.entity_id FROM external_links el'
+        ' WHERE el.entity_type = ? AND el.service = ? AND el.link_value = ?',
+        (EL_RELEASE, EL_SVC_BEATPORT, str(beatport_id)),
+    ).fetchone()
+
+    if row:
+        release_id  = row[0]
+        date_fields = ''
+        date_vals: tuple = ()
+        if date_raw:
+            rel_year    = int(date_raw[:4]) if date_raw[:4].isdigit() else None
+            date_fields = ', release_date = ?, release_year = ?, date_source = ?'
+            date_vals   = (date_raw, rel_year, 'beatport')
+        cur.execute(
+            f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?{date_fields},'
+            f' label = ?, total_tracks = ?, updated_at = ? WHERE id = ?',
+            (title, primary_artist_id, album_type, *date_vals,
+             label or None, total_tracks, now, release_id),
+        )
+        if image_url:
+            cur.execute(
+                'UPDATE releases SET album_art_url = COALESCE(album_art_url, ?),'
+                ' album_art_source = COALESCE(album_art_source, ?) WHERE id = ?',
+                (image_url, 'beatport', release_id),
+            )
+        return release_id, False
+
+    rel_year   = int(date_raw[:4]) if date_raw and date_raw[:4].isdigit() else None
+    base       = slugify(title)
+    existing   = {r[0] for r in cur.execute(
+        'SELECT slug FROM releases WHERE primary_artist_id IS ?', (primary_artist_id,)
+    ).fetchall()}
+    slug       = unique_slug(base, existing)
+    release_id = new_ulid()
+    cur.execute(
+        'INSERT INTO releases (id, slug, title, primary_artist_id, type,'
+        ' release_date, release_year, label, album_art_url, album_art_source,'
+        ' total_tracks, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        (release_id, slug, title, primary_artist_id, album_type,
+         date_raw or None, rel_year, label or None,
+         image_url, 'beatport' if image_url else None,
+         total_tracks, 'beatport' if date_raw else None,
          now, now),
     )
     return release_id, True
 
 
 def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
-                     artist_map: dict) -> 'tuple[int, int]':
+                     artist_map: dict, *,
+                     no_release_reassign: bool = False) -> 'tuple[int, int]':
     """Upsert tracks from a MusicBrainzRelease's .tracks list.
     Each track dict has: name, duration_ms, _mb_recording_id, _isrcs,
     _disc_number, _track_number, _artist_credit.
     artist_map: {mb_artist_id: our_artist_id}.
+    no_release_reassign: if True, skip (don't move) tracks already owned by
+      a different release — avoids ping-pong when called from --missing-tracks.
     Returns (created_count, updated_count)."""
     created = updated = 0
     now     = int(time.time())
@@ -757,14 +844,17 @@ def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
         row = None
         if rec_id:
             row = cur.execute(
-                'SELECT id, title FROM tracks WHERE mbid = ?', (rec_id,)
+                'SELECT id, title, release_id FROM tracks WHERE mbid = ?', (rec_id,)
             ).fetchone()
         if not row and isrc:
             row = cur.execute(
-                'SELECT id, title FROM tracks WHERE isrc = ?', (isrc,)
+                'SELECT id, title, release_id FROM tracks WHERE isrc = ?', (isrc,)
             ).fetchone()
 
         if row:
+            # Skip tracks owned by a different release when reassignment is forbidden
+            if no_release_reassign and row[2] and row[2] != release_id:
+                continue
             track_id       = row[0]
             title_to_store = resolve_title(title, row[1])
             cur.execute(
@@ -870,6 +960,83 @@ def populate_genre_relations(conn: sqlite3.Connection, tree_path: str) -> tuple[
 
     conn.commit()
     return inserted, skipped
+
+
+# ── AOTY / Wikipedia DB persistence ───────────────────────────────────────────
+
+def save_aoty_data(conn: sqlite3.Connection, release_id: str, aoty_url: str, data: dict,
+                   force: bool = False,
+                   overwrite_date: bool = False, overwrite_type: bool = False) -> None:
+    """Persist AOTY scrape data for a release.
+
+    Pass force=True to overwrite all existing values, or use the granular
+    overwrite_date / overwrite_type booleans for partial control.
+    """
+    now      = int(time.time())
+    existing = conn.execute(
+        'SELECT release_date, type, date_source FROM releases WHERE id = ?', (release_id,)
+    ).fetchone()
+    ex_date   = existing['release_date'] if existing else None
+    ex_type   = existing['type']         if existing else None
+    ex_source = existing['date_source']  if existing else None
+
+    updates = {'aoty_url': aoty_url, 'updated_at': now}
+    if data['release_date'] and (force or overwrite_date
+            or _should_update_date(ex_date, ex_source, data['release_date'], 'aoty')):
+        updates['release_date'] = data['release_date']
+        updates['release_year'] = data['release_year']
+        updates['date_source']  = 'aoty'
+    if data['type'] and (force or overwrite_type or not ex_type):
+        updates['type'] = data['type']
+        if data['type_secondary'] is not None:
+            updates['type_secondary'] = data['type_secondary']
+    if data['score_critic']   is not None: updates['aoty_score_critic']   = data['score_critic']
+    if data['score_user']     is not None: updates['aoty_score_user']     = data['score_user']
+    if data['ratings_critic'] is not None: updates['aoty_ratings_critic'] = data['ratings_critic']
+    if data['ratings_user']   is not None: updates['aoty_ratings_user']   = data['ratings_user']
+
+    if updates:
+        set_clause = ', '.join(f'{k} = ?' for k in updates)
+        conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?',
+                     (*updates.values(), release_id))
+
+    for aoty_id, name, slug, is_primary in data['genres']:
+        conn.execute(
+            'INSERT INTO genres (aoty_id, name, slug) VALUES (?, ?, ?)'
+            ' ON CONFLICT(aoty_id) DO UPDATE SET name = excluded.name, slug = excluded.slug',
+            (aoty_id, name, slug)
+        )
+        conn.execute(
+            'INSERT INTO release_genres (release_id, aoty_genre_id, is_primary) VALUES (?, ?, ?)'
+            ' ON CONFLICT(release_id, aoty_genre_id) DO UPDATE SET is_primary = excluded.is_primary',
+            (release_id, aoty_id, int(is_primary))
+        )
+
+    conn.commit()
+
+
+def save_release_date(conn: sqlite3.Connection, release_id: str, date_str: str,
+                      wiki_page_id: 'int | None' = None, source: str = 'musicbrainz') -> bool:
+    """Write a date to releases, respecting precision and source priority.
+
+    Returns True if the date was actually written, False if it was skipped
+    because an existing date took priority.  source='manual' always wins.
+    """
+    if source != 'manual':
+        row = conn.execute(
+            'SELECT release_date, date_source FROM releases WHERE id = ?', (release_id,)
+        ).fetchone()
+        if row and not _should_update_date(row['release_date'], row['date_source'], date_str, source):
+            return False
+    year    = int(date_str[:4]) if date_str else None
+    updates = {'release_date': date_str, 'release_year': year,
+               'date_source': source, 'updated_at': int(time.time())}
+    set_clause = ', '.join(f'{k} = ?' for k in updates)
+    conn.execute(f'UPDATE releases SET {set_clause} WHERE id = ?', (*updates.values(), release_id))
+    if wiki_page_id:
+        upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))
+    conn.commit()
+    return True
 
 
 # ── Listen matching ────────────────────────────────────────────────────────────
@@ -1071,7 +1238,7 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         conn.commit()
 
     # Phase 3: fuzzy ascii_key matching (full MB-normalized title, not stripped clean title)
-    _FUZZY_THRESHOLD = 0.85
+    _FUZZY_THRESHOLD = 85  # rapidfuzz uses 0-100 scale
     fuzzy_map = {}
     for t in db_tracks:
         k = _mb_key(t['title'])
@@ -1087,19 +1254,39 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     ''', [*artist_names, *album_params]).fetchall()
 
     fuzzy_matched = 0
-    for listen in still_unmatched:
-        raw_key = _mb_key(listen['raw_track_name'])
-        if not raw_key:
-            continue
-        best_ratio, best_id = 0.0, None
-        for db_key, tid in fuzzy_map.items():
-            ratio = difflib.SequenceMatcher(None, raw_key, db_key).ratio()
-            if ratio > best_ratio:
-                best_ratio, best_id = ratio, tid
-        if best_ratio >= _FUZZY_THRESHOLD and best_id:
-            conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
-                         [best_id, listen['id']])
-            fuzzy_matched += 1
+    if still_unmatched and fuzzy_map:
+        try:
+            from rapidfuzz import process as _rfprocess, fuzz as _rffuzz
+            _use_rapidfuzz = True
+        except ImportError:
+            _use_rapidfuzz = False
+
+        fuzzy_keys = list(fuzzy_map.keys())
+        for listen in still_unmatched:
+            raw_key = _mb_key(listen['raw_track_name'])
+            if not raw_key:
+                continue
+            if _use_rapidfuzz:
+                result = _rfprocess.extractOne(
+                    raw_key, fuzzy_keys,
+                    scorer=_rffuzz.ratio,
+                    score_cutoff=_FUZZY_THRESHOLD,
+                )
+                if result:
+                    best_id = fuzzy_map[result[0]]
+                    conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                                 [best_id, listen['id']])
+                    fuzzy_matched += 1
+            else:
+                best_ratio, best_id = 0.0, None
+                for db_key, tid in fuzzy_map.items():
+                    ratio = difflib.SequenceMatcher(None, raw_key, db_key).ratio() * 100
+                    if ratio > best_ratio:
+                        best_ratio, best_id = ratio, tid
+                if best_ratio >= _FUZZY_THRESHOLD and best_id:
+                    conn.execute('UPDATE listens SET track_id = ? WHERE id = ?',
+                                 [best_id, listen['id']])
+                    fuzzy_matched += 1
     if fuzzy_matched:
         conn.commit()
 

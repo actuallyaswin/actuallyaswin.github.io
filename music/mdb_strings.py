@@ -37,6 +37,11 @@ _LOWERCASE_WORDS = _ARTICLES | _COORD_CONJ | _SHORT_PREPS
 _WORD_STRIP_RE = re.compile(r'^([^A-Za-z0-9]*)(.*?)([^A-Za-z0-9]*)$', re.DOTALL)
 # Apostrophe compound: o'clock, n'sync, rock'n'roll ...
 _APOS_RE = re.compile(r"^([A-Za-z]+)(['''])([A-Za-z].*)$")
+# Contraction suffixes that should stay lowercase after an apostrophe
+# (e.g. "she's", "you've", "I'm", "we'll", "don't", "I'd")
+_CONTRACTION_SUFFIXES: frozenset[str] = frozenset({
+    's', 't', 'm', 'd', 've', 're', 'll', 'nt',
+})
 
 
 def _tc_word(word: str, force_cap: bool, is_last: bool) -> str:
@@ -51,11 +56,16 @@ def _tc_word(word: str, force_cap: bool, is_last: bool) -> str:
     if not core:
         return word
 
-    # Apostrophe compounds: both parts capitalised (O'Clock rule)
+    # Apostrophe compounds: O'Clock/O'Brien rule — capitalise both parts.
+    # Exception: common contraction suffixes (s, t, m, d, ve, re, ll, nt)
+    # stay lowercase, e.g. "she's" → "She's", "you've" → "You've".
     apos = _APOS_RE.match(core)
     if apos:
         p1, apos_char, p2 = apos.group(1), apos.group(2), apos.group(3)
-        cap = p1[0].upper() + p1[1:].lower() + apos_char + p2[0].upper() + p2[1:].lower()
+        if p2.lower() in _CONTRACTION_SUFFIXES:
+            cap = p1[0].upper() + p1[1:].lower() + apos_char + p2.lower()
+        else:
+            cap = p1[0].upper() + p1[1:].lower() + apos_char + p2[0].upper() + p2[1:].lower()
         return prefix + cap + suffix
 
     lower = core.lower()
@@ -165,11 +175,12 @@ _ETI_DESCRIPTORS: frozenset[str] = frozenset({
     'arrangement', 'interlude', 'intro', 'outro',
 })
 
-# Regex: trailing ETI descriptor word (word boundary + descriptor + end)
+# Regex: trailing ETI descriptor word, optionally followed by a 4-digit year
+# Matches: "Remastered", "Remastered 2011", "Live at X" — but not bare years
 _ETI_END_RE = re.compile(
     r'\b(?:' +
     '|'.join(re.escape(w) for w in sorted(_ETI_DESCRIPTORS, key=len, reverse=True)) +
-    r')\s*$',
+    r')\s*(?:\d{4})?\s*$',
     re.IGNORECASE,
 )
 
@@ -619,7 +630,7 @@ MONTHS: dict[str, str] = {
 }
 
 _SOURCE_PRIORITY: dict[str, int] = {
-    'manual': 5, 'wikipedia': 4, 'aoty': 3, 'musicbrainz': 2, 'spotify': 1,
+    'manual': 5, 'wikipedia': 4, 'aoty': 3, 'musicbrainz': 2, 'spotify': 1, 'beatport': 1,
 }
 
 
@@ -675,6 +686,54 @@ def _parse_user_date(text: str) -> 'str | None':
     if m and m.group(1).lower() in MONTHS:
         return f'{m.group(2)}-{MONTHS[m.group(1).lower()]}'
     return None
+
+
+# -- UPC / GTIN normalization ------------------------------------------------
+
+def normalize_upc(upc: 'str | None') -> 'str | None':
+    """Normalize a UPC/GTIN to 13-digit EAN-13 canonical form.
+
+    Spotify returns 13 digits; MusicBrainz often omits the leading zero and
+    returns 12 digits (UPC-A). Both represent the same barcode — canonicalize
+    to EAN-13 by zero-padding 12-digit values.
+
+    Valid input lengths: 8 (EAN-8), 12 (UPC-A → padded to 13), 13 (EAN-13),
+    14 (GTIN-14). Returns None if empty or not a recognized GTIN length.
+    """
+    if not upc:
+        return None
+    digits = re.sub(r'\D', '', str(upc))
+    if len(digits) == 12:
+        digits = '0' + digits  # UPC-A → EAN-13
+    if len(digits) == 14 and digits[0] == '0':
+        digits = digits[1:]    # GTIN-14 indicator-0 → EAN-13
+    if len(digits) in (8, 13, 14):
+        return digits
+    return None  # not a recognized GTIN length
+
+
+def beatport_is_catalog_addition(bp_data: dict) -> bool:
+    """Return True if Beatport's publish_date is a catalog availability date,
+    not the original release date.
+
+    Detection: if the gap between encoded_date (when Beatport processed the
+    release internally) and publish_date (Beatport's listed release date) exceeds
+    30 days, the release was likely added to Beatport long after the original release.
+
+    Example: Settle (The Remixes) — released 2013-06-11, added to Beatport
+    catalog 2013-12-16 (encoded_date 2021-09-09). Gap = 2824 days → catalog addition.
+    """
+    encoded_str = (bp_data.get('encoded_date') or '')[:10]
+    publish_str = (bp_data.get('publish_date') or '')[:10]
+    if not encoded_str or not publish_str:
+        return False
+    try:
+        from datetime import date
+        encoded = date.fromisoformat(encoded_str)
+        publish = date.fromisoformat(publish_str)
+        return abs((encoded - publish).days) > 30
+    except ValueError:
+        return False
 
 
 # -- URL / ID extraction ------------------------------------------------------

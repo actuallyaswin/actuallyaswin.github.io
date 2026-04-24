@@ -256,10 +256,26 @@ const ViewArtist = (() => {
             if (wikiPageId) {
                 links.push({ href: wikiPageId, service: 'wikipedia', label: 'Wikipedia' });
             }
+            const deezerId = extLinks.get(4) || null;
+            if (deezerId) {
+                links.push({ href: `https://www.deezer.com/artist/${deezerId}`, service: 'deezer', label: 'Deezer' });
+            }
+            const tidalId = extLinks.get(5) || null;
+            if (tidalId) {
+                links.push({ href: `https://tidal.com/browse/artist/${tidalId}`, service: 'tidal', label: 'Tidal' });
+            }
+            const bandcampUrl = extLinks.get(6) || null;
+            if (bandcampUrl) {
+                links.push({ href: bandcampUrl, service: 'bandcamp', label: 'Bandcamp' });
+            }
+            const beatportId = extLinks.get(7) || null;
+            if (beatportId) {
+                links.push({ href: `https://www.beatport.com/artist/-/${beatportId}`, service: 'beatport', label: 'Beatport' });
+            }
             linksEl.innerHTML = links.map(({ href, service, label }) => {
                 const icon = service === 'aoty'
-                    ? `<img src="images/aoty.svg" alt="${label}">`
-                    : `<span class="link-icon-mask" style="--icon-url: url('images/${service}.svg')"></span>`;
+                    ? `<img src="images/links/aoty-icon.png" alt="${label}" style="width:20px;height:20px;object-fit:contain;display:block">`
+                    : `<span class="link-icon-mask" style="--icon-url: url('images/links/${service}.svg')"></span>`;
                 return `<a href="${href}" target="_blank" rel="noopener" class="release-link-icon" data-service="${service}" title="${label}">${icon}</a>`;
             }).join('');
         }

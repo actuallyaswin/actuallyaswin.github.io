@@ -496,6 +496,7 @@ const ViewHome = (() => {
             LEFT JOIN listens l ON l.track_id = t.id
             WHERE r.title LIKE '%${query.replace(/'/g, "''")}%'
             AND r.hidden = 0
+            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
             GROUP BY r.id
             ORDER BY total_listens DESC
             LIMIT 10

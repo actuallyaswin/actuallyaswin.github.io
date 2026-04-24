@@ -1400,9 +1400,29 @@ a.stat-card:hover .stat-label::after {
     gap: 0.25rem;
 }
 
-.track-bpm {
-    font-size: 0.75rem;
-    color: var(--text-tertiary);
+/* BPM column shares all base styles with the plays column */
+.tracklist-bpm,
+.tracklist-plays {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    min-width: 2.5rem;
+    text-align: right;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.1rem;
+}
+
+.tracklist-col-header .tracklist-bpm,
+.tracklist-col-header .tracklist-plays {
+    color: var(--text-tertiary, var(--text-secondary));
+}
+
+.tracklist-col-header .tracklist-bpm svg,
+.tracklist-col-header .tracklist-plays svg {
+    width: 0.85rem;
+    height: 0.85rem;
 }
 
 .af-bars {
@@ -1509,25 +1529,7 @@ a.stat-card:hover .stat-label::after {
     border-bottom: 1px solid var(--border);
     margin-bottom: 0.1rem;
 }
-.tracklist-col-header .tracklist-plays {
-    color: var(--text-tertiary, var(--text-secondary));
-}
-.tracklist-col-header .tracklist-plays svg {
-    width: 0.85rem;
-    height: 0.85rem;
-}
 
-.tracklist-plays {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    min-width: 2.5rem;
-    text-align: right;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 0.1rem;
-}
 .tracklist-track-artists {
     font-size: 0.75rem;
     color: var(--text-secondary);
@@ -1535,6 +1537,10 @@ a.stat-card:hover .stat-label::after {
     overflow: hidden;
     text-overflow: ellipsis;
     margin-top: 0.1rem;
+}
+
+.tracklist-eti {
+    color: var(--text-tertiary, var(--text-secondary));
 }
 
 .tracklist-artist-link {
@@ -1557,6 +1563,7 @@ a.stat-card:hover .stat-label::after {
     align-items: flex-start;
 }
 .tracklist-row.has-track-artists .tracklist-num,
+.tracklist-row.has-track-artists .tracklist-bpm,
 .tracklist-row.has-track-artists .tracklist-plays {
     padding-top: 0.15rem;
 }

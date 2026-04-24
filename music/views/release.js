@@ -150,7 +150,8 @@ const ViewRelease = (() => {
                 (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) AS INTEGER)
                  FROM tracks t2 WHERE t2.release_id = r.id AND t2.hidden = 0) as album_total_ms,
                 MIN(CASE WHEN t.hidden = 0 THEN l.timestamp END) as first_listen_ts,
-                MAX(CASE WHEN t.hidden = 0 THEN l.timestamp END) as last_listen_ts
+                MAX(CASE WHEN t.hidden = 0 THEN l.timestamp END) as last_listen_ts,
+                r.apple_music_id
             FROM releases r
             LEFT JOIN tracks t ON t.release_id = r.id
             LEFT JOIN listens l ON l.track_id = t.id
@@ -168,7 +169,8 @@ const ViewRelease = (() => {
                totalTracksInDb, tracksHeard, totalPlays,
                spotifyId, releaseGroupMbid, mbid, aotyUrl, aotyId,
                aotyScoreCritic, aotyScoreUser, aotyRatingsCritic, aotyRatingsUser,
-               primaryArtistId, label, albumTotalMs, firstListenTs, lastListenTs] = result.values[0];
+               primaryArtistId, label, albumTotalMs, firstListenTs, lastListenTs,
+               appleMusicIdCol] = result.values[0];
 
         const extLinks = new Map();
         try {
@@ -180,7 +182,9 @@ const ViewRelease = (() => {
             if (linksResult) linksResult.values.forEach(([svc, val]) => extLinks.set(svc, val));
         } catch (_) {}
         const wikiPageId   = extLinks.get(0) || null;   // EL_SVC_WIKIPEDIA
-        const appleMusicId = extLinks.get(3) || null;   // EL_SVC_APPLE_MUSIC
+        // Spotify: prefer the column (canonical owner); fall back to external_links
+        // service 2 for releases that are variants of a Spotify-listed edition.
+        const effectiveSpotifyId = spotifyId || extLinks.get(2) || null;
         const typeLabel = [type, typeSecondary].filter(Boolean).join(' / ');
 
         _primaryArtistId = primaryArtistId || null;
@@ -344,26 +348,49 @@ const ViewRelease = (() => {
 
         const linksEl = document.getElementById('releaseLinks');
         if (linksEl) {
+            const _svcLink = (href, service, label) =>
+                `<a href="${href}" target="_blank" rel="noopener" class="release-link-icon" data-service="${service}" title="${label}">` +
+                `<span class="link-icon-mask" style="--icon-url: url('images/links/${service}.svg')"></span></a>`;
+
             const iconLinks = [];
-            if (spotifyId) {
-                iconLinks.push(`<a href="https://open.spotify.com/album/${spotifyId}" target="_blank" rel="noopener" class="release-link-icon" data-service="spotify" title="Spotify"><span class="link-icon-mask" style="--icon-url: url('images/spotify.svg')"></span></a>`);
+            if (effectiveSpotifyId) {
+                iconLinks.push(_svcLink(`https://open.spotify.com/album/${effectiveSpotifyId}`, 'spotify', 'Spotify'));
             }
             if (releaseGroupMbid) {
-                iconLinks.push(`<a href="https://musicbrainz.org/release-group/${releaseGroupMbid}" target="_blank" rel="noopener" class="release-link-icon" data-service="musicbrainz" title="MusicBrainz"><span class="link-icon-mask" style="--icon-url: url('images/musicbrainz.svg')"></span></a>`);
+                iconLinks.push(_svcLink(`https://musicbrainz.org/release-group/${releaseGroupMbid}`, 'musicbrainz', 'MusicBrainz'));
             } else if (mbid) {
-                iconLinks.push(`<a href="https://musicbrainz.org/release/${mbid}" target="_blank" rel="noopener" class="release-link-icon" data-service="musicbrainz" title="MusicBrainz"><span class="link-icon-mask" style="--icon-url: url('images/musicbrainz.svg')"></span></a>`);
+                iconLinks.push(_svcLink(`https://musicbrainz.org/release/${mbid}`, 'musicbrainz', 'MusicBrainz'));
             }
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/album/${aotyId}/` : null);
             if (resolvedAotyUrl) {
-                iconLinks.push(`<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year"><img src="images/aoty.svg" alt="Album of the Year"></a>`);
+                iconLinks.push(
+                    `<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year">` +
+                    `<img src="images/links/aoty-icon.png" alt="Album of the Year" style="width:20px;height:20px;object-fit:contain;display:block"></a>`
+                );
             }
             if (wikiPageId) {
-                iconLinks.push(`<a href="https://en.wikipedia.org/wiki/?curid=${wikiPageId}" target="_blank" rel="noopener" class="release-link-icon" data-service="wikipedia" title="Wikipedia"><span class="link-icon-mask" style="--icon-url: url('images/wikipedia.svg')"></span></a>`);
+                iconLinks.push(_svcLink(`https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'wikipedia', 'Wikipedia'));
             }
-            if (appleMusicId) {
-                iconLinks.push(`<a href="https://music.apple.com/album/${appleMusicId}" target="_blank" rel="noopener" class="release-link-icon" data-service="applemusic" title="Apple Music"><span class="link-icon-mask" style="--icon-url: url('images/applemusic.svg')"></span></a>`);
+            const amId = appleMusicIdCol || extLinks.get(3) || null;
+            if (amId) {
+                iconLinks.push(_svcLink(`https://music.apple.com/album/${amId}`, 'applemusic', 'Apple Music'));
             }
-
+            const beatportId = extLinks.get(7) || null;
+            if (beatportId) {
+                iconLinks.push(_svcLink(`https://www.beatport.com/release/-/${beatportId}`, 'beatport', 'Beatport'));
+            }
+            const tidalId = extLinks.get(5) || null;
+            if (tidalId) {
+                iconLinks.push(_svcLink(`https://tidal.com/browse/album/${tidalId}`, 'tidal', 'Tidal'));
+            }
+            const deezerId = extLinks.get(4) || null;
+            if (deezerId) {
+                iconLinks.push(_svcLink(`https://www.deezer.com/album/${deezerId}`, 'deezer', 'Deezer'));
+            }
+            const bandcampUrl = extLinks.get(6) || null;
+            if (bandcampUrl) {
+                iconLinks.push(_svcLink(bandcampUrl, 'bandcamp', 'Bandcamp'));
+            }
             linksEl.innerHTML = iconLinks.join('');
         }
 
@@ -432,6 +459,18 @@ const ViewRelease = (() => {
         return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
     }
 
+    // Render a track title, optionally dimming the ETI when mix_name is present.
+    // Uses lastIndexOf(' (') to split so it works regardless of casing differences
+    // between tracks.title and tracks.mix_name.
+    function _renderTrackName(title, mixName) {
+        if (!mixName) return escapeHtml(title);
+        const split = title.lastIndexOf(' (');
+        if (split === -1) return escapeHtml(title);
+        const base = title.slice(0, split);
+        const eti  = title.slice(split);          // includes the leading space
+        return `${escapeHtml(base)}<span class="tracklist-eti">${escapeHtml(eti)}</span>`;
+    }
+
     // ── Shared tracklist renderer ───────────────────────────────────────────────
 
     function _renderTracklist(container, tracks, showPlayCounts, opts = {}) {
@@ -442,12 +481,16 @@ const ViewRelease = (() => {
             return;
         }
 
+        // Only render BPM column when at least one track has data
+        const showBpm = tracks.some(t => t.tempoBpm != null);
+
         if (showPlayCounts) {
             const colHeader = document.createElement('div');
             colHeader.className = 'tracklist-col-header';
             colHeader.innerHTML = `
                 <span class="tracklist-num"></span>
                 <div class="tracklist-info"></div>
+                ${showBpm ? `<div class="tracklist-bpm" title="BPM (Beats per Minute)"><i data-lucide="metronome"></i></div>` : ''}
                 <div class="tracklist-plays"><i data-lucide="headphones"></i></div>
             `;
             container.appendChild(colHeader);
@@ -486,7 +529,9 @@ const ViewRelease = (() => {
                 } catch (e) { /* ignore malformed JSON */ }
             }
 
-            const bpmHtml = t.tempoBpm != null ? `<span class="track-bpm">♩ ${Math.round(t.tempoBpm)}</span>` : '';
+            const bpmCell = showBpm
+                ? `<div class="tracklist-bpm">${t.tempoBpm != null ? Math.round(t.tempoBpm) : '—'}</div>`
+                : '';
 
             // Per-track artist credits
             let trackArtistsHtml = '';
@@ -528,13 +573,14 @@ const ViewRelease = (() => {
                 <span class="tracklist-num">${displayNum}</span>
                 <div class="tracklist-info">
                     <div class="tracklist-title-row">
-                        <div class="tracklist-name">${escapeHtml(t.title)}</div>
+                        <div class="tracklist-name">${_renderTrackName(t.title, t.mixName)}</div>
                         <div class="tracklist-duration">${formatDuration(t.durationMs)}</div>
                     </div>
                     ${trackArtistsHtml}
                     ${afHtml}
                 </div>
-                <div class="tracklist-plays">${bpmHtml}${(showPlayCounts && t.playCount > 0) ? formatNumber(t.playCount) : '—'}</div>
+                ${bpmCell}
+                <div class="tracklist-plays">${(showPlayCounts && t.playCount > 0) ? formatNumber(t.playCount) : '—'}</div>
             `;
             container.appendChild(row);
         });
@@ -547,7 +593,7 @@ const ViewRelease = (() => {
 
         const result = _db.exec(`
             SELECT t.title, t.id, t.track_number, t.disc_number, t.duration_ms, t.isrc,
-                   COUNT(l.id) as play_count, t.tempo_bpm, t.audio_features
+                   COUNT(l.id) as play_count, t.tempo_bpm, t.audio_features, t.mix_name
             FROM tracks t
             LEFT JOIN listens l ON l.track_id = t.id
             WHERE t.release_id = '${safeId}' AND t.hidden = 0
@@ -559,8 +605,8 @@ const ViewRelease = (() => {
         if (!container) return;
 
         const tracks = (result ? result.values : []).map(
-            ([title, id, trackNumber, discNumber, durationMs, isrc, playCount, tempoBpm, audioFeaturesJson]) =>
-                ({ title, id, trackNumber, discNumber, durationMs, isrc, playCount, tempoBpm, audioFeaturesJson })
+            ([title, id, trackNumber, discNumber, durationMs, isrc, playCount, tempoBpm, audioFeaturesJson, mixName]) =>
+                ({ title, id, trackNumber, discNumber, durationMs, isrc, playCount, tempoBpm, audioFeaturesJson, mixName })
         );
 
         const showTrackArtists = (_releaseType === 'compilation' || _primaryArtistId === null);
@@ -662,6 +708,9 @@ const ViewRelease = (() => {
                 if (t.isrc) shownIsrcs.add(t.isrc);
                 shownTitles.add(_normTitle(t.title));
             });
+
+            // Nothing new to show — skip rendering this variant entirely
+            if (exclusive.length === 0) continue;
 
             const wrap     = document.createElement('section');
             wrap.className = 'variant-section';
