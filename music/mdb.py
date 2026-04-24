@@ -299,38 +299,18 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
         rsec  = (row['type_secondary'] or '').lower()
         if rtype == 'single' or rsec in ('remix', 'dj-mix'):
             return  # silent — singles/remixes skip Wikipedia
-        mbid        = row['mbid']
-        ex_date     = row['release_date']
-        ex_source   = row['date_source']
-        release_year = (ex_date or '')[:4] or None
+        mbid         = row['mbid']
+        release_year = (row['release_date'] or '')[:4] or None
         candidates, wiki_page_id = fetch_date_candidates(
             mbid, release_title, artist_name,
             release_year=release_year,
             release_type=rtype or None,
         )
         if candidates:
-            best = candidates[0]
-            src  = 'wikipedia' if 'Wikipedia' in best['source'] else 'musicbrainz'
-
-            # Sanity check: reject Wikipedia dates implausibly far from the existing
-            # stored date (>10 years). Catches wrong-page matches.
-            if src == 'wikipedia' and ex_date:
-                try:
-                    year_diff = abs(int(best['date'][:4]) - int(ex_date[:4]))
-                    if year_diff > 10:
-                        console.print(
-                            f'      [dim]·  ⚠ Wikipedia date {best["date"]} is {year_diff}y from '
-                            f'stored {ex_date} — skipped[/dim]'
-                        )
-                        return
-                except (ValueError, TypeError):
-                    pass
-
-            saved = save_release_date(conn, release_id, best['date'], wiki_page_id, source=src)
+            best  = candidates[0]
+            saved = save_release_date(conn, release_id, best['date'], wiki_page_id, source='musicbrainz')
             if saved:
-                # Only print when the date actually changed
-                src_label = 'Wikipedia' if src == 'wikipedia' else 'MusicBrainz'
-                console.print(f'      [dim]·  date updated → {best["date"]}  ({src_label})[/dim]')
+                console.print(f'      [dim]·  date updated → {best["date"]}  (MusicBrainz)[/dim]')
         else:
             if wiki_page_id:
                 upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_WIKIPEDIA, str(wiki_page_id))

@@ -1016,7 +1016,7 @@ def save_aoty_data(conn: sqlite3.Connection, release_id: str, aoty_url: str, dat
 
 
 def save_release_date(conn: sqlite3.Connection, release_id: str, date_str: str,
-                      wiki_page_id: 'int | None' = None, source: str = 'wikipedia') -> bool:
+                      wiki_page_id: 'int | None' = None, source: str = 'musicbrainz') -> bool:
     """Write a date to releases, respecting precision and source priority.
 
     Returns True if the date was actually written, False if it was skipped

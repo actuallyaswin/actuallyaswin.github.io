@@ -487,13 +487,10 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
                 wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
         # else article == '' → Gemini confirmed no article; don't keyword-search
 
-    candidates = []
-    if wiki_date:
-        notes_url = f'https://en.wikipedia.org/wiki/?curid={wiki_page_id}' if wiki_page_id else ''
-        candidates.append({'date': wiki_date, 'source': 'Wikipedia ★', 'notes': notes_url})
-    for c in mb_dates:
-        if c['date'] not in {x['date'] for x in candidates}:
-            candidates.append(c)
+    # Wikipedia date intentionally excluded — wiki article matching can return
+    # wrong-entity pages (e.g. "Cherry" for "Butterfly"). wiki_page_id is still
+    # returned so callers can store it as an external link.
+    candidates = list(mb_dates)
     return candidates, wiki_page_id
 
 # NOTE: _save_date / save_release_date lives in mdb_ops.
