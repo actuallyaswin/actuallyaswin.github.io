@@ -530,7 +530,7 @@ const ViewHome = (() => {
     function loadWeeklyReleases() {
         const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
         const result = _db.exec(`
-            SELECT r.id, r.title, r.album_art_url, a.name as artist_name, COUNT(l.id) as plays
+            SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url, a.name as artist_name, COUNT(l.id) as plays
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON t.release_id = r.id
@@ -567,7 +567,7 @@ const ViewHome = (() => {
         const result = _db.exec(`
             SELECT
                 t.title,
-                r.album_art_url,
+                COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 a.name as artist_name,
                 l.timestamp,
                 r.id as release_id,

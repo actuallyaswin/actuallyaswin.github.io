@@ -112,7 +112,7 @@ const ViewGenre = (() => {
                     r.id,
                     r.title,
                     r.release_year,
-                    r.album_art_url,
+                    COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                     (SELECT a.name FROM artists a WHERE a.id = r.primary_artist_id) as artist_name,
                     (SELECT COUNT(l2.id)
                      FROM tracks t2

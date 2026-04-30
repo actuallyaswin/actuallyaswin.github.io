@@ -177,6 +177,15 @@ CREATE TABLE IF NOT EXISTS release_aliases (
     PRIMARY KEY (release_id, alias)
 );
 CREATE INDEX IF NOT EXISTS release_aliases_lower ON release_aliases (lower(alias));
+CREATE TABLE IF NOT EXISTS track_aliases (
+    track_id   TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    alias      TEXT NOT NULL,
+    alias_norm TEXT NOT NULL,
+    alias_type TEXT NOT NULL DEFAULT 'common',
+    language   TEXT,
+    PRIMARY KEY (track_id, alias_norm)
+);
+CREATE INDEX IF NOT EXISTS track_aliases_norm ON track_aliases (alias_norm);
 CREATE TABLE IF NOT EXISTS release_artists (
     release_id TEXT NOT NULL REFERENCES releases(id),
     artist_id  TEXT NOT NULL REFERENCES artists(id),
@@ -347,11 +356,35 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE listens ADD COLUMN ms_played INTEGER",
         "ALTER TABLE listens ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE releases ADD COLUMN upc TEXT",
+        "ALTER TABLE listens ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE artist_aliases ADD COLUMN alias_norm TEXT",
+        "ALTER TABLE release_aliases ADD COLUMN alias_norm TEXT",
+        "ALTER TABLE release_aliases ADD COLUMN language TEXT",
+        "ALTER TABLE tracks ADD COLUMN language TEXT",
+        "ALTER TABLE releases ADD COLUMN album_art_thumb_url TEXT",
+        "ALTER TABLE artists ADD COLUMN image_thumb_url TEXT",
     ]:
         try:
             conn.execute(ddl)
         except Exception:
             pass  # column already exists
+
+    # Replace old track_aliases (track_id, alias, source) with the correct schema.
+    # Safe because the table held no permanent data before this migration.
+    old_cols = {r[1] for r in conn.execute('PRAGMA table_info(track_aliases)').fetchall()}
+    if old_cols and 'alias_norm' not in old_cols:
+        conn.execute('DROP TABLE IF EXISTS track_aliases')
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass  # column already exists
+
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
 
     # Create genre_relations if it doesn't exist yet
     conn.execute('''
@@ -435,6 +468,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
 
+    # Post-SCHEMA: indexes and backfills that depend on columns added above
+    conn.execute('CREATE INDEX IF NOT EXISTS artist_aliases_norm ON artist_aliases (alias_norm)')
+    conn.execute('CREATE INDEX IF NOT EXISTS release_aliases_norm ON release_aliases (alias_norm)')
+    conn.execute('CREATE INDEX IF NOT EXISTS track_aliases_norm ON track_aliases (alias_norm)')
+    conn.execute('UPDATE artist_aliases SET alias_norm = lower(alias) WHERE alias_norm IS NULL')
+    conn.execute('UPDATE release_aliases SET alias_norm = lower(alias) WHERE alias_norm IS NULL')
+    conn.commit()
+
 
 def upsert_external_link(conn: sqlite3.Connection,
                          entity_type: int, entity_id: str,
@@ -446,6 +487,51 @@ def upsert_external_link(conn: sqlite3.Connection,
         ' ON CONFLICT(entity_type, entity_id, service)'
         ' DO UPDATE SET link_value = excluded.link_value',
         (entity_type, entity_id, service, link_value),
+    )
+
+
+def upsert_artist_alias(conn: sqlite3.Connection, artist_id: str, alias: str,
+                        alias_type: str = 'common', language: str = None,
+                        source: str = 'manual', sort_order: int = 0) -> None:
+    from mdb_strings import normalize_text
+    conn.execute(
+        'INSERT INTO artist_aliases (artist_id, alias, alias_norm, alias_type, language, source, sort_order)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ' ON CONFLICT(artist_id, alias) DO UPDATE SET'
+        '   alias_norm = excluded.alias_norm,'
+        '   alias_type = excluded.alias_type,'
+        '   language   = COALESCE(excluded.language, language),'
+        '   sort_order = excluded.sort_order',
+        (artist_id, alias, normalize_text(alias), alias_type, language, source, sort_order),
+    )
+
+
+def upsert_release_alias(conn: sqlite3.Connection, release_id: str, alias: str,
+                         is_definitive: int = 0, language: str = None,
+                         source: str = 'manual') -> None:
+    from mdb_strings import normalize_text
+    conn.execute(
+        'INSERT INTO release_aliases (release_id, alias, alias_norm, is_definitive, language, source)'
+        ' VALUES (?, ?, ?, ?, ?, ?)'
+        ' ON CONFLICT(release_id, alias) DO UPDATE SET'
+        '   alias_norm    = excluded.alias_norm,'
+        '   is_definitive = excluded.is_definitive,'
+        '   language      = COALESCE(excluded.language, language)',
+        (release_id, alias, normalize_text(alias), is_definitive, language, source),
+    )
+
+
+def upsert_track_alias(conn: sqlite3.Connection, track_id: str, alias: str,
+                       alias_type: str = 'common', language: str = None) -> None:
+    from mdb_strings import normalize_text
+    conn.execute(
+        'INSERT INTO track_aliases (track_id, alias, alias_norm, alias_type, language)'
+        ' VALUES (?, ?, ?, ?, ?)'
+        ' ON CONFLICT(track_id, alias_norm) DO UPDATE SET'
+        '   alias      = excluded.alias,'
+        '   alias_type = excluded.alias_type,'
+        '   language   = COALESCE(excluded.language, language)',
+        (track_id, alias, normalize_text(alias), alias_type, language),
     )
 
 
@@ -527,11 +613,12 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
         cur.execute(
             f'UPDATE releases SET title = ?, primary_artist_id = ?, type = ?,'
             f' type_secondary = COALESCE(type_secondary, ?){date_fields},'
-            f' label = ?, album_art_url = ?, album_art_source = ?, total_tracks = ?,'
+            f' label = ?, album_art_url = ?, album_art_thumb_url = COALESCE(album_art_thumb_url, ?),'
+            f' album_art_source = ?, total_tracks = ?,'
             f' spotify_popularity = ?, updated_at = ? WHERE id = ?',
             (sp_album['name'], primary_artist_id, _sp_type(sp_album),
              type_secondary, *date_vals,
-             sp_album.get('label'), art, 'spotify',
+             sp_album.get('label'), art, art, 'spotify',
              sp_album.get('total_tracks'), sp_album.get('popularity'), now, row['id'])
         )
         return row['id'], False
@@ -543,11 +630,11 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
     release_id = new_ulid()
     cur.execute(
         'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
-        ' release_date, release_year, label, spotify_id, album_art_url, album_art_source,'
-        ' total_tracks, spotify_popularity, date_source, created_at, updated_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ' release_date, release_year, label, spotify_id, album_art_url, album_art_thumb_url,'
+        ' album_art_source, total_tracks, spotify_popularity, date_source, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (release_id, slug, sp_album['name'], primary_artist_id, _sp_type(sp_album),
-         type_secondary, release_date, release_year, sp_album.get('label'), sid, art, 'spotify',
+         type_secondary, release_date, release_year, sp_album.get('label'), sid, art, art, 'spotify',
          sp_album.get('total_tracks'), sp_album.get('popularity'), 'spotify', now, now)
     )
     return release_id, True
@@ -1333,15 +1420,153 @@ def link_track_variant(conn: sqlite3.Connection, canonical_id: str,
     return moved
 
 
+def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
+    """Match unresolved listens where raw names match canonical track/release/artist titles directly.
+
+    Covers cases where the scrobble uses the exact DB title (e.g. Japanese
+    releases scrobbled in Japanese script) that bulk_rematch_by_aliases misses
+    because the canonical title isn't stored as an alias.
+    Returns count of newly matched listens.
+    """
+    from mdb_strings import normalize_text
+
+    # Build lookup: (norm_artist, norm_album, norm_track) -> track_id
+    rows = conn.execute('''
+        SELECT t.id, t.title, r.title AS release_title,
+               a.name AS artist_name
+        FROM   tracks t
+        JOIN   releases r ON r.id = t.release_id
+        JOIN   release_artists ra ON ra.release_id = r.id
+        JOIN   artists a ON a.id = ra.artist_id
+        WHERE  t.hidden = 0 AND r.hidden = 0
+    ''').fetchall()
+
+    lookup: dict[tuple, str] = {}
+    for tid, track_title, release_title, artist_name in rows:
+        key = (normalize_text(artist_name), normalize_text(release_title), normalize_text(track_title))
+        if all(key):
+            lookup[key] = tid
+
+    # Also index by artist aliases so e.g. "はっぴいえんど" and "Happy End" both resolve
+    alias_rows = conn.execute('''
+        SELECT aa.artist_id, aa.alias_norm FROM artist_aliases aa
+    ''').fetchall()
+    alias_map: dict[str, list[str]] = {}
+    for artist_id, alias_norm in alias_rows:
+        alias_map.setdefault(artist_id, []).append(alias_norm)
+
+    # Extend lookup with alias-artist variants
+    extra: dict[tuple, str] = {}
+    for (norm_artist, norm_album, norm_track), tid in lookup.items():
+        artist_row = conn.execute(
+            'SELECT id FROM artists WHERE lower(name) = ?', [norm_artist]
+        ).fetchone()
+        if artist_row:
+            for alias_norm in alias_map.get(artist_row[0], []):
+                key = (alias_norm, norm_album, norm_track)
+                if key not in lookup:
+                    extra[key] = tid
+    lookup.update(extra)
+
+    if not lookup:
+        return 0
+
+    unmatched = conn.execute('''
+        SELECT id, raw_track_name, raw_artist_name, raw_album_name
+        FROM listens
+        WHERE track_id IS NULL
+          AND raw_track_name IS NOT NULL
+          AND raw_artist_name IS NOT NULL
+          AND raw_album_name IS NOT NULL
+    ''').fetchall()
+
+    updates = []
+    for listen_id, raw_track, raw_artist, raw_album in unmatched:
+        key = (normalize_text(raw_artist), normalize_text(raw_album), normalize_text(raw_track))
+        track_id = lookup.get(key)
+        if track_id:
+            updates.append((track_id, listen_id))
+
+    if updates:
+        conn.executemany('UPDATE listens SET track_id = ? WHERE id = ?', updates)
+        conn.commit()
+
+    return len(updates)
+
+
+def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
+    """Match unresolved listens via track_aliases + artist_aliases + release_aliases.
+
+    Three-way join on alias_norm: raw_artist → artist_aliases, raw_album →
+    release_aliases, raw_track → track_aliases. All three must agree to avoid
+    false positives on common titles like 'Party'.
+    Returns count of newly matched listens.
+    """
+    from mdb_strings import normalize_text
+
+    # Build lookup: (artist_norm, release_norm, track_norm) -> track_id
+    rows = conn.execute('''
+        SELECT
+            COALESCE(aa.alias_norm, lower(a.name))  AS artist_norm,
+            ra.alias_norm                            AS release_norm,
+            ta.alias_norm                            AS track_norm,
+            ta.track_id
+        FROM   track_aliases  ta
+        JOIN   tracks         t   ON t.id          = ta.track_id
+        JOIN   releases       r   ON r.id          = t.release_id
+        JOIN   release_aliases ra ON ra.release_id  = r.id
+        JOIN   release_artists rex ON rex.release_id = r.id
+        JOIN   artists         a  ON a.id           = rex.artist_id
+        LEFT JOIN artist_aliases aa ON aa.artist_id = a.id
+    ''').fetchall()
+
+    lookup: dict[tuple, str] = {}
+    for artist_norm, release_norm, track_norm, track_id in rows:
+        if artist_norm and release_norm and track_norm:
+            lookup[(artist_norm, release_norm, track_norm)] = track_id
+
+    if not lookup:
+        return 0
+
+    unmatched = conn.execute('''
+        SELECT id, raw_track_name, raw_artist_name, raw_album_name
+        FROM listens
+        WHERE track_id IS NULL
+          AND raw_track_name IS NOT NULL
+          AND raw_artist_name IS NOT NULL
+          AND raw_album_name IS NOT NULL
+    ''').fetchall()
+
+    updates = []
+    for listen_id, raw_track, raw_artist, raw_album in unmatched:
+        key = (normalize_text(raw_artist), normalize_text(raw_album), normalize_text(raw_track))
+        track_id = lookup.get(key)
+        if track_id:
+            updates.append((track_id, listen_id))
+
+    if updates:
+        conn.executemany('UPDATE listens SET track_id = ? WHERE id = ?', updates)
+        conn.commit()
+
+    return len(updates)
+
+
 def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> list:
     """Search the catalog for releases matching raw scrobble artist/album strings.
 
     Uses ascii_key comparison (strips all punctuation + lowercase) so hyphen
     variants, apostrophe differences, and accent variations don't block a hit.
+    Falls back to normalize_text for non-Latin titles where ascii_key returns
+    an empty string (which would otherwise match every row).
     Returns a list of row dicts.
     """
+    from mdb_strings import normalize_text
     key_album  = ascii_key(album)
     key_artist = ascii_key(artist)
+    norm_album  = normalize_text(album)
+    norm_artist = normalize_text(artist)
+    use_norm = not key_album  # ascii_key produced nothing — title is non-Latin
+
     rows = conn.execute('''
         SELECT r.id, r.title, r.release_date, r.type, r.type_secondary,
                a.name                                                AS artist_name,
@@ -1357,12 +1582,30 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
     results = []
     for row in rows:
         row = dict(row)
-        row_key = ascii_key(row['title'])
-        if row_key == key_album:
-            results.append(row)
-        elif key_album in row_key or row_key in key_album:
-            if row['artist_name'] and key_artist in ascii_key(row['artist_name']):
+        if use_norm:
+            # Non-Latin album: require exact normalize_text match on title
+            if normalize_text(row['title']) != norm_album:
+                continue
+            # Artist: try normalize_text on name and aliases
+            artist_names = [normalize_text(row['artist_name'] or '')]
+            alias_rows = conn.execute(
+                'SELECT alias_norm FROM artist_aliases WHERE artist_id IN (SELECT id FROM artists WHERE lower(name) = lower(?))',
+                [row['artist_name'] or '']
+            ).fetchall()
+            artist_names += [r[0] for r in alias_rows]
+            if norm_artist and not any(norm_artist == n for n in artist_names):
+                continue
+        else:
+            row_key = ascii_key(row['title'])
+            if row_key == key_album:
                 results.append(row)
+                continue
+            elif key_album in row_key or row_key in key_album:
+                if row['artist_name'] and key_artist in ascii_key(row['artist_name']):
+                    results.append(row)
+                    continue
+            continue
+        results.append(row)
     return results
 
 

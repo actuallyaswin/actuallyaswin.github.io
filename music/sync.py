@@ -19,10 +19,12 @@ import concurrent.futures
 import json
 import math
 import os
+import queue
 import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -45,7 +47,7 @@ from mdb_strings import (
 from mdb_apis import SpotifyRelease
 from mdb_cli  import render_diff
 from mdb_ops  import (
-    bulk_rematch, bulk_rematch_by_name, db_search_releases as _db_search_releases,
+    bulk_rematch, bulk_rematch_by_name, bulk_rematch_by_aliases, bulk_rematch_by_title, db_search_releases as _db_search_releases,
     DB_PATH, init_schema, open_db as _mdb_open_db,
 )
 
@@ -55,6 +57,52 @@ _DIR       = os.path.dirname(os.path.abspath(__file__))
 OLD_SQLITE = os.path.join(_DIR, 'listening_history.sqlite')
 MDB        = os.path.join(_DIR, 'mdb.py')
 PYTHON     = sys.executable
+
+# -- Background enrichment queue ------------------------------------------
+# Fast import (Spotify-only) runs synchronously so track_id is available
+# immediately. Full enrichment (MB, GTIN, Wikipedia) runs in a single
+# background thread afterwards. busy_timeout=10000 in open_db handles any
+# brief write contention between the two processes transparently.
+
+_enrich_q:      queue.Queue         = queue.Queue()
+_enrich_thread: threading.Thread | None = None
+
+
+def _enrich_worker() -> None:
+    while True:
+        item = _enrich_q.get()
+        if item is None:
+            _enrich_q.task_done()
+            break
+        url, use_wiki = item
+        cmd = [PYTHON, MDB, 'import', url, '--no-aoty', '--no-variants', '--auto']
+        if not use_wiki:
+            cmd.append('--no-wiki')
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        _enrich_q.task_done()
+
+
+def _enqueue_enrichment(url: str, use_wiki: bool = False) -> None:
+    global _enrich_thread
+    if _enrich_thread is None or not _enrich_thread.is_alive():
+        _enrich_thread = threading.Thread(
+            target=_enrich_worker, daemon=True, name='enrich-worker'
+        )
+        _enrich_thread.start()
+    _enrich_q.put((url, use_wiki))
+
+
+def _drain_enrichments() -> None:
+    """Wait for all queued enrichments to finish. Call before exiting."""
+    if _enrich_q.empty() and (_enrich_thread is None or not _enrich_thread.is_alive()):
+        return
+    n = _enrich_q.qsize()
+    label = f'{n} release{"s" if n != 1 else ""}' if n else 'current release'
+    console.print(f'\n  [dim]Finishing background enrichment ({label})…[/dim]')
+    _enrich_q.join()
 
 _SP_HISTORY_DEFAULT = os.path.join(
     os.path.expanduser('~'), 'Downloads', 'Spotify Extended Streaming History'
@@ -869,6 +917,14 @@ def cmd_match(args):
     if newly_matched:
         console.print(f'  [dim]{newly_matched} listens matched via MBID[/dim]')
 
+    alias_matched = bulk_rematch_by_aliases(conn)
+    if alias_matched:
+        console.print(f'  [dim]{alias_matched} listens matched via aliases[/dim]')
+
+    title_matched = bulk_rematch_by_title(conn)
+    if title_matched:
+        console.print(f'  [dim]{title_matched} listens matched via canonical titles[/dim]')
+
     # Thread pool for background prefetches (searches + full album data).
     # Lives for the duration of cmd_match, shared across batches.
     _pool = concurrent.futures.ThreadPoolExecutor(max_workers=5,
@@ -1161,6 +1217,7 @@ def cmd_match(args):
                 except (KeyboardInterrupt, EOFError):
                     console.print()
                     console.print('  [dim]Quit — progress saved.[/dim]')
+                    _drain_enrichments()
                     conn.close()
                     return
 
@@ -1168,6 +1225,7 @@ def cmd_match(args):
 
                 if choice == 'q':
                     console.print('  [dim]Quit — progress saved.[/dim]')
+                    _drain_enrichments()
                     conn.close()
                     return
 
@@ -1300,6 +1358,7 @@ def cmd_match(args):
             break
 
     _pool.shutdown(wait=False)
+    _drain_enrichments()
 
     # Needs-manual summary (artist sweep only)
     if artist_norm and needs_manual:
@@ -1346,10 +1405,10 @@ def _parse_indices(s: str, max_n: int):
 
 
 def _mdb_import(url: str, use_wiki: bool = False) -> 'subprocess.CompletedProcess':
-    cmd = [PYTHON, MDB, 'import', url]
-    if not use_wiki:
-        cmd.append('--no-wiki')
-    return subprocess.run(cmd)
+    """Fast Spotify-only import: skips GTIN, AOTY, Wikipedia, variant prompts."""
+    return subprocess.run(
+        [PYTHON, MDB, 'import', url, '--no-aoty', '--no-wiki', '--no-gtin', '--no-variants', '--auto']
+    )
 
 
 def _do_import(conn: sqlite3.Connection, url: str,
@@ -1449,6 +1508,7 @@ def _do_multi_import(conn: sqlite3.Connection, selected: list,
         console.print(f'  Importing [dim]{url}[/dim]')
         result = _mdb_import(url, use_wiki=use_wiki)
         if result.returncode == 0:
+            _enqueue_enrichment(url, use_wiki=use_wiki)
             any_succeeded = True
             if is_mb:
                 rel = conn.execute(

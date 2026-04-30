@@ -201,7 +201,23 @@ const ViewRelease = (() => {
             ORDER BY (r.primary_artist_id = a.id) DESC, a.name
         `)[0];
 
-        document.getElementById('releaseName').textContent = title || 'Unknown Release';
+        // Inline transliteration for non-Latin release titles
+        const isNonLatin = s => /[^ -]/.test(s);
+        const titleAliasResult = _db.exec(`
+            SELECT alias FROM release_aliases
+            WHERE release_id = '${safeId}'
+              AND alias_norm != lower('${(title || '').replace(/'/g, "''")}')
+              AND language IS NOT NULL
+            ORDER BY is_definitive DESC LIMIT 1
+        `)[0];
+        const titleAlias = titleAliasResult && titleAliasResult.values[0]?.[0];
+
+        const nameEl = document.getElementById('releaseName');
+        if (isNonLatin(title) && titleAlias) {
+            nameEl.innerHTML = `${escapeHtml(title)} <span class="artist-romanized">(${escapeHtml(titleAlias)})</span>`;
+        } else {
+            nameEl.textContent = title || 'Unknown Release';
+        }
         document.title = `aswin.db/music - ${title || 'Release'}`;
 
         const metaParts = [];
@@ -253,6 +269,8 @@ const ViewRelease = (() => {
             albumArtDiv.style.backgroundSize = 'cover';
             albumArtDiv.style.backgroundPosition = 'center';
             albumArtDiv.innerHTML = '';
+            albumArtDiv.classList.add('has-art');
+            albumArtDiv.addEventListener('click', () => _openArtModal(albumArtUrl));
         }
 
         const artistSpan = document.getElementById('releaseArtist');
@@ -429,7 +447,7 @@ const ViewRelease = (() => {
     function loadReleaseAliases() {
         const safeId = _releaseId.replace(/'/g, "''");
         const result = _db.exec(`
-            SELECT alias, is_definitive
+            SELECT alias, is_definitive, language
             FROM release_aliases
             WHERE release_id = '${safeId}'
             ORDER BY is_definitive DESC, alias
@@ -438,9 +456,15 @@ const ViewRelease = (() => {
         const el = document.getElementById('releaseAka');
         if (!el || !result || result.values.length === 0) return;
 
-        const parts = result.values.map(([alias, isDef]) =>
-            isDef ? `<strong>${escapeHtml(alias)}</strong>` : escapeHtml(alias)
-        );
+        // Exclude aliases already shown inline as the title transliteration
+        const titleEl = document.getElementById('releaseName');
+        const inlineAlias = titleEl?.querySelector('.artist-romanized')?.textContent?.replace(/[()]/g, '').trim();
+
+        const parts = result.values
+            .filter(([alias]) => alias !== inlineAlias)
+            .map(([alias, isDef]) => isDef ? `<strong>${escapeHtml(alias)}</strong>` : escapeHtml(alias));
+
+        if (parts.length === 0) return;
         el.innerHTML = `Also known as ${parts.join(', ')}`;
         el.removeAttribute('hidden');
     }
@@ -474,7 +498,7 @@ const ViewRelease = (() => {
     // ── Shared tracklist renderer ───────────────────────────────────────────────
 
     function _renderTracklist(container, tracks, showPlayCounts, opts = {}) {
-        const { showTrackArtists = false, artistsByTrack = new Map(), primaryArtistId = null, artistsWithReleases = new Set() } = opts;
+        const { showTrackArtists = false, artistsByTrack = new Map(), primaryArtistId = null, artistsWithReleases = new Set(), aliasesByTrack = new Map() } = opts;
         container.innerHTML = '';
         if (!tracks.length) {
             container.innerHTML = '<div class="tracklist-empty">No tracks found</div>';
@@ -569,11 +593,12 @@ const ViewRelease = (() => {
             }
 
             row.className = 'tracklist-row' + (trackArtistsHtml ? ' has-track-artists' : '');
+            row.dataset.trackId = t.id;
             row.innerHTML = `
                 <span class="tracklist-num">${displayNum}</span>
                 <div class="tracklist-info">
                     <div class="tracklist-title-row">
-                        <div class="tracklist-name">${_renderTrackName(t.title, t.mixName)}</div>
+                        <div class="tracklist-name">${_renderTrackName(t.title, t.mixName)}${aliasesByTrack.has(t.id) ? `<div class="tracklist-alias">${escapeHtml(aliasesByTrack.get(t.id))}</div>` : ''}</div>
                         <div class="tracklist-duration">${formatDuration(t.durationMs)}</div>
                     </div>
                     ${trackArtistsHtml}
@@ -647,7 +672,26 @@ const ViewRelease = (() => {
             if (arResult) arResult.values.forEach(([id]) => _artistsWithReleases.add(id));
         }
 
-        _renderTracklist(container, tracks, true, { showTrackArtists, artistsByTrack, primaryArtistId: _primaryArtistId, artistsWithReleases: _artistsWithReleases });
+        // Load transliteration/unicode aliases to show as secondary dim lines
+        let aliasesByTrack = new Map();
+        if (tracks.length > 0) {
+            const aliasResult = _db.exec(`
+                SELECT ta.track_id, ta.alias
+                FROM track_aliases ta
+                WHERE ta.track_id IN (
+                    SELECT id FROM tracks WHERE release_id = '${safeId}' AND hidden = 0
+                )
+                AND ta.alias_type IN ('transliteration', 'unicode')
+                ORDER BY ta.track_id
+            `)[0];
+            if (aliasResult) {
+                aliasResult.values.forEach(([trackId, alias]) => {
+                    if (!aliasesByTrack.has(trackId)) aliasesByTrack.set(trackId, alias);
+                });
+            }
+        }
+
+        _renderTracklist(container, tracks, true, { showTrackArtists, artistsByTrack, primaryArtistId: _primaryArtistId, artistsWithReleases: _artistsWithReleases, aliasesByTrack });
     }
 
     // ── Release variants ────────────────────────────────────────────────────────
@@ -656,7 +700,7 @@ const ViewRelease = (() => {
         const safeId = _releaseId.replace(/'/g, "''");
 
         const varResult = _db.exec(`
-            SELECT rv.variant_id, rv.variant_type, r.title, r.album_art_url, r.release_year, r.hidden
+            SELECT rv.variant_id, rv.variant_type, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url, r.release_year, r.hidden
             FROM release_variants rv
             JOIN releases r ON r.id = rv.variant_id
             WHERE rv.canonical_id = '${safeId}'
@@ -760,7 +804,7 @@ const ViewRelease = (() => {
                 rs.source_id,
                 rs.disc_number,
                 r.title,
-                r.album_art_url,
+                COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 r.release_year,
                 (SELECT COUNT(*)
                  FROM listens l JOIN tracks t ON l.track_id = t.id
@@ -1073,4 +1117,19 @@ const ViewRelease = (() => {
     }
 
     return { mount, unmount };
+
+    function _openArtModal(url) {
+        const existing = document.getElementById('artModal');
+        if (existing) existing.remove();
+        const modal = document.createElement('div');
+        modal.id = 'artModal';
+        modal.className = 'art-modal';
+        modal.innerHTML = `<div class="art-modal-inner"><img src="${url}" alt=""></div>`;
+        document.body.appendChild(modal);
+        const close = () => modal.remove();
+        modal.addEventListener('click', close);
+        document.addEventListener('keydown', function onKey(e) {
+            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+        });
+    }
 })();

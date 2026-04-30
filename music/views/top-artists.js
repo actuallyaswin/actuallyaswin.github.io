@@ -107,7 +107,7 @@ const ViewTopArtists = (() => {
             SELECT
                 a.id,
                 a.name,
-                a.image_url,
+                COALESCE(a.image_thumb_url, a.image_url) as image_url,
                 a.cert,
                 COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as unique_tracks,
                 COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,

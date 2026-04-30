@@ -194,7 +194,7 @@ const ViewYear = (() => {
                 r.id,
                 r.title,
                 r.release_year,
-                r.album_art_url,
+                COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 a.name,
                 a.id as artist_id,
                 (SELECT COUNT(*)
@@ -228,7 +228,7 @@ const ViewYear = (() => {
                 SELECT
                     a.id,
                     a.name,
-                    a.image_url,
+                    COALESCE(a.image_thumb_url, a.image_url) as image_url,
                     COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN l.id END) as unique_tracks,
                     COUNT(CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN l.id END) as total_listens,
                     CAST(SUM(CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
@@ -248,7 +248,7 @@ const ViewYear = (() => {
                 SELECT
                     a.id,
                     a.name,
-                    a.image_url,
+                    COALESCE(a.image_thumb_url, a.image_url) as image_url,
                     COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN l.id END) as unique_tracks,
                     COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
                     CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes

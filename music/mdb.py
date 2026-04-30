@@ -35,6 +35,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import hashlib
+import getpass
+import os
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -64,6 +67,7 @@ from mdb_ops import (
     EL_SVC_BEATPORT, EL_SVC_BANDCAMP, EL_SVC_DEEZER,
     resolve_artist,
     save_aoty_data, save_release_date,
+    upsert_artist_alias, upsert_release_alias, upsert_track_alias,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
@@ -3173,16 +3177,11 @@ def cmd_alias(args):
             sys.exit(1)
 
         if args.alias_cmd == 'add':
-            conn.execute(
-                '''INSERT INTO artist_aliases (artist_id, alias, alias_type, language, source, sort_order)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(artist_id, alias) DO UPDATE SET
-                       alias_type = excluded.alias_type,
-                       language   = excluded.language,
-                       source     = excluded.source,
-                       sort_order = excluded.sort_order''',
-                [artist['id'], args.alias, args.alias_type, getattr(args, 'language', None), args.source, getattr(args, 'sort_order', 0)],
-            )
+            upsert_artist_alias(conn, artist['id'], args.alias,
+                                alias_type=args.alias_type,
+                                language=getattr(args, 'language', None),
+                                source=args.source,
+                                sort_order=getattr(args, 'sort_order', 0))
             conn.commit()
             type_tag = f'  [dim]{args.alias_type}[/dim]' if args.alias_type != 'common' else ''
             console.print(f'  [green]✓[/green]  "{args.alias}"{type_tag}  →  {artist["name"]}  [dim]({args.source})[/dim]')
@@ -3305,12 +3304,7 @@ def cmd_artist_merge(args):
 
         # Add FROM name as past_name alias on TO (unless suppressed)
         if not getattr(args, 'no_alias', False):
-            conn.execute(
-                '''INSERT INTO artist_aliases (artist_id, alias, alias_type, source, sort_order)
-                   VALUES (?, ?, 'past_name', 'manual', 0)
-                   ON CONFLICT(artist_id, alias) DO NOTHING''',
-                [to_id, from_name],
-            )
+            upsert_artist_alias(conn, to_id, from_name, alias_type='past_name', source='manual')
             console.print(f'  [dim]Added past_name alias: "{from_name}"[/dim]')
 
         # Delete the FROM artist
@@ -3419,14 +3413,10 @@ def cmd_release_alias(args):
 
         if args.release_alias_cmd == 'add':
             is_def = 1 if getattr(args, 'definitive', False) else 0
-            conn.execute(
-                '''INSERT INTO release_aliases (release_id, alias, is_definitive, source)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(release_id, alias) DO UPDATE SET
-                       is_definitive = excluded.is_definitive,
-                       source        = excluded.source''',
-                [release['id'], args.alias, is_def, args.source],
-            )
+            upsert_release_alias(conn, release['id'], args.alias,
+                                 is_definitive=is_def,
+                                 language=getattr(args, 'language', None),
+                                 source=args.source)
             conn.commit()
             def_label = '  [bold](definitive)[/bold]' if is_def else ''
             console.print(f'  [green]✓[/green]  "{args.alias}"{def_label}  →  {release["title"]}  [dim]({args.source})[/dim]')
@@ -4844,6 +4834,25 @@ def cmd_dedup(args):
     console.print('  ' + '  ·  '.join(parts) if parts else '[dim]Done.[/dim]')
 
 
+def cmd_admin_pin(args):
+    db_path = getattr(args, 'db', None) or DB_PATH
+    pin = getpass.getpass('New PIN: ')
+    confirm = getpass.getpass('Confirm PIN: ')
+    if pin != confirm:
+        console.print('[red]PINs do not match.[/red]')
+        return
+    salt = os.urandom(16).hex()
+    h = hashlib.pbkdf2_hmac('sha256', pin.encode(), salt.encode(), 100_000).hex()
+    conn = open_db(db_path)
+    conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES ('admin_pin_salt',?)", (salt,))
+    conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES ('admin_pin_hash',?)", (h,))
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    console.print('[green]Admin PIN set.[/green]')
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='mdb',
@@ -5120,6 +5129,10 @@ def main():
     p_dedup.add_argument('--artist', metavar='NAME', help='Limit to a specific artist')
     p_dedup.add_argument('--db',     metavar='PATH', help='Path to master.sqlite')
     p_dedup.set_defaults(func=cmd_dedup)
+
+    p_adminpin = sub.add_parser('admin-pin', help='Set or reset the admin view PIN')
+    p_adminpin.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_adminpin.set_defaults(func=cmd_admin_pin)
 
     args = parser.parse_args()
     try:

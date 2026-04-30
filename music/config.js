@@ -1,6 +1,6 @@
 const DB_CONFIG = {
     filename: 'master.sqlite',
-    cacheKey: 'v1',  // bump to force cache bust on all clients
+    cacheKey: 'v2',  // bump to force cache bust on all clients
 
     async fetchDatabase() { return this._loadWithCache(); },
 

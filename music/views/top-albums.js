@@ -83,7 +83,7 @@ const ViewTopAlbums = (() => {
                 r.title,
                 r.release_year,
                 r.type,
-                r.album_art_url,
+                COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 a.name,
                 a.id as artist_id,
                 COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as tracks_listened,

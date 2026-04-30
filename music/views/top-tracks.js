@@ -73,7 +73,7 @@ const ViewTopTracks = (() => {
                 t.title,
                 a.name,
                 a.id as artist_id,
-                r.album_art_url,
+                COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 r.id as release_id,
                 COUNT(l.id) as total_listens,
                 CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER) as total_minutes

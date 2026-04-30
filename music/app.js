@@ -10,6 +10,7 @@ const VIEWS = {
     'artist':      () => ViewArtist,
     'release':     () => ViewRelease,
     'genre':       () => ViewGenre,
+    'admin':       () => ViewAdmin,
 };
 
 function getParams() {
