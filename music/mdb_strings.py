@@ -558,6 +558,7 @@ def _base_title(title: str) -> str:
         r'remaster(?:ed)?|deluxe|expanded|extended|unmixed|bonus|'
         r'explicit|clean|instrumental|reissue|anniversary|special|limited|'
         r'box\s*set|regional|mono|stereo|sound\s*tracks?|\bost\b|radio.?\s*edit|'
+        r'score\b|'
         r'music\s+from\s+(?:the\s+)?(?:motion\s+picture|film|movie))'
         r'[^\)\]]*[\)\]]',
         '', title, flags=re.I)
@@ -576,6 +577,16 @@ def _base_title(title: str) -> str:
     # (With a/an/the ...) where "with" starts a title phrase.
     t = re.sub(r'\s*[\(\[]\s*with\s+(?!(?:a |an |the ))[^\)\]]+[\)\]]', '', t, flags=re.I)
     t = re.sub(r'\s+original\s+sound\s*tracks?$', '', t, flags=re.I)
+    # Strip colon-separated soundtrack/score ETI trailing the source work title.
+    # Pattern: ": <soundtrack/score descriptor> [anything]"
+    # The trailing colon left behind is cleaned up by the punctuation strip below.
+    t = re.sub(
+        r'\s*:\s*(?:'
+        r'music\s+from\s+(?:the\s+)?(?:original\s+)?(?:motion\s+picture|film|movie)(?:\s+sound\s*tracks?)?'
+        r'|original\s+(?:motion\s+picture\s+)?(?:sound\s*tracks?|score)(?:\s+from\s+.*)?'
+        r'|sound\s*tracks?'   # bare ": Soundtrack" (e.g. "UNDERTALE: Soundtrack")
+        r').*$',
+        '', t, flags=re.I)
     # Strip bare trailing qualifiers (after dash/em-dash) that don't involve remixes
     t = re.sub(
         r'\s*[-–]\s*(?!.*\bremix\b)'

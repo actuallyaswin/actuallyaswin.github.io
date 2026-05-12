@@ -63,8 +63,9 @@ from mdb_ops import (
     upsert_release_beatport,
     populate_genre_relations,
     bulk_rematch, bulk_rematch_by_name,
-    upsert_external_link, EL_ARTIST, EL_RELEASE, EL_SVC_WIKIPEDIA,
-    EL_SVC_BEATPORT, EL_SVC_BANDCAMP, EL_SVC_DEEZER,
+    upsert_external_link, EL_ARTIST, EL_RELEASE, EL_TRACK, EL_SVC_WIKIPEDIA,
+    EL_SVC_BEATPORT, EL_SVC_BANDCAMP, EL_SVC_DEEZER, EL_SVC_GENIUS, EL_SVC_GENIUS_ID,
+    EL_SVC_DISCOGS, link_discogs, get_release_by_discogs_id,
     resolve_artist,
     save_aoty_data, save_release_date,
     upsert_artist_alias, upsert_release_alias, upsert_track_alias,
@@ -4834,6 +4835,183 @@ def cmd_dedup(args):
     console.print('  ' + '  ·  '.join(parts) if parts else '[dim]Done.[/dim]')
 
 
+def cmd_link_discogs(args):
+    """Associate a DB release with a Discogs release ID."""
+    db_path = getattr(args, 'db', None) or DB_PATH
+    with managed_db(db_path) as conn:
+        # Resolve release
+        release = None
+        raw = args.release
+        # Try internal ID
+        release = conn.execute('SELECT id, title FROM releases WHERE id=?', [raw]).fetchone()
+        # Try Spotify ID
+        if not release:
+            release = conn.execute('SELECT id, title FROM releases WHERE spotify_id=?', [raw]).fetchone()
+        # Try MB UUID
+        if not release and is_valid_mbid(raw):
+            release = conn.execute('SELECT id, title FROM releases WHERE mbid=?', [raw]).fetchone()
+        if not release:
+            console.print(f'[red]Release not found:[/red] {raw}')
+            return
+
+        # Check if already linked to a different Discogs ID
+        existing = conn.execute(
+            'SELECT link_value FROM external_links WHERE entity_type=? AND entity_id=? AND service=?',
+            [EL_RELEASE, release['id'], EL_SVC_DISCOGS]
+        ).fetchone()
+        if existing and existing[0] != str(args.discogs_id):
+            console.print(f'[yellow]Warning:[/yellow] replacing existing Discogs ID {existing[0]} → {args.discogs_id}')
+
+        link_discogs(conn, release['id'], args.discogs_id)
+        console.print(
+            f'  [green]✓[/green]  [bold]{release["title"]}[/bold]  '
+            f'→  Discogs [dim]https://www.discogs.com/release/{args.discogs_id}[/dim]'
+        )
+
+
+def cmd_collection_import(args):
+    """Import a Discogs CSV export into collection_items.
+
+    Creates one row per physical item. Auto-links to existing DB releases
+    where a single unambiguous title match exists. Uses detect_medium() to
+    determine vinyl/cd/cassette from the Discogs format string.
+    NOTE: Does not run automatically — user invokes deliberately to avoid
+    fuzzy-match collisions with manually-imported releases.
+    """
+    import csv
+    import time as _time
+    from mdb_strings import normalize_text
+    from collection_genres import format_to_coarse, detect_medium
+
+    csv_path = args.csv_file
+    db_path  = getattr(args, 'db', None) or DB_PATH
+
+    with managed_db(db_path) as conn:
+        rows = list(csv.DictReader(open(csv_path, encoding='utf-8')))
+        console.print(f'Importing [bold]{len(rows)}[/bold] items from {csv_path}')
+
+        # Build lookup: normalized title → list of release_ids
+        db_by_norm: dict[str, list[str]] = {}
+        for r in conn.execute('SELECT id, title FROM releases WHERE hidden=0').fetchall():
+            key = normalize_text(r['title'] or '')
+            db_by_norm.setdefault(key, []).append(r['id'])
+
+        now = int(_time.time())
+        inserted = updated = linked = 0
+
+        for row in rows:
+            discogs_id = row['release_id'].strip()
+            title      = row['Title'].strip()
+            fmt        = row['Format'].strip()
+            folder     = row['CollectionFolder'].strip()
+            fmt_coarse = format_to_coarse(fmt, folder)
+            medium     = detect_medium(fmt)
+
+            # Auto-link only on exact single match (avoids fuzzy collisions)
+            release_id = None
+            hits = db_by_norm.get(normalize_text(title), [])
+            if len(hits) == 1:
+                release_id = hits[0]
+                upsert_external_link(conn, EL_RELEASE, release_id,
+                                     EL_SVC_DISCOGS, discogs_id)
+                linked += 1
+
+            existing = conn.execute(
+                'SELECT id FROM collection_items WHERE discogs_release_id=?',
+                [discogs_id]
+            ).fetchone()
+
+            fields = dict(
+                release_id     = release_id,
+                medium         = medium,
+                format         = fmt,
+                format_coarse  = fmt_coarse,
+                catalog_number = row.get('Catalog#', '').strip(),
+                label          = row.get('Label', '').strip(),
+                date_added     = row.get('Date Added', '').strip(),
+                discogs_folder = folder,
+                media_condition  = row.get('Collection Media Condition', '').strip(),
+                sleeve_condition = row.get('Collection Sleeve Condition', '').strip(),
+                notes            = row.get('Collection Notes', '').strip(),
+                updated_at       = now,
+            )
+
+            if existing:
+                # Preserve existing release_id unless we found a new link
+                set_clause = ', '.join(
+                    f'{k}=COALESCE({k},?)' if k == 'release_id' else f'{k}=?'
+                    for k in fields
+                )
+                conn.execute(
+                    f'UPDATE collection_items SET {set_clause} WHERE discogs_release_id=?',
+                    [*fields.values(), discogs_id]
+                )
+                updated += 1
+            else:
+                cols = ', '.join(['discogs_release_id', *fields.keys(), 'created_at'])
+                placeholders = ', '.join(['?'] * (len(fields) + 2))
+                conn.execute(
+                    f'INSERT INTO collection_items ({cols}) VALUES ({placeholders})',
+                    [discogs_id, *fields.values(), now]
+                )
+                inserted += 1
+
+        conn.commit()
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        console.print(
+            f'  inserted [green]{inserted}[/green]  '
+            f'updated [yellow]{updated}[/yellow]  '
+            f'auto-linked to DB releases [cyan]{linked}[/cyan]'
+        )
+
+
+def cmd_collection_enrich_discogs(args):
+    """Fetch genre/style metadata from Discogs API for collection_items."""
+    import time as _time
+    import json as _json
+    from mdb_apis import DiscogsClient
+    from collection_genres import discogs_tags_to_coarse
+
+    db_path = getattr(args, 'db', None) or DB_PATH
+    with managed_db(db_path) as conn:
+        dc = DiscogsClient.from_env()
+
+        query = 'SELECT id, discogs_release_id FROM collection_items'
+        if not args.force:
+            query += ' WHERE discogs_genres IS NULL'
+        items = conn.execute(query).fetchall()
+        console.print(f'Fetching Discogs metadata for [bold]{len(items)}[/bold] items...')
+
+        enriched = failed = 0
+        for i, (item_id, discogs_id) in enumerate(items, 1):
+            try:
+                genres, styles = dc.get_genres_styles(discogs_id)
+                coarse = discogs_tags_to_coarse(genres, styles)
+                conn.execute(
+                    'UPDATE collection_items SET discogs_genres=?, coarse_genre=?, updated_at=? WHERE id=?',
+                    [_json.dumps(genres + styles), coarse, int(_time.time()), item_id]
+                )
+                enriched += 1
+                if i % 25 == 0:
+                    conn.commit()
+                    console.print(f'  [{i}/{len(items)}] {enriched} enriched, {failed} failed')
+            except Exception as e:
+                console.print(f'  [yellow]⚠[/yellow] id={discogs_id}: {e}')
+                failed += 1
+
+        conn.commit()
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        console.print(f'Done: [green]{enriched}[/green] enriched, [red]{failed}[/red] failed')
+
+
+def cmd_collection_enrich(args):
+    """Dispatch collection enrichment sub-commands."""
+    if getattr(args, 'discogs', False):
+        cmd_collection_enrich_discogs(args)
+    else:
+        console.print('[yellow]Specify --discogs to enrich from Discogs API[/yellow]')
+
+
 def cmd_admin_pin(args):
     db_path = getattr(args, 'db', None) or DB_PATH
     pin = getpass.getpass('New PIN: ')
@@ -5058,6 +5236,15 @@ def main():
     p_src.add_argument('--db', metavar='PATH')
     p_src.set_defaults(func=cmd_link_sources)
 
+    p_discogs = ls_.add_parser('discogs',
+                                help='Associate a DB release with its Discogs release ID')
+    p_discogs.add_argument('release', metavar='RELEASE',
+                           help='DB release ID, Spotify URL/ID, or MusicBrainz UUID')
+    p_discogs.add_argument('discogs_id', metavar='DISCOGS_ID', type=int,
+                           help='Discogs release integer ID (from the release URL)')
+    p_discogs.add_argument('--db', metavar='PATH')
+    p_discogs.set_defaults(func=cmd_link_discogs)
+
     # alias
     p_alias = sub.add_parser('alias', help='Manage artist name aliases')
     als_    = p_alias.add_subparsers(dest='alias_cmd', required=True)
@@ -5129,6 +5316,24 @@ def main():
     p_dedup.add_argument('--artist', metavar='NAME', help='Limit to a specific artist')
     p_dedup.add_argument('--db',     metavar='PATH', help='Path to master.sqlite')
     p_dedup.set_defaults(func=cmd_dedup)
+
+    p_coll = sub.add_parser('collection', help='Manage physical media collection')
+    cs_    = p_coll.add_subparsers(dest='collection_cmd', required=True)
+
+    p_coll_import = cs_.add_parser('import',
+        help='Import a Discogs collection CSV export into collection_items')
+    p_coll_import.add_argument('csv_file', metavar='CSV',
+        help='Path to Discogs collection export CSV')
+    p_coll_import.add_argument('--db', metavar='PATH')
+    p_coll_import.set_defaults(func=cmd_collection_import)
+
+    p_coll_enrich = cs_.add_parser('enrich', help='Enrich collection metadata from external APIs')
+    p_coll_enrich.add_argument('--discogs', action='store_true',
+                                help='Fetch genres/styles from Discogs API (~6 min for 325 items)')
+    p_coll_enrich.add_argument('--force', action='store_true',
+                                help='Re-fetch even if already enriched')
+    p_coll_enrich.add_argument('--db', metavar='PATH')
+    p_coll_enrich.set_defaults(func=cmd_collection_enrich)
 
     p_adminpin = sub.add_parser('admin-pin', help='Set or reset the admin view PIN')
     p_adminpin.add_argument('--db', metavar='PATH', help='Path to master.sqlite')

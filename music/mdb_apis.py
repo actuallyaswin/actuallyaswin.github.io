@@ -23,6 +23,8 @@ __all__ = [
     'mb_find_release_group',
     'mb_canonical_score', 'mb_release_reasons',
     'mb_rg_from_wiki_url',
+    'GeniusClient', '_get_genius_client', 'GeniusTrack',
+    'DiscogsClient',
 ]
 
 import json
@@ -1524,3 +1526,276 @@ class DeezerRelease:
         d    = self.date
         prec = (3 if len(d) == 10 else (2 if len(d) == 7 else 1))
         return (-prec, d, self.track_count, 0, 0)
+
+
+# ── Genius ─────────────────────────────────────────────────────────────────────
+
+GENIUS_BASE = 'https://api.genius.com'
+
+_genius_client_singleton: 'GeniusClient | None' = None
+
+
+class GeniusClient:
+    """Read-only Genius API client using client-credentials Bearer token."""
+
+    def __init__(self, access_token: str) -> None:
+        self._token = access_token
+
+    @classmethod
+    def from_client_credentials(cls, client_id: str, client_secret: str) -> 'GeniusClient':
+        data = urllib.parse.urlencode({
+            'grant_type':    'client_credentials',
+            'client_id':     client_id,
+            'client_secret': client_secret,
+        }).encode()
+        req = urllib.request.Request(
+            f'{GENIUS_BASE}/oauth/token',
+            data=data,
+            method='POST',
+            headers={'Content-Type': 'application/x-www-form-urlencoded',
+                     'User-Agent': 'mdb/1.0'},
+        )
+        resp = json.loads(urllib.request.urlopen(req).read())
+        if 'access_token' not in resp:
+            raise RuntimeError(f'Genius auth failed: {resp}')
+        return cls(resp['access_token'])
+
+    def _get(self, path: str, params: 'dict | None' = None) -> dict:
+        url = GENIUS_BASE + path
+        if params:
+            url += '?' + urllib.parse.urlencode(params)
+        return _http_get_json(url, headers={
+            'Authorization': f'Bearer {self._token}',
+            'User-Agent': 'mdb/1.0',
+        })
+
+    def search(self, query: str) -> 'list[dict]':
+        """Search songs. Returns list of result dicts from hits."""
+        r = self._get('/search', {'q': query})
+        return [h['result'] for h in r['response']['hits'] if h.get('type') == 'song']
+
+    def search_song(self, title: str, artist: str) -> 'dict | None':
+        """Find best matching Genius song for a title + artist pair."""
+        hits = self.search(f'{title} {artist}')
+        norm = lambda s: s.lower().strip()
+        nt, na = norm(title), norm(artist)
+        for h in hits:
+            if norm(h['title']) == nt and norm(h['primary_artist']['name']) == na:
+                return h
+        for h in hits:
+            if norm(h['title']) == nt and na in norm(h['primary_artist']['name']):
+                return h
+        return None
+
+    def get_song(self, song_id: int) -> dict:
+        """Full song data: id, title, url, language, release_date, stats,
+        song_art_primary_color, apple_music_id, album, primary_artist."""
+        return self._get(f'/songs/{song_id}')['response']['song']
+
+    def get_artist(self, artist_id: int) -> dict:
+        """Full artist data: id, name, url, image_url, alternate_names,
+        followers_count, social_links."""
+        return self._get(f'/artists/{artist_id}')['response']['artist']
+
+    def get_artist_songs(self, artist_id: int, per_page: int = 50,
+                         sort: str = 'popularity') -> 'list[dict]':
+        r = self._get(f'/artists/{artist_id}/songs',
+                      {'per_page': per_page, 'sort': sort})
+        return r['response']['songs']
+
+
+def _get_genius_client() -> 'GeniusClient':
+    global _genius_client_singleton
+    if _genius_client_singleton is None:
+        from mdb_ops import load_dotenv
+        load_dotenv()
+        token = os.environ.get('GENIUS_ACCESS_TOKEN')
+        if token:
+            _genius_client_singleton = GeniusClient(token)
+        else:
+            cid = os.environ.get('GENIUS_CLIENT_ID')
+            csc = os.environ.get('GENIUS_CLIENT_SECRET')
+            if not cid or not csc:
+                raise RuntimeError(
+                    'Set GENIUS_ACCESS_TOKEN or GENIUS_CLIENT_ID + GENIUS_CLIENT_SECRET in .env'
+                )
+            _genius_client_singleton = GeniusClient.from_client_credentials(cid, csc)
+    return _genius_client_singleton
+
+
+class GeniusTrack:
+    """Lazy-loaded Genius song with lyrics fetched via lyricsgenius library.
+
+    Lyrics are fetched on first access and held in memory only (not persisted).
+    Language detection uses lingua-py on the actual lyrics text, falling back
+    to the Genius API language field if lyrics are unavailable.
+
+    Usage:
+        track = GeniusTrack(genius_client, song_id=378195)
+        print(track.language)               # Genius API field: 'en'
+        print(track.lyrics)                 # fetched via lyricsgenius
+        lang = track.detect_language(detector)  # lingua Language object
+    """
+
+    # Shared lyricsgenius client — initialised once per process
+    _lg_client: 'object | None' = None
+
+    @classmethod
+    def _get_lg(cls) -> 'object':
+        if cls._lg_client is None:
+            try:
+                import lyricsgenius
+            except ImportError as e:
+                raise ImportError(
+                    f'lyricsgenius import failed: {e}\n'
+                    'If on Python <3.11, pin a compatible version: '
+                    'pip install "lyricsgenius==3.0.1"'
+                ) from e
+            token = os.environ.get('GENIUS_ACCESS_TOKEN')
+            if not token:
+                from mdb_ops import load_dotenv
+                load_dotenv()
+                token = os.environ.get('GENIUS_ACCESS_TOKEN')
+            if not token:
+                raise RuntimeError('GENIUS_ACCESS_TOKEN not set in .env')
+            cls._lg_client = lyricsgenius.Genius(
+                token,
+                verbose=False,
+                remove_section_headers=True,
+                skip_non_songs=True,
+                timeout=15,
+            )
+        return cls._lg_client
+
+    def __init__(self, client: GeniusClient, song_id: int) -> None:
+        self._client  = client
+        self.song_id  = song_id
+        self._meta:   'dict | None' = None
+        self._lyrics: 'str | None'  = None   # None = not yet fetched; '' = fetched, no lyrics
+
+    # -- lazy properties -------------------------------------------------------
+
+    @property
+    def meta(self) -> dict:
+        if self._meta is None:
+            self._meta = self._client.get_song(self.song_id)
+        return self._meta
+
+    @property
+    def title(self) -> str:
+        return self.meta.get('title', '')
+
+    @property
+    def url(self) -> str:
+        return self.meta.get('url', '')
+
+    @property
+    def language(self) -> 'str | None':
+        """Language code as returned by the Genius API (e.g. 'en', 'es')."""
+        return self.meta.get('language')
+
+    @property
+    def lyrics_state(self) -> str:
+        return self.meta.get('lyrics_state', '')
+
+    @property
+    def artist_name(self) -> str:
+        return (self.meta.get('primary_artist') or {}).get('name', '')
+
+    @property
+    def lyrics(self) -> 'str | None':
+        """Fetch lyrics via lyricsgenius on first access. Returns None if unavailable."""
+        if self._lyrics is not None:
+            return self._lyrics or None
+        if self.lyrics_state == 'instrumental':
+            self._lyrics = ''
+            return None
+        try:
+            lg     = self._get_lg()
+            # Use song_id directly — avoids unreliable text search for unusual titles
+            result = lg.search_song(song_id=self.song_id)
+            self._lyrics = result.lyrics.strip() if result and result.lyrics else ''
+        except (TimeoutError, OSError, AttributeError, ValueError, json.JSONDecodeError) as e:
+            # JSONDecodeError: Genius page returned empty/blocked response to lyricsgenius
+            # TimeoutError/OSError: network failure
+            self._lyrics = ''
+        return self._lyrics or None
+
+    def detect_language(self, detector: 'object') -> 'object | None':
+        """Detect language from lyrics using lingua-py.
+
+        Falls back to the Genius API language field if lyrics are unavailable.
+        """
+        text = self.lyrics
+        if text:
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            if lines:
+                from collections import Counter
+                counts: Counter = Counter()
+                for line in lines[:40]:
+                    result = detector.detect_language_of(line)
+                    if result:
+                        counts[result] += 1
+                if counts:
+                    return counts.most_common(1)[0][0]
+
+        # Fallback: convert Genius API language code to lingua Language object
+        lang_code = self.language
+        if lang_code:
+            try:
+                from lingua import IsoCode639_1, Language as LinguaLanguage
+                iso = getattr(IsoCode639_1, lang_code.upper())
+                return LinguaLanguage.from_iso_code_639_1(iso)
+            except (AttributeError, KeyError):
+                pass  # lang_code not in lingua's IsoCode639_1 enum (e.g. 'bm', 'sco')
+        return None
+
+
+# ── Discogs ────────────────────────────────────────────────────────────────────
+
+DISCOGS_BASE = 'https://api.discogs.com'
+_discogs_lim = RateLimiter(1.1)  # ~60 req/min public rate limit
+
+
+class DiscogsClient:
+    """Read-only Discogs API client.
+
+    Uses a personal access token (DISCOGS_TOKEN in .env) for higher rate limits,
+    or falls back to user-agent-only for public data.
+    """
+
+    UA = 'mdb/1.0 +https://github.com/actuallyaswin'
+
+    def __init__(self, token: 'str | None' = None) -> None:
+        self._token = token
+
+    @classmethod
+    def from_env(cls) -> 'DiscogsClient':
+        from mdb_ops import load_dotenv
+        load_dotenv()
+        return cls(token=os.environ.get('DISCOGS_TOKEN'))
+
+    def _get(self, path: str, params: 'dict | None' = None) -> dict:
+        url = DISCOGS_BASE + path
+        if params:
+            url += '?' + urllib.parse.urlencode(params)
+        headers = {'User-Agent': self.UA}
+        if self._token:
+            headers['Authorization'] = f'Discogs token={self._token}'
+        _discogs_lim.wait()
+        return _http_get_json(url, headers=headers)
+
+    def get_release(self, release_id: 'int | str') -> dict:
+        """Fetch full release metadata (genres, styles, tracklist, label, etc.)."""
+        return self._get(f'/releases/{release_id}')
+
+    def get_genres_styles(self, release_id: 'int | str') -> 'tuple[list, list]':
+        """Return (genres, styles) lists for a Discogs release ID.
+
+        Returns ([], []) on any error so callers can proceed gracefully.
+        """
+        try:
+            data = self.get_release(release_id)
+            return data.get('genres', []), data.get('styles', [])
+        except Exception:
+            return [], []

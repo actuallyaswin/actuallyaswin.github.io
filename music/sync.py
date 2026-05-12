@@ -240,9 +240,9 @@ def open_db() -> sqlite3.Connection:
 def dedup_spotify_lastfm(conn: sqlite3.Connection) -> int:
     """Remove Last.fm listens that duplicate a Spotify listen for the same track.
 
-    Called after bulk_rematch (which assigns track_ids to Last.fm rows). At that
-    point some Last.fm rows will share a track_id with a Spotify listen within
-    ±120 seconds — the same physical play captured by both sources.
+    Spotify timestamps are track END time; Last.fm timestamps are track START
+    time. We normalise the Spotify timestamp to start time by subtracting
+    ms_played before applying the ±120s window.
 
     We keep the Spotify listen (it has ms_played / skipped data) and delete the
     Last.fm one. Only deletes Last.fm rows that have track_id already set;
@@ -258,8 +258,9 @@ def dedup_spotify_lastfm(conn: sqlite3.Connection) -> int:
               SELECT 1 FROM listens sp
               WHERE sp.source = 'spotify'
                 AND sp.track_id = listens.track_id
-                AND sp.timestamp BETWEEN listens.timestamp - 120
-                                     AND listens.timestamp + 120
+                AND sp.ms_played IS NOT NULL
+                AND sp.timestamp - CAST(sp.ms_played / 1000 AS INTEGER)
+                    BETWEEN listens.timestamp - 120 AND listens.timestamp + 120
           )
     ''')
     conn.commit()
@@ -628,11 +629,15 @@ def cmd_fetch_spotify(conn: sqlite3.Connection, history_dir: str) -> None:
         track_id = track_lookup[sp_id]
         matched += 1
 
-        # Skip if a Last.fm scrobble already covers this listen (±120s, same track)
+        # Skip if a Last.fm scrobble already covers this listen.
+        # Spotify ts = track END; Last.fm ts = track START — normalise to start
+        # by subtracting ms_played before comparing within ±120s.
+        ms = int(r.get('ms_played') or 0)
+        ts_start = ts - ms // 1000
         dup = conn.execute(
             "SELECT 1 FROM listens "
             "WHERE track_id = ? AND timestamp BETWEEN ? AND ? AND source = 'lastfm' LIMIT 1",
-            (track_id, ts - 120, ts + 120),
+            (track_id, ts_start - 120, ts_start + 120),
         ).fetchone()
         if dup:
             skipped_dup += 1
@@ -715,19 +720,15 @@ def cmd_fetch(args):
         console.print(f'  [green]{n:,} rows loaded from {label}[/green]      ')
         return n
 
-    # 1 — Parquet (legacy migration; skipped silently if file absent)
-    parquet_path = args.parquet or os.path.join(
-        os.path.expanduser('~'), 'Downloads', 'recenttracks.parquet'
-    )
-    if args.parquet or os.path.exists(parquet_path):
-        console.print(f'[bold]Parquet:[/bold] {parquet_path}')
-        _drain('parquet', _iter_parquet(parquet_path))
+    # 1 — Parquet (legacy migration; explicit --parquet only, not auto-detected)
+    if args.parquet and os.path.exists(args.parquet):
+        console.print(f'[bold]Parquet:[/bold] {args.parquet}')
+        _drain('parquet', _iter_parquet(args.parquet))
 
-    # 2 — Old sqlite (legacy migration; skipped silently if file absent)
-    old_path = args.sqlite or OLD_SQLITE
-    if args.sqlite or os.path.exists(old_path):
-        console.print(f'[bold]Old sqlite:[/bold] {old_path}')
-        _drain('old sqlite', _iter_old_sqlite(old_path))
+    # 2 — Old sqlite (legacy migration; explicit --sqlite only, not auto-detected)
+    if args.sqlite and os.path.exists(args.sqlite):
+        console.print(f'[bold]Old sqlite:[/bold] {args.sqlite}')
+        _drain('old sqlite', _iter_old_sqlite(args.sqlite))
 
     # 3 — Live Last.fm API (default; skip with --no-live)
     if not args.no_live:
@@ -768,12 +769,6 @@ def cmd_fetch(args):
     console.print('[bold]Auto-matching by track MBID…[/bold]')
     matched = bulk_rematch(conn)
     console.print(f'  [green]{matched:,} listens matched to catalog tracks[/green]')
-
-    # Remove Last.fm listens that are now duplicated by a Spotify listen (same
-    # track_id, within ±120s). bulk_rematch must run first so track_ids are set.
-    removed = dedup_spotify_lastfm(conn)
-    if removed:
-        console.print(f'  [dim]{removed:,} Last.fm listens removed (covered by Spotify)[/dim]')
 
     # Final summary
     total    = conn.execute('SELECT COUNT(*) FROM listens').fetchone()[0]

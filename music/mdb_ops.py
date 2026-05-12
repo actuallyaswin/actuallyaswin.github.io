@@ -17,6 +17,7 @@ from mdb_strings import (
     parse_track_title as _parse_track_title,
     _should_update_date,
     is_soundtrack_title,
+    _base_title,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -28,6 +29,7 @@ DB_PATH = os.path.join(_DIR, 'master.sqlite')
 
 EL_ARTIST  = 0  # entity_type: artist
 EL_RELEASE = 1  # entity_type: release
+EL_TRACK   = 2  # entity_type: track
 
 EL_SVC_WIKIPEDIA   = 0
 EL_SVC_MUSICBRAINZ = 1
@@ -37,6 +39,9 @@ EL_SVC_DEEZER      = 4
 EL_SVC_TIDAL       = 5
 EL_SVC_BANDCAMP    = 6
 EL_SVC_BEATPORT    = 7
+EL_SVC_GENIUS      = 8   # link_value = slug (e.g. 'Bad-bunny'), used for hrefs
+EL_SVC_GENIUS_ID   = 9   # link_value = integer ID (e.g. '690350'), used for API calls
+EL_SVC_DISCOGS     = 10  # link_value = Discogs release/artist integer ID
 
 # ── ULID / slug ────────────────────────────────────────────────────────────────
 
@@ -301,6 +306,29 @@ CREATE TABLE IF NOT EXISTS release_soundtrack_meta (
     industry_region   TEXT,  -- ISO 3166-1 alpha-2 (US, IN, GB, JP, ES, ...)
     original_language TEXT   -- ISO 639-1 (en, hi, ta, es, ja, ...)
 );
+CREATE TABLE IF NOT EXISTS collection_items (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    discogs_release_id   TEXT UNIQUE NOT NULL,
+    release_id           TEXT REFERENCES releases(id),
+    medium               TEXT NOT NULL DEFAULT 'vinyl'
+                         CHECK(medium IN ('vinyl','cd','cassette','other')),
+    format               TEXT,
+    format_coarse        TEXT CHECK(format_coarse IN ('album','ep','single','soundtrack')),
+    catalog_number       TEXT,
+    label                TEXT,
+    date_added           TEXT,
+    media_condition      TEXT,
+    sleeve_condition     TEXT,
+    notes                TEXT,
+    discogs_folder       TEXT,
+    discogs_genres       TEXT,
+    coarse_genre         TEXT,
+    created_at           INTEGER,
+    updated_at           INTEGER
+);
+CREATE INDEX IF NOT EXISTS ci_release_id ON collection_items(release_id);
+CREATE INDEX IF NOT EXISTS ci_format_coarse ON collection_items(format_coarse);
+CREATE INDEX IF NOT EXISTS ci_coarse_genre ON collection_items(coarse_genre);
 """
 
 
@@ -490,6 +518,27 @@ def upsert_external_link(conn: sqlite3.Connection,
     )
 
 
+def link_discogs(conn: sqlite3.Connection, release_id: str,
+                 discogs_id: int | str) -> None:
+    """Associate a DB release with its Discogs release ID.
+
+    Stores the integer Discogs release ID in external_links (service=EL_SVC_DISCOGS).
+    Safe to call multiple times — idempotent.
+    """
+    upsert_external_link(conn, EL_RELEASE, release_id, EL_SVC_DISCOGS, str(discogs_id))
+
+
+def get_release_by_discogs_id(conn: sqlite3.Connection,
+                               discogs_id: int | str) -> 'sqlite3.Row | None':
+    """Look up a DB release by its Discogs ID. Returns None if not linked."""
+    return conn.execute(
+        'SELECT r.* FROM releases r'
+        ' JOIN external_links el ON el.entity_id = r.id'
+        ' WHERE el.entity_type = ? AND el.service = ? AND el.link_value = ?',
+        (EL_RELEASE, EL_SVC_DISCOGS, str(discogs_id)),
+    ).fetchone()
+
+
 def upsert_artist_alias(conn: sqlite3.Connection, artist_id: str, alias: str,
                         alias_type: str = 'common', language: str = None,
                         source: str = 'manual', sort_order: int = 0) -> None:
@@ -603,6 +652,7 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
         release_date = release_date[:4]
     release_year   = int(release_date[:4]) if release_date else None
     art            = _best_image(sp_album.get('images', []))
+    clean_title    = _base_title(sp_album['name'])
     type_secondary = 'soundtrack' if is_soundtrack_title(sp_album['name']) else None
 
     if row:
@@ -616,14 +666,14 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
             f' label = ?, album_art_url = ?, album_art_thumb_url = COALESCE(album_art_thumb_url, ?),'
             f' album_art_source = ?, total_tracks = ?,'
             f' spotify_popularity = ?, updated_at = ? WHERE id = ?',
-            (sp_album['name'], primary_artist_id, _sp_type(sp_album),
+            (clean_title, primary_artist_id, _sp_type(sp_album),
              type_secondary, *date_vals,
              sp_album.get('label'), art, art, 'spotify',
              sp_album.get('total_tracks'), sp_album.get('popularity'), now, row['id'])
         )
         return row['id'], False
 
-    base       = slugify(sp_album['name'])
+    base       = slugify(clean_title)
     existing   = {r[0] for r in cur.execute(
         'SELECT slug FROM releases WHERE primary_artist_id = ?', (primary_artist_id,)).fetchall()}
     slug       = unique_slug(base, existing)
@@ -633,7 +683,7 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
         ' release_date, release_year, label, spotify_id, album_art_url, album_art_thumb_url,'
         ' album_art_source, total_tracks, spotify_popularity, date_source, created_at, updated_at)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        (release_id, slug, sp_album['name'], primary_artist_id, _sp_type(sp_album),
+        (release_id, slug, clean_title, primary_artist_id, _sp_type(sp_album),
          type_secondary, release_date, release_year, sp_album.get('label'), sid, art, art, 'spotify',
          sp_album.get('total_tracks'), sp_album.get('popularity'), 'spotify', now, now)
     )
@@ -654,16 +704,19 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
         track_mbid = mb_by_isrc.get(isrc) if isrc else None
         if not track_mbid:
             track_mbid = mb_by_title.get(ascii_key(sp.get('name', '')))
-        row = cur.execute('SELECT id, title FROM tracks WHERE spotify_id = ?', (sid,)).fetchone()
+        row = cur.execute('SELECT id, title, release_id FROM tracks WHERE spotify_id = ?', (sid,)).fetchone()
         if row:
-            track_id, existing_title = row[0], row[1]
+            track_id, existing_title, existing_release_id = row[0], row[1], row[2]
+            # Don't move a track to a different release — it already has a home.
+            # Only update release_id when re-importing the same album.
+            target_release_id = release_id if existing_release_id == release_id else existing_release_id
             title_to_store = resolve_title(sp['name'], existing_title)
             try:
                 cur.execute(
                     'UPDATE tracks SET release_id = ?, title = ?, track_number = ?,'
                     ' disc_number = ?, duration_ms = ?, is_explicit = ?, isrc = ?,'
                     ' mbid = ?, spotify_popularity = ?, updated_at = ? WHERE id = ?',
-                    (release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
+                    (target_release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
                      sp.get('duration_ms'), 1 if sp.get('explicit') else 0,
                      isrc, track_mbid, sp.get('popularity'), now, track_id)
                 )
@@ -673,7 +726,7 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
                     'UPDATE tracks SET release_id = ?, title = ?, track_number = ?,'
                     ' disc_number = ?, duration_ms = ?, is_explicit = ?, isrc = ?,'
                     ' spotify_popularity = ?, updated_at = ? WHERE id = ?',
-                    (release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
+                    (target_release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
                      sp.get('duration_ms'), 1 if sp.get('explicit') else 0,
                      isrc, sp.get('popularity'), now, track_id)
                 )
