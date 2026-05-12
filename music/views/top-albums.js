@@ -15,15 +15,7 @@ const ViewTopAlbums = (() => {
             return `<button class="sort-btn${countLimit === n ? ' active' : ''}" data-count="${n}">${label}</button>`;
         }).join('');
 
-        container.innerHTML = `
-            <div class="site-header">
-                <a href="?" class="site-logo-small">
-                    <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-                </a>
-                <a href="?" class="back-button">← Home</a>
-            </div>
-
-            <header>
+        container.innerHTML = `            <header>
                 <h1>Top Albums</h1>
             </header>
 

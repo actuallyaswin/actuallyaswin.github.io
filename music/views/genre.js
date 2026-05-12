@@ -11,15 +11,7 @@ const ViewGenre = (() => {
             return;
         }
 
-        container.innerHTML = `
-            <div class="site-header">
-                <a href="?" class="site-logo-small">
-                    <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-                </a>
-                <a href="javascript:history.back()" class="back-button">← Back</a>
-            </div>
-
-            <header>
+        container.innerHTML = `            <header>
                 <nav class="genre-breadcrumb" id="genreBreadcrumb"></nav>
                 <h1 id="genreName">Loading...</h1>
                 <p class="subtitle" id="genreSubtitle"></p>

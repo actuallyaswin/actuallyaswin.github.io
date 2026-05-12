@@ -49,7 +49,7 @@ const ViewHome = (() => {
 
             <div class="stats-row">
                 <section id="weeklyReleasesSection" hidden>
-                    <h2>Top Releases This Week</h2>
+                    <h2>Top Releases This Month</h2>
                     <div id="weeklyReleasesCollage"></div>
                 </section>
                 <section id="homeRecentPlaysSection" hidden>
@@ -528,25 +528,25 @@ const ViewHome = (() => {
     }
 
     function loadWeeklyReleases() {
-        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
+        const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
         const result = _db.exec(`
             SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url, a.name as artist_name, COUNT(l.id) as plays
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON t.release_id = r.id
             LEFT JOIN artists a ON r.primary_artist_id = a.id
-            WHERE l.timestamp >= ${sevenDaysAgo}
+            WHERE l.timestamp >= ${thirtyDaysAgo}
             AND t.hidden = 0 AND r.hidden = 0
             GROUP BY r.id
             ORDER BY plays DESC
-            LIMIT 9
+            LIMIT 16
         `)[0];
 
         const container = document.getElementById('weeklyReleasesCollage');
         const section = document.getElementById('weeklyReleasesSection');
         if (!container || !section || !result || result.values.length === 0) return;
 
-        const n = result.values.length <= 4 ? 2 : 3;
+        const n = 4;
         container.className = 'collage-grid';
         container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
 

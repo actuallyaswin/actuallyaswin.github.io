@@ -3,6 +3,7 @@ const ViewRelease = (() => {
     let _releaseId = null;
     let _primaryArtistId = null;
     let _releaseType = null;
+    let _typeSecondary = null;
     let _artistsWithReleases = new Set();
     let _currentChart = null;
     let _chartData = { monthly: null, yearly: null, monthlyRaw: null };
@@ -11,9 +12,22 @@ const ViewRelease = (() => {
 
     // Set to true to re-enable the Chart.js listening history chart
     const CHART_ENABLED = false;
-
-    // Set to false to disable per-track audio feature bars (Energy, Mood, Dance)
     const AUDIO_FEATURES_ENABLED = true;
+    const HIDE_DUPES = true;
+
+    const _SVG_EXT = `<svg class="pill-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
+    const _SVG_CHEVRON = `<svg class="pill-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+    function _buildPill(svc, href, name, sub) {
+        const icon = svc === 'aoty'
+            ? `<img src="images/links/aoty-icon.png" class="pill-aoty-img">`
+            : `<span class="pill-mask"></span>`;
+        return `<a href="${href}" target="_blank" rel="noopener" class="release-link-pill pill-${svc}">` +
+            `<span class="pill-icon">${icon}</span>` +
+            `<span class="pill-text"><span class="pill-service-name">${name}</span>` +
+            (sub ? `<span class="pill-sub">${sub}</span>` : '') +
+            `</span>${_SVG_EXT}</a>`;
+    }
 
     function mount(container, db, params) {
         _db = db;
@@ -29,15 +43,7 @@ const ViewRelease = (() => {
             return;
         }
 
-        container.innerHTML = `
-            <div class="site-header">
-                <a href="?" class="site-logo-small">
-                    <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-                </a>
-                <a href="javascript:history.back()" class="back-button">← Back</a>
-            </div>
-
-            <header id="releaseHeader" class="artist-header-layout">
+        container.innerHTML = `            <header id="releaseHeader" class="artist-header-layout release-header-grid">
                 <div class="artist-photo-container">
                     <div class="artist-photo" id="albumArt">
                         <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -51,14 +57,11 @@ const ViewRelease = (() => {
                     <p class="release-artist">
                         <span id="releaseArtist"></span>
                     </p>
-                    <p class="release-meta-line" id="releaseMeta"></p>
-                    <p id="releaseListenStats" class="release-listen-stats" hidden></p>
+                    <dl id="releaseStatsTable" class="release-stats-table" hidden></dl>
                     <p id="releaseAka" class="release-aka" hidden></p>
-                    <div class="release-footer-row">
-                        <p id="releaseGenres" class="genre-list"></p>
-                        <div id="releaseLinks" class="release-links"></div>
-                    </div>
+                    <p id="releaseGenres" class="genre-list" style="margin-top:0.5rem"></p>
                 </div>
+                <nav id="releaseLinkPills" class="release-link-pills"></nav>
             </header>
 
             ${CHART_ENABLED ? `
@@ -188,7 +191,8 @@ const ViewRelease = (() => {
         const typeLabel = [type, typeSecondary].filter(Boolean).join(' / ');
 
         _primaryArtistId = primaryArtistId || null;
-        _releaseType = type || null;
+        _releaseType     = type || null;
+        _typeSecondary   = typeSecondary || null;
 
         const artistResult = _db.exec(`
             SELECT DISTINCT a.name, a.id
@@ -201,7 +205,7 @@ const ViewRelease = (() => {
             ORDER BY (r.primary_artist_id = a.id) DESC, a.name
         `)[0];
 
-        // Inline transliteration for non-Latin release titles
+        // Inline transliteration for non-Latin release titles + ETI stripping
         const isNonLatin = s => /[^ -]/.test(s);
         const titleAliasResult = _db.exec(`
             SELECT alias FROM release_aliases
@@ -212,13 +216,18 @@ const ViewRelease = (() => {
         `)[0];
         const titleAlias = titleAliasResult && titleAliasResult.values[0]?.[0];
 
+        const ETI_RE = /(\s*:\s*|\s+[\-–—]\s*|\s+)(original\s+(?:motion\s+picture\s+)?(?:soundtrack|score)(?:\s+from\s+[^(]+)?|music\s+from\s+(?:the\s+)?(?:original\s+)?(?:motion\s+picture|film|movie)(?:\s+soundtrack)?|soundtrack\s+from\s+(?:the\s+)?[^(]*|(?:original\s+)?(?:game|video\s+game)\s+soundtrack|deluxe(?:\s+edition)?|anniversary\s+edition|remastered|special\s+edition|expanded\s+edition|complete\s+edition|soundtrack)\s*$/i;
+        const etiMatch = (title || '').match(ETI_RE);
+        const baseTitle = etiMatch ? title.slice(0, etiMatch.index) : title;
+        const etiPart   = etiMatch ? etiMatch[0].trim() : null;
+
         const nameEl = document.getElementById('releaseName');
-        if (isNonLatin(title) && titleAlias) {
-            nameEl.innerHTML = `${escapeHtml(title)} <span class="artist-romanized">(${escapeHtml(titleAlias)})</span>`;
+        if (isNonLatin(baseTitle) && titleAlias) {
+            nameEl.innerHTML = `${escapeHtml(baseTitle)} <span class="artist-romanized">(${escapeHtml(titleAlias)})</span>${etiPart ? ` <span class="tracklist-eti">${escapeHtml(etiPart)}</span>` : ''}`;
         } else {
-            nameEl.textContent = title || 'Unknown Release';
+            nameEl.innerHTML = escapeHtml(baseTitle || 'Unknown Release') + (etiPart ? ` <span class="tracklist-eti">${escapeHtml(etiPart)}</span>` : '');
         }
-        document.title = `aswin.db/music - ${title || 'Release'}`;
+        document.title = `aswin.db/music - ${baseTitle || title || 'Release'}`;
 
         const metaParts = [];
         if (releaseDate) metaParts.push(_formatReleaseDate(releaseDate));
@@ -231,34 +240,26 @@ const ViewRelease = (() => {
             metaEl.innerHTML = badge + escapeHtml(metaParts.join(' · '));
         }
 
-        const scoreColor = n => `hsl(${Math.round(Math.min(n, 100) * 1.2)}, 65%, 40%)`;
-
-        const statsEl = document.getElementById('releaseListenStats');
+        const statsEl = document.getElementById('releaseStatsTable');
         if (statsEl) {
-            const chips = [];
-            if (totalPlays > 0) {
-                chips.push(`<span class="stat-chip"><i data-lucide="headphones"></i> ${formatNumber(totalPlays)}</span>`);
-                if (totalTracksInDb > 0) {
-                    chips.push(`<span class="stat-chip"><i data-lucide="music"></i> ${tracksHeard} / ${totalTracksInDb} tracks</span>`);
+            const rows = [];
+            if (typeLabel)       rows.push(['Type',       escapeHtml(typeLabel.toUpperCase())]);
+            if (releaseDate)      rows.push(['Released',   escapeHtml(_formatReleaseDate(releaseDate))]);
+            if (label)            rows.push(['Label',      escapeHtml(label)]);
+            if (albumTotalMs > 0) rows.push(['Length',     escapeHtml(_formatAlbumDuration(albumTotalMs))]);
+            if (totalTracksInDb > 0) rows.push(['Tracks',  `${tracksHeard} / ${totalTracksInDb}`]);
+            if (totalPlays > 0)   rows.push(['Listens',    formatNumber(totalPlays)]);
+            if (firstListenTs)    rows.push(['First heard',escapeHtml(_fmtTs(firstListenTs))]);
+            if (lastListenTs && lastListenTs !== firstListenTs)
+                                  rows.push(['Last played',escapeHtml(formatRelativeTime(lastListenTs))]);
+            if (rows.length > 0) {
+                let html = '';
+                for (let i = 0; i < rows.length; i += 2) {
+                    const makeCell = ([lbl, val]) =>
+                        `<div class="rst-row"><dt class="rst-label">${lbl}</dt><dd class="rst-value">${val}</dd></div>`;
+                    html += `<div class="rst-pair">${makeCell(rows[i])}${rows[i + 1] ? makeCell(rows[i + 1]) : ''}</div>`;
                 }
-                if (albumTotalMs > 0) {
-                    chips.push(`<span class="stat-chip"><i data-lucide="clock"></i> ${_formatAlbumDuration(albumTotalMs)}</span>`);
-                }
-                if (firstListenTs) {
-                    chips.push(`<span class="stat-chip"><i data-lucide="calendar"></i> First heard ${_fmtTs(firstListenTs)}</span>`);
-                }
-                if (lastListenTs && lastListenTs !== firstListenTs) {
-                    chips.push(`<span class="stat-chip"><i data-lucide="clock"></i> Last played ${formatRelativeTime(lastListenTs)}</span>`);
-                }
-            }
-            if (aotyScoreCritic != null) {
-                chips.push(`<span class="stat-chip" title="Critic Score${aotyRatingsCritic != null ? ` (${formatNumber(aotyRatingsCritic)} reviews)` : ''}"><i data-lucide="message-square-warning" style="color:${scoreColor(aotyScoreCritic)}"></i> <span style="color:${scoreColor(aotyScoreCritic)}">${aotyScoreCritic}</span></span>`);
-            }
-            if (aotyScoreUser != null) {
-                chips.push(`<span class="stat-chip" title="User Score${aotyRatingsUser != null ? ` (${formatNumber(aotyRatingsUser)} ratings)` : ''}"><i data-lucide="message-square-heart" style="color:${scoreColor(aotyScoreUser)}"></i> <span style="color:${scoreColor(aotyScoreUser)}">${Number(aotyScoreUser).toFixed(1)}</span></span>`);
-            }
-            if (chips.length > 0) {
-                statsEl.innerHTML = chips.join('');
+                statsEl.innerHTML = html;
                 statsEl.removeAttribute('hidden');
             }
         }
@@ -360,56 +361,109 @@ const ViewRelease = (() => {
         `)[0];
 
         const genresEl = document.getElementById('releaseGenres');
-        if (genresEl && genreResult && genreResult.values.length > 0) {
-            genresEl.innerHTML = renderGenreTags(genreResult.values);
+        if (genreResult && genreResult.values.length > 0) {
+            // Standalone genre list (mobile / non-grid fallback)
+            if (genresEl) genresEl.innerHTML = renderGenreTags(genreResult.values);
+
+            // Append genre row to stats table (desktop grid — CSS hides the standalone list)
+            const statsEl2 = document.getElementById('releaseStatsTable');
+            if (statsEl2) {
+                const pills = genreResult.values.map(([aotyId, name, isPrimary]) =>
+                    `<a href="?view=genre&id=${encodeURIComponent(aotyId)}" class="stat-genre-tag${isPrimary ? ' is-primary' : ''}">${escapeHtml(name)}</a>`
+                ).join('');
+                statsEl2.insertAdjacentHTML('beforeend',
+                    `<div class="rst-row rst-genres-row"><span class="rst-label">Genre</span><span class="rst-value">${pills}</span></div>`
+                );
+                statsEl2.removeAttribute('hidden');
+            }
         }
 
-        const linksEl = document.getElementById('releaseLinks');
-        if (linksEl) {
-            const _svcLink = (href, service, label) =>
-                `<a href="${href}" target="_blank" rel="noopener" class="release-link-icon" data-service="${service}" title="${label}">` +
-                `<span class="link-icon-mask" style="--icon-url: url('images/links/${service}.svg')"></span></a>`;
+        const pillsEl = document.getElementById('releaseLinkPills');
+        if (pillsEl) {
+            // Query variant Spotify IDs to support collapsible multi-version pill
+            const varSpotResult = _db.exec(`
+                SELECT r.title, COALESCE(r.spotify_id, el.link_value), rv.variant_type
+                FROM release_variants rv
+                JOIN releases r ON r.id = rv.variant_id
+                LEFT JOIN external_links el ON el.entity_id = rv.variant_id AND el.service = 2
+                WHERE rv.canonical_id = '${safeId}'
+                  AND (r.spotify_id IS NOT NULL OR el.link_value IS NOT NULL)
+                ORDER BY rv.sort_order
+            `)[0];
+            const variantSpotify = varSpotResult ? varSpotResult.values : [];
 
-            const iconLinks = [];
-            if (effectiveSpotifyId) {
-                iconLinks.push(_svcLink(`https://open.spotify.com/album/${effectiveSpotifyId}`, 'spotify', 'Spotify'));
-            }
-            if (releaseGroupMbid) {
-                iconLinks.push(_svcLink(`https://musicbrainz.org/release-group/${releaseGroupMbid}`, 'musicbrainz', 'MusicBrainz'));
-            } else if (mbid) {
-                iconLinks.push(_svcLink(`https://musicbrainz.org/release/${mbid}`, 'musicbrainz', 'MusicBrainz'));
-            }
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/album/${aotyId}/` : null);
-            if (resolvedAotyUrl) {
-                iconLinks.push(
-                    `<a href="${resolvedAotyUrl}" target="_blank" rel="noopener" class="release-link-icon" data-service="aoty" title="Album of the Year">` +
-                    `<img src="images/links/aoty-icon.png" alt="Album of the Year" style="width:20px;height:20px;object-fit:contain;display:block"></a>`
-                );
-            }
-            if (wikiPageId) {
-                iconLinks.push(_svcLink(`https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'wikipedia', 'Wikipedia'));
-            }
             const amId = appleMusicIdCol || extLinks.get(3) || null;
-            if (amId) {
-                iconLinks.push(_svcLink(`https://music.apple.com/album/${amId}`, 'applemusic', 'Apple Music'));
+
+            let html = '';
+
+            // ── Streaming ───────────────────────────────────────────────
+            if (effectiveSpotifyId) {
+                if (variantSpotify.length > 0) {
+                    const groupId = 'sp-pill-group';
+                    html += `<button class="release-link-pill pill-spotify pill-collapsible" data-group="${groupId}">` +
+                        `<span class="pill-icon"><span class="pill-mask"></span></span>` +
+                        `<span class="pill-text"><span class="pill-service-name">Spotify</span>` +
+                        `<span class="pill-sub">${variantSpotify.length + 1} versions</span></span>` +
+                        `${_SVG_CHEVRON}</button>` +
+                        `<div class="pill-variant-group pill-spotify" id="${groupId}">` +
+                        `<a href="https://open.spotify.com/album/${effectiveSpotifyId}" target="_blank" rel="noopener" class="pill-variant-row pill-spotify">` +
+                        `<span class="pill-variant-name">Canonical pressing</span>${_SVG_EXT}</a>`;
+                    for (const [vtitle, vspId, vtype] of variantSpotify) {
+                        const label = vtype || (vtitle || '').replace(/^.*?\((.+)\)\s*$/, '$1') || vtitle;
+                        html += `<a href="https://open.spotify.com/album/${vspId}" target="_blank" rel="noopener" class="pill-variant-row pill-spotify">` +
+                            `<span class="pill-variant-name">${escapeHtml(label)}</span>${_SVG_EXT}</a>`;
+                    }
+                    html += `</div>`;
+                } else {
+                    html += _buildPill('spotify', `https://open.spotify.com/album/${effectiveSpotifyId}`, 'Spotify');
+                }
             }
-            const beatportId = extLinks.get(7) || null;
-            if (beatportId) {
-                iconLinks.push(_svcLink(`https://www.beatport.com/release/-/${beatportId}`, 'beatport', 'Beatport'));
+            if (amId)
+                html += _buildPill('apple', `https://music.apple.com/album/${amId}`, 'Apple Music');
+            if (extLinks.get(4))
+                html += _buildPill('deezer', `https://www.deezer.com/album/${extLinks.get(4)}`, 'Deezer');
+            if (extLinks.get(5))
+                html += _buildPill('tidal', `https://tidal.com/browse/album/${extLinks.get(5)}`, 'Tidal');
+            if (extLinks.get(7))
+                html += _buildPill('beatport', `https://www.beatport.com/release/-/${extLinks.get(7)}`, 'Beatport');
+
+            // ── Purchase ─────────────────────────────────────────────────
+            if (extLinks.get(6))
+                html += _buildPill('bandcamp', extLinks.get(6), 'Bandcamp');
+
+            // ── Metadata / editorial ─────────────────────────────────────
+            if (releaseGroupMbid)
+                html += _buildPill('musicbrainz', `https://musicbrainz.org/release-group/${releaseGroupMbid}`, 'MusicBrainz');
+            else if (mbid)
+                html += _buildPill('musicbrainz', `https://musicbrainz.org/release/${mbid}`, 'MusicBrainz');
+            if (wikiPageId)
+                html += _buildPill('wikipedia', `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'Wikipedia');
+            if (resolvedAotyUrl) {
+                const aotyScore = aotyScoreCritic != null && aotyScoreUser != null
+                    ? `C ${aotyScoreCritic} · U ${Math.round(aotyScoreUser)}`
+                    : aotyScoreCritic != null ? `Critic ${aotyScoreCritic}`
+                    : aotyScoreUser  != null ? `User ${Math.round(aotyScoreUser)}`
+                    : null;
+                html += _buildPill('aoty', resolvedAotyUrl, 'AOTY', aotyScore);
             }
-            const tidalId = extLinks.get(5) || null;
-            if (tidalId) {
-                iconLinks.push(_svcLink(`https://tidal.com/browse/album/${tidalId}`, 'tidal', 'Tidal'));
+            if (extLinks.get(8))
+                html += _buildPill('genius', `https://genius.com/artists/${extLinks.get(8)}`, 'Genius');
+
+            if (html) {
+                pillsEl.innerHTML = html;
+                // Wire up collapsible Spotify group
+                pillsEl.querySelectorAll('.pill-collapsible').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const group = document.getElementById(btn.dataset.group);
+                        if (!group) return;
+                        const open = group.classList.toggle('open');
+                        btn.classList.toggle('expanded', open);
+                    });
+                });
+            } else {
+                pillsEl.style.display = 'none';
             }
-            const deezerId = extLinks.get(4) || null;
-            if (deezerId) {
-                iconLinks.push(_svcLink(`https://www.deezer.com/album/${deezerId}`, 'deezer', 'Deezer'));
-            }
-            const bandcampUrl = extLinks.get(6) || null;
-            if (bandcampUrl) {
-                iconLinks.push(_svcLink(bandcampUrl, 'bandcamp', 'Bandcamp'));
-            }
-            linksEl.innerHTML = iconLinks.join('');
         }
 
         lucide.createIcons();
@@ -634,7 +688,7 @@ const ViewRelease = (() => {
                 ({ title, id, trackNumber, discNumber, durationMs, isrc, playCount, tempoBpm, audioFeaturesJson, mixName })
         );
 
-        const showTrackArtists = (_releaseType === 'compilation' || _primaryArtistId === null);
+        const showTrackArtists = (_releaseType === 'compilation' || _primaryArtistId === null || _typeSecondary === 'soundtrack');
 
         let artistsByTrack = new Map();
         if (tracks.length > 0) {
@@ -681,7 +735,7 @@ const ViewRelease = (() => {
                 WHERE ta.track_id IN (
                     SELECT id FROM tracks WHERE release_id = '${safeId}' AND hidden = 0
                 )
-                AND ta.alias_type IN ('transliteration', 'unicode')
+                AND ta.alias_type IN ('transliteration', 'unicode', 'native_script')
                 ORDER BY ta.track_id
             `)[0];
             if (aliasResult) {
@@ -738,58 +792,59 @@ const ViewRelease = (() => {
                 ORDER BY t.disc_number, t.track_number, t.title
             `)[0];
 
-            const variantTracks = (vtResult ? vtResult.values : []).map(
+            const allTracks  = (vtResult ? vtResult.values : []).map(
                 ([title, id, trackNumber, discNumber, durationMs, isrc, playCount]) =>
                     ({ title, id, trackNumber, discNumber, durationMs, isrc, playCount })
             );
 
-            const exclusive = variantTracks.filter(t =>
+            const exclusive = allTracks.filter(t =>
                 !(t.isrc && shownIsrcs.has(t.isrc)) && !shownTitles.has(_normTitle(t.title))
             );
+            const dupes = allTracks.filter(t =>
+                (t.isrc && shownIsrcs.has(t.isrc)) || shownTitles.has(_normTitle(t.title))
+            );
 
-            // Add this variant's exclusive tracks to the cumulative shown set
             exclusive.forEach(t => {
                 if (t.isrc) shownIsrcs.add(t.isrc);
                 shownTitles.add(_normTitle(t.title));
             });
 
-            // Nothing new to show — skip rendering this variant entirely
-            if (exclusive.length === 0) continue;
+            const tracksToShow = HIDE_DUPES ? exclusive : allTracks;
+            if (tracksToShow.length === 0) continue;
 
             const wrap     = document.createElement('section');
             wrap.className = 'variant-section';
 
-            const typeBadge = variantType
-                ? `<span class="variant-type-badge">${escapeHtml(variantType.toUpperCase())}</span>`
-                : '';
-            const artStyle = artUrl
-                ? `background-image: url('${artUrl}'); background-size: cover; background-position: center;`
+            // Determine if variant has its own Spotify/streaming link for the service indicator
+            const varSpotifyId = variantId ? (() => {
+                const r = _db.exec(`SELECT COALESCE(r.spotify_id, el.link_value) FROM releases r LEFT JOIN external_links el ON el.entity_id = r.id AND el.service = 2 WHERE r.id = '${variantId.replace(/'/g,"''")}' LIMIT 1`)[0];
+                return r && r.values[0] && r.values[0][0];
+            })() : null;
+
+            const serviceIndicator = varSpotifyId
+                ? `<span class="variant-section-service"><span class="variant-service-icon vsi-spotify"></span>Spotify</span>`
                 : '';
 
             wrap.innerHTML = `
-                <div class="variant-header">
-                    <div class="variant-art" style="${artStyle}"></div>
-                    <div class="variant-header-info">
-                        <h3>
-                            ${variantHidden
-                                ? escapeHtml(variantTitle)
-                                : `<a href="?view=release&id=${encodeURIComponent(variantId)}">${escapeHtml(variantTitle)}</a>`}
-                        </h3>
-                        <span class="variant-meta">
-                            ${typeBadge}
-                            ${year ? `<span class="variant-year">${year}</span>` : ''}
-                        </span>
-                    </div>
+                <div class="variant-section-header">
+                    <span class="variant-section-title">${
+                        variantHidden
+                            ? escapeHtml(variantTitle)
+                            : `<a href="?view=release&id=${encodeURIComponent(variantId)}">${escapeHtml(variantTitle)}</a>`
+                    }</span>
+                    ${serviceIndicator}
                 </div>
                 <div class="tracklist variant-tracklist" id="vt-${variantId}"></div>
             `;
             section.appendChild(wrap);
 
             const trackContainer = document.getElementById(`vt-${variantId}`);
-            if (exclusive.length === 0) {
-                trackContainer.innerHTML = '<div class="tracklist-empty">No additional tracks</div>';
-            } else {
+            if (HIDE_DUPES) {
                 _renderTracklist(trackContainer, exclusive, true);
+            } else {
+                // Show all tracks; mark dupes with a flag for dimmed styling
+                const dupeIds = new Set(dupes.map(t => t.id));
+                _renderTracklist(trackContainer, tracksToShow, true, dupeIds);
             }
         }
     }

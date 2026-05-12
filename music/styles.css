@@ -97,7 +97,7 @@ h3 {
 .container {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 2rem 1rem;
+    padding: 1.5rem 1rem 2rem;
 }
 
 header {
@@ -145,6 +145,162 @@ a.site-logo-small:hover {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 2rem;
+}
+
+/* ── Persistent sticky header ─────────────────────────────────────── */
+.site-header-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 1.5rem;
+    background: var(--bg-secondary);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0;
+}
+
+.search-open-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    transition: color 0.12s, background 0.12s;
+}
+.search-open-btn:hover { color: var(--text); background: var(--bg-secondary); }
+.search-open-btn i[data-lucide] { width: 18px; height: 18px; }
+
+/* ── View transition ──────────────────────────────────────────────── */
+@keyframes viewFadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Search modal ─────────────────────────────────────────────────── */
+.search-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 80px;
+}
+.search-overlay[hidden] { display: none; }
+.search-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.35);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+.search-modal {
+    position: relative;
+    z-index: 1;
+    width: min(600px, calc(100vw - 2rem));
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.3);
+    animation: searchSlideIn 0.15s ease;
+}
+@keyframes searchSlideIn {
+    from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0)  scale(1); }
+}
+.search-input-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+}
+.search-modal-icon { width: 18px; height: 18px; color: var(--text-tertiary); flex-shrink: 0; }
+.search-modal-input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    font-size: 1rem;
+    color: var(--text);
+    font-family: inherit;
+}
+.search-modal-input::placeholder { color: var(--text-tertiary); }
+.search-esc-hint {
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1rem 0.35rem;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+.search-modal-results { max-height: 420px; overflow-y: auto; }
+.search-modal-results:empty { display: none; }
+.search-section-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+    padding: 0.6rem 1rem 0.25rem;
+}
+.search-result-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+    text-decoration: none;
+    color: inherit;
+}
+.search-result-row:last-child { border-bottom: none; }
+.search-result-row:hover,
+.search-result-row.kb-focused { background: var(--bg-tertiary); }
+.search-result-thumb {
+    width: 36px;
+    height: 36px;
+    border-radius: 4px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--bg-tertiary);
+}
+.search-result-thumb.round { border-radius: 50%; }
+.search-result-text { flex: 1; min-width: 0; }
+.search-result-name {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.search-result-sub {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+}
+.search-empty {
+    padding: 2rem 1rem;
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 0.875rem;
 }
 
 header h1 {
@@ -314,6 +470,266 @@ header h1 {
 .release-link-icon[data-service="beatport"]:hover .link-icon-mask {
     background-color: #01FF95;
 }
+
+.release-link-icon[data-service="genius"]:hover .link-icon-mask {
+    background-color: #FFFF64;
+}
+}
+
+/* ── Release stats — nerds-list style ────────────────────────────── */
+.release-stats-table {
+    margin: 0.5rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+/* Each pair holds two stat cells side-by-side */
+.rst-pair {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+}
+.rst-pair:last-child { border-bottom: none; }
+.rst-pair .rst-row {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.22rem 0.6rem;
+    gap: 0.5rem;
+    min-width: 0;
+}
+.rst-pair .rst-row:first-child { border-right: 1px solid var(--border); }
+/* Odd-row-count: last lone cell fills full width */
+.rst-pair .rst-row:only-child { border-right: none; }
+/* Genre row spans full width */
+.release-stats-table .rst-genres-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 0.3rem 0.6rem;
+    gap: 0.4rem;
+    border-bottom: none;
+}
+.release-stats-table .rst-genres-row .rst-value {
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem;
+    justify-content: flex-end;
+    font-weight: normal;
+}
+.release-stats-table .rst-row:last-child { border-bottom: none; }
+.release-stats-table .rst-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.release-stats-table .rst-value {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+    text-align: right;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Genre pills inside stats table — all-caps, snug, like release-type-badge */
+.stat-genre-tag {
+    display: inline-block;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    padding: 0.08rem 0.3rem;
+    white-space: nowrap;
+    text-decoration: none;
+    transition: color 0.12s, border-color 0.12s;
+}
+.stat-genre-tag:hover { color: var(--primary); }
+.stat-genre-tag.is-primary {
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+.stat-genre-tag.is-primary:hover { color: var(--primary); border-color: var(--primary); }
+
+/* Hide standalone genre list when genres are shown inside the stats table.
+   Uses !important to beat the higher-specificity #releaseHeader .genre-list rule. */
+.release-header-grid #releaseGenres { display: none !important; }
+
+/* ── External link pill stack ─────────────────────────────────────── */
+.release-link-pills {
+    display: flex;
+    flex-direction: column;
+    width: 152px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border);
+}
+
+/* Service colour tokens */
+.pill-spotify     { --svc: #1ED760; }
+.pill-apple       { --svc: #FA243C; }
+.pill-deezer      { --svc: #A238FF; }
+.pill-tidal       { --svc: #94a3b8; }
+.pill-beatport    { --svc: #01FF95; }
+.pill-bandcamp    { --svc: #408294; }
+.pill-musicbrainz { --svc: #BA478F; }
+.pill-wikipedia   { --svc: #94a3b8; }
+.pill-aoty        { --svc: #f97316; }
+.pill-genius      { --svc: #FFFF64; }
+
+:root[data-theme="light"] .pill-beatport { --svc: #007a4a; }
+:root[data-theme="light"] .pill-genius   { --svc: #7a6e00; }
+
+.release-link-pill, button.release-link-pill {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0 0.75rem;
+    min-height: 30px;
+    text-decoration: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    width: 100%;
+    cursor: pointer;
+    text-align: left;
+    position: relative;
+    overflow: hidden;
+    flex-shrink: 0;
+    transition: background 0.1s;
+}
+.release-link-pill:last-child,
+.pill-variant-group:last-child + * { border-bottom: none; }
+.release-link-pill::after {
+    content: '';
+    position: absolute; inset: 0;
+    background: var(--svc, transparent);
+    opacity: 0.05;
+    pointer-events: none;
+    transition: opacity 0.12s;
+}
+.release-link-pill:hover::after { opacity: 0.12; }
+.release-link-pill::before {
+    content: '';
+    position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--svc, transparent);
+    opacity: 0; transition: opacity 0.12s; z-index: 1;
+}
+.release-link-pill:hover::before,
+.release-link-pill.expanded::before { opacity: 1; }
+.release-link-pill.expanded::after  { opacity: 0.08; }
+
+.pill-icon {
+    width: 18px; height: 18px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    position: relative; z-index: 1;
+}
+.pill-mask {
+    display: block;
+    width: 16px; height: 16px;
+    background: var(--svc, var(--text-secondary));
+    -webkit-mask-size: contain; mask-size: contain;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-position: center; mask-position: center;
+}
+.pill-spotify     .pill-mask { -webkit-mask-image: url('images/links/spotify.svg');     mask-image: url('images/links/spotify.svg'); }
+.pill-apple       .pill-mask { -webkit-mask-image: url('images/links/applemusic.svg');  mask-image: url('images/links/applemusic.svg'); }
+.pill-deezer      .pill-mask { -webkit-mask-image: url('images/links/deezer.svg');      mask-image: url('images/links/deezer.svg'); }
+.pill-tidal       .pill-mask { -webkit-mask-image: url('images/links/tidal.svg');       mask-image: url('images/links/tidal.svg'); }
+.pill-beatport    .pill-mask { -webkit-mask-image: url('images/links/beatport.svg');    mask-image: url('images/links/beatport.svg'); }
+.pill-bandcamp    .pill-mask { -webkit-mask-image: url('images/links/bandcamp.svg');    mask-image: url('images/links/bandcamp.svg'); }
+.pill-musicbrainz .pill-mask { -webkit-mask-image: url('images/links/musicbrainz.svg');mask-image: url('images/links/musicbrainz.svg'); }
+.pill-wikipedia   .pill-mask { -webkit-mask-image: url('images/links/wikipedia.svg');   mask-image: url('images/links/wikipedia.svg'); }
+.pill-genius      .pill-mask { -webkit-mask-image: url('images/links/genius.svg');      mask-image: url('images/links/genius.svg'); }
+.pill-aoty-img    { width: 16px; height: 16px; object-fit: contain; border-radius: 2px; position: relative; z-index: 1; }
+
+.pill-text {
+    display: flex; flex-direction: column; min-width: 0; flex: 1;
+    position: relative; z-index: 1;
+}
+.pill-service-name {
+    font-size: 0.72rem; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pill-sub {
+    font-size: 0.62rem; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-top: 1px;
+}
+.pill-ext {
+    width: 9px; height: 9px; flex-shrink: 0; opacity: 0.22;
+    fill: none; stroke: currentColor; stroke-width: 2;
+    margin-left: auto; position: relative; z-index: 1;
+}
+.pill-chevron {
+    width: 10px; height: 10px; flex-shrink: 0; opacity: 0.4;
+    fill: none; stroke: currentColor; stroke-width: 2.5;
+    margin-left: auto; position: relative; z-index: 1;
+    transition: transform 0.18s;
+}
+.release-link-pill.expanded .pill-chevron { transform: rotate(180deg); }
+
+.pill-variant-group { display: none; flex-direction: column; }
+.pill-variant-group.open { display: flex; }
+.pill-variant-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0 0.75rem 0 2rem;
+    min-height: 24px;
+    text-decoration: none;
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+    position: relative; overflow: hidden;
+    transition: background 0.1s;
+}
+.pill-variant-row::after {
+    content: ''; position: absolute; inset: 0;
+    background: var(--svc, transparent); opacity: 0.03; pointer-events: none;
+    transition: opacity 0.12s;
+}
+.pill-variant-row:hover::after { opacity: 0.09; }
+.pill-variant-name {
+    font-size: 0.68rem; color: var(--text-secondary); flex: 1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    position: relative; z-index: 1;
+}
+.pill-variant-ext {
+    width: 8px; height: 8px; flex-shrink: 0; opacity: 0.2;
+    fill: none; stroke: currentColor; stroke-width: 2;
+    margin-left: auto; position: relative; z-index: 1;
+}
+
+/* ── Variant section: slim header ──────────────────────────────────── */
+.variant-section-header {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.55rem 1.5rem 0.55rem 0;
+}
+.variant-section-title {
+    font-size: 0.74rem; font-weight: 600; color: var(--text-secondary);
+    text-transform: uppercase; letter-spacing: 0.06em;
+}
+.variant-section-title a { color: inherit; text-decoration: none; }
+.variant-section-title a:hover { color: var(--primary); }
+.variant-section-service {
+    margin-left: auto; display: flex; align-items: center; gap: 0.3rem;
+    font-size: 0.68rem; color: var(--text-tertiary);
+}
+.variant-service-icon {
+    display: block; width: 11px; height: 11px;
+    -webkit-mask-size: contain; mask-size: contain;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-position: center; mask-position: center;
+    background: var(--text-tertiary); opacity: 0.55;
+}
+.vsi-spotify { -webkit-mask-image: url('images/links/spotify.svg'); mask-image: url('images/links/spotify.svg'); }
 
 .genre-tag {
     color: var(--text-secondary);
@@ -673,13 +1089,36 @@ a.stat-card:hover .stat-label::after {
     margin-bottom: 0.25rem;
 }
 
-.artist-photo-container {
-    flex-shrink: 0;
+/* Release header — 3-column grid: art | info | pills */
+.release-header-grid {
+    display: grid !important;
+    grid-template-columns: auto 1fr auto;
+    align-items: start;
+    gap: 0;
+    padding: 0 !important;
+    overflow: hidden;
+}
+.release-header-grid .artist-photo-container {
+    width: auto;
+    padding: 1.5rem;
+    align-self: start;
+}
+.release-header-grid .artist-info-container {
+    padding: 1.25rem 1.25rem 1.25rem 1rem;
+    min-width: 0;
 }
 
+/* 256px album art on desktop */
+.artist-photo-container {
+    flex-shrink: 0;
+    width: 256px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
 .artist-photo {
-    width: 150px;
-    height: 150px;
+    width: 256px;
+    height: 256px;
     border-radius: 8px;
     overflow: hidden;
     background: var(--bg);
@@ -1798,6 +2237,7 @@ a.stat-card:hover .stat-label::after {
     letter-spacing: 0.05em;
     border: 1.5px solid;
     background: transparent;
+    width: 100%;
 }
 .badge-cert-gold     { border-color: #c9a227; color: #c9a227; }
 .badge-cert-platinum { border-color: #aab4be; color: #aab4be; }
@@ -1832,7 +2272,20 @@ a.stat-card:hover .stat-label::after {
 .badge-medal-silver { background: #aab4be; color: #1a2020; }
 .badge-medal-bronze { background: #cd7f32; color: #2d1500; }
 
-/* Streak badge */
+/* Slim year pills for "Peak years" stats row */
+.peak-year-pill {
+    display: inline-block;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    border-radius: 3px;
+    padding: 0.05rem 0.28rem;
+    white-space: nowrap;
+    line-height: 1.4;
+}
+.peak-year-gold   { background: #c9a227; color: #3d2a00; }
+.peak-year-silver { background: #aab4be; color: #1a2020; }
+.peak-year-bronze { background: #cd7f32; color: #2d1500; }
 .badge-streak {
     display: inline-flex;
     align-items: center;
@@ -1852,10 +2305,8 @@ a.stat-card:hover .stat-label::after {
 /* Badge row on artist page */
 .artist-badges {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin-top: 0.65rem;
-    align-items: center;
+    flex-direction: column;
+    gap: 0.3rem;
 }
 
 /* Release cert dot on thumbnail */
@@ -2444,99 +2895,100 @@ footer a:hover {
     }
 
     .artist-header-layout {
-        flex-direction: column;
+        padding: 1.25rem;
+    }
+
+    /* Release header: collapse pills to bottom row, shrink art */
+    /* ── Release header: Option B mobile layout ──────────────────────
+       Art centered above, title/artist centered below, stats single-column,
+       pills as a full-width horizontal wrapping row at the bottom.         */
+    .release-header-grid {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto auto auto;
         text-align: center;
-        padding: 1.5rem;
     }
-
-    /* Hero header layout shared by release + artist pages */
-    #releaseHeader,
-    #artistHeader {
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        gap: 0.25rem;
-        padding: 0 1.25rem 1.25rem;
-        padding-top: 70px;
-        margin-top: 100px;
-        position: relative;
-    }
-
-    #releaseHeader .artist-photo-container,
-    #artistHeader .artist-photo-container {
-        position: absolute;
-        top: -70px;
-        left: 50%;
-        transform: translateX(-50%);
-    }
-
-    #releaseHeader .artist-photo,
-    #artistHeader .artist-photo {
-        box-shadow: 0 4px 20px rgba(0,0,0,0.35);
-    }
-
-    #releaseHeader .artist-info-container,
-    #artistHeader .artist-info-container {
+    .release-header-grid .artist-photo-container {
+        grid-row: 1;
+        grid-column: 1;
         width: 100%;
-    }
-
-    #releaseHeader h1 {
-        margin-bottom: 0.2rem;
-        text-align: center;
-    }
-
-    #releaseHeader .genre-list,
-    #releaseHeader .release-links,
-    #artistHeader .genre-list,
-    #artistHeader .release-links {
-        justify-content: center;
-        text-align: center;
-    }
-
-    /* Release-specific */
-    #releaseHeader .release-artist,
-    #releaseHeader .release-aka,
-    #releaseHeader .release-meta-line {
-        font-size: 0.875rem;
-        text-align: center;
-    }
-
-    #releaseHeader .release-listen-stats {
-        justify-content: center;
-    }
-
-    #releaseHeader .release-footer-row {
-        justify-content: center;
-    }
-
-    /* Artist-specific */
-    #artistHeader .stats-compact .stat-item {
+        padding: 1.25rem 1.25rem 0.75rem;
+        display: flex;
+        flex-direction: column;
         align-items: center;
+        align-self: auto;
     }
-
-    #artistHeader .artist-badges {
+    .release-header-grid .artist-photo {
+        width: 180px;
+        height: 180px;
+    }
+    /* Artist portraits feel more anchored slightly wider */
+    #artistHeader.release-header-grid .artist-photo {
+        width: 220px;
+        height: 220px;
+    }
+    .release-header-grid .artist-info-container {
+        grid-row: 2;
+        grid-column: 1;
+        padding: 0 1.25rem 0.75rem;
+        text-align: center;
+    }
+    /* Title and artist centred */
+    .release-header-grid h1,
+    .release-header-grid .release-artist {
+        text-align: center;
+    }
+    /* Stats table: collapse pairs to single column */
+    .release-header-grid .rst-pair {
+        flex-direction: column;
+    }
+    .release-header-grid .rst-pair .rst-row:first-child {
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+    /* Genre pills: left-align on narrow screens (wrapping right-align gets messy) */
+    .release-header-grid .rst-genres-row .rst-value {
+        justify-content: flex-start;
+    }
+    /* Pills: full-width horizontal row */
+    .release-header-grid .release-link-pills {
+        grid-row: 3;
+        grid-column: 1;
+        flex-direction: row;
+        flex-wrap: wrap;
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid var(--border);
+    }
+    .release-header-grid .release-link-pill {
+        flex: 1 1 auto;
+        min-width: 110px;
+        border-right: 1px solid var(--border);
         justify-content: center;
     }
-
+    .release-header-grid .pill-variant-group {
+        position: absolute;
+        z-index: 10;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        min-width: 160px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
     .artist-photo {
-        width: 120px;
-        height: 120px;
+        width: 88px;
+        height: 88px;
     }
 
     .artist-name-row {
-        justify-content: center;
-        flex-direction: column;
-        align-items: center;
         gap: 0.15rem;
     }
 
     .artist-members {
-        justify-content: center;
+        justify-content: flex-start;
     }
 
     .artist-info-container h1 {
         font-size: 1.8rem;
-        text-align: center;
     }
 
     .artist-info-container .subtitle {

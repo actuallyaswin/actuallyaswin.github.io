@@ -52,15 +52,7 @@ const ViewYear = (() => {
             return `<button class="sort-btn${countLimit === n ? ' active' : ''}" data-count="${n}">${label}</button>`;
         }).join('');
 
-        return `
-            <div class="site-header">
-                <a href="?" class="site-logo-small">
-                    <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-                </a>
-                <a href="?" class="back-button">← Home</a>
-            </div>
-
-            <header>
+        return `            <header>
                 <div class="year-navigation">
                     <button id="prevYear" class="year-nav-arrow" aria-label="Previous year">←</button>
                     <h1 id="pageTitle">

@@ -9,15 +9,7 @@ const ViewTopTracks = (() => {
         _db = db;
         document.title = 'aswin.db/music – Top Tracks';
 
-        container.innerHTML = `
-            <div class="site-header">
-                <a href="?" class="site-logo-small">
-                    <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-                </a>
-                <a href="?" class="back-button">← Home</a>
-            </div>
-
-            <header>
+        container.innerHTML = `            <header>
                 <h1>Top Tracks</h1>
             </header>
 

@@ -28,6 +28,30 @@
     <script src="theme.js"></script>
 </head>
 <body>
+    <!-- Persistent sticky header — present across all views -->
+    <div id="siteHeader" class="site-header-sticky">
+        <a href="?" class="site-logo-small">
+            <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
+        </a>
+        <button id="searchBtn" class="search-open-btn" aria-label="Search (⌘K)">
+            <i data-lucide="search"></i>
+        </button>
+    </div>
+
+    <!-- Search modal -->
+    <div id="searchOverlay" class="search-overlay" hidden aria-modal="true" role="dialog" aria-label="Search">
+        <div class="search-backdrop"></div>
+        <div class="search-modal">
+            <div class="search-input-row">
+                <i data-lucide="search" class="search-modal-icon"></i>
+                <input id="searchInput" class="search-modal-input" type="text"
+                       placeholder="Search releases, artists, tracks…" autocomplete="off" spellcheck="false">
+                <kbd class="search-esc-hint">Esc</kbd>
+            </div>
+            <div id="searchResults" class="search-modal-results"></div>
+        </div>
+    </div>
+
     <div class="container">
         <div id="view-container">
             <div class="loading">Loading database...</div>
