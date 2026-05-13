@@ -136,8 +136,8 @@ const ViewRelease = (() => {
                 r.type,
                 r.type_secondary,
                 r.album_art_url,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END)                      as total_tracks_in_db,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as tracks_heard,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000) THEN t.id END)                      as total_tracks_in_db,
+                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000) AND l.id IS NOT NULL THEN t.id END) as tracks_heard,
                 COUNT(CASE WHEN t.hidden = 0 THEN l.id END)                               as total_plays,
                 r.spotify_id,
                 r.release_group_mbid,
@@ -151,7 +151,7 @@ const ViewRelease = (() => {
                 r.primary_artist_id,
                 r.label,
                 (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) AS INTEGER)
-                 FROM tracks t2 WHERE t2.release_id = r.id AND t2.hidden = 0) as album_total_ms,
+                 FROM tracks t2 WHERE t2.release_id = r.id AND t2.hidden = 0 AND t2.variant_section IS NULL) as album_total_ms,
                 MIN(CASE WHEN t.hidden = 0 THEN l.timestamp END) as first_listen_ts,
                 MAX(CASE WHEN t.hidden = 0 THEN l.timestamp END) as last_listen_ts,
                 r.apple_music_id
@@ -380,15 +380,14 @@ const ViewRelease = (() => {
 
         const pillsEl = document.getElementById('releaseLinkPills');
         if (pillsEl) {
-            // Query variant Spotify IDs to support collapsible multi-version pill
+            // Query variant Spotify IDs from release_service_links (new model)
             const varSpotResult = _db.exec(`
-                SELECT r.title, COALESCE(r.spotify_id, el.link_value), rv.variant_type
-                FROM release_variants rv
-                JOIN releases r ON r.id = rv.variant_id
-                LEFT JOIN external_links el ON el.entity_id = rv.variant_id AND el.service = 2
-                WHERE rv.canonical_id = '${safeId}'
-                  AND (r.spotify_id IS NOT NULL OR el.link_value IS NOT NULL)
-                ORDER BY rv.sort_order
+                SELECT service_id, variant_label
+                FROM release_service_links
+                WHERE release_id = '${safeId}'
+                  AND service = 2
+                  AND variant_label IS NOT NULL
+                ORDER BY id
             `)[0];
             const variantSpotify = varSpotResult ? varSpotResult.values : [];
 
@@ -409,10 +408,9 @@ const ViewRelease = (() => {
                         `<div class="pill-variant-group pill-spotify" id="${groupId}">` +
                         `<a href="https://open.spotify.com/album/${effectiveSpotifyId}" target="_blank" rel="noopener" class="pill-variant-row pill-spotify">` +
                         `<span class="pill-variant-name">Canonical pressing</span>${_SVG_EXT}</a>`;
-                    for (const [vtitle, vspId, vtype] of variantSpotify) {
-                        const label = vtype || (vtitle || '').replace(/^.*?\((.+)\)\s*$/, '$1') || vtitle;
+                    for (const [vspId, vLabel] of variantSpotify) {
                         html += `<a href="https://open.spotify.com/album/${vspId}" target="_blank" rel="noopener" class="pill-variant-row pill-spotify">` +
-                            `<span class="pill-variant-name">${escapeHtml(label)}</span>${_SVG_EXT}</a>`;
+                            `<span class="pill-variant-name">${escapeHtml(vLabel)}</span>${_SVG_EXT}</a>`;
                     }
                     html += `</div>`;
                 } else {
@@ -675,7 +673,7 @@ const ViewRelease = (() => {
                    COUNT(l.id) as play_count, t.tempo_bpm, t.audio_features, t.mix_name
             FROM tracks t
             LEFT JOIN listens l ON l.track_id = t.id
-            WHERE t.release_id = '${safeId}' AND t.hidden = 0
+            WHERE t.release_id = '${safeId}' AND t.hidden = 0 AND t.variant_section IS NULL
             GROUP BY t.id
             ORDER BY t.disc_number, t.track_number, t.title
         `)[0];
@@ -753,46 +751,50 @@ const ViewRelease = (() => {
     function loadVariants() {
         const safeId = _releaseId.replace(/'/g, "''");
 
-        const varResult = _db.exec(`
-            SELECT rv.variant_id, rv.variant_type, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url, r.release_year, r.hidden
-            FROM release_variants rv
-            JOIN releases r ON r.id = rv.variant_id
-            WHERE rv.canonical_id = '${safeId}'
-            ORDER BY rv.sort_order, r.release_year
+        // Fetch distinct variant sections ordered by their first track number
+        const sectionsResult = _db.exec(`
+            SELECT variant_section
+            FROM (
+                SELECT t.variant_section, MIN(t.track_number) AS min_tn
+                FROM tracks t
+                WHERE t.release_id = '${safeId}' AND t.variant_section IS NOT NULL AND t.hidden = 0
+                GROUP BY t.variant_section
+            )
+            ORDER BY min_tn
         `)[0];
-
-        if (!varResult || varResult.values.length === 0) return;
-
-        // Fetch canonical tracks once for all variant comparisons
-        const canonResult = _db.exec(`
-            SELECT t.title, t.isrc
-            FROM tracks t
-            WHERE t.release_id = '${safeId}' AND t.hidden = 0
-        `)[0];
-        const canonTracks = (canonResult ? canonResult.values : [])
-            .map(([title, isrc]) => ({ title, isrc }));
 
         const section = document.getElementById('variantsSection');
         if (!section) return;
 
-        // Accumulate shown tracks across variants so the same track isn't shown twice
+        if (!sectionsResult || sectionsResult.values.length === 0) return;
+
+        // Canonical track set for HIDE_DUPES dedup
+        const canonResult = _db.exec(`
+            SELECT t.title, t.isrc
+            FROM tracks t
+            WHERE t.release_id = '${safeId}' AND t.hidden = 0 AND t.variant_section IS NULL
+        `)[0];
+        const canonTracks = (canonResult ? canonResult.values : [])
+            .map(([title, isrc]) => ({ title, isrc }));
         const shownIsrcs  = new Set(canonTracks.map(t => t.isrc).filter(Boolean));
         const shownTitles = new Set(canonTracks.map(t => _normTitle(t.title)));
 
-        for (const [variantId, variantType, variantTitle, artUrl, year, variantHidden] of varResult.values) {
-            const safeVarId = variantId.replace(/'/g, "''");
+        for (const [variantSection] of sectionsResult.values) {
+            const safeSection = variantSection.replace(/'/g, "''");
 
             const vtResult = _db.exec(`
                 SELECT t.title, t.id, t.track_number, t.disc_number, t.duration_ms, t.isrc,
                        COUNT(l.id) as play_count
                 FROM tracks t
                 LEFT JOIN listens l ON l.track_id = t.id
-                WHERE t.release_id = '${safeVarId}' AND t.hidden = 0
+                WHERE t.release_id = '${safeId}'
+                  AND t.variant_section = '${safeSection}'
+                  AND t.hidden = 0
                 GROUP BY t.id
-                ORDER BY t.disc_number, t.track_number, t.title
+                ORDER BY t.track_number, t.title
             `)[0];
 
-            const allTracks  = (vtResult ? vtResult.values : []).map(
+            const allTracks = (vtResult ? vtResult.values : []).map(
                 ([title, id, trackNumber, discNumber, durationMs, isrc, playCount]) =>
                     ({ title, id, trackNumber, discNumber, durationMs, isrc, playCount })
             );
@@ -803,7 +805,6 @@ const ViewRelease = (() => {
             const dupes = allTracks.filter(t =>
                 (t.isrc && shownIsrcs.has(t.isrc)) || shownTitles.has(_normTitle(t.title))
             );
-
             exclusive.forEach(t => {
                 if (t.isrc) shownIsrcs.add(t.isrc);
                 shownTitles.add(_normTitle(t.title));
@@ -812,37 +813,33 @@ const ViewRelease = (() => {
             const tracksToShow = HIDE_DUPES ? exclusive : allTracks;
             if (tracksToShow.length === 0) continue;
 
-            const wrap     = document.createElement('section');
-            wrap.className = 'variant-section';
-
-            // Determine if variant has its own Spotify/streaming link for the service indicator
-            const varSpotifyId = variantId ? (() => {
-                const r = _db.exec(`SELECT COALESCE(r.spotify_id, el.link_value) FROM releases r LEFT JOIN external_links el ON el.entity_id = r.id AND el.service = 2 WHERE r.id = '${variantId.replace(/'/g,"''")}' LIMIT 1`)[0];
-                return r && r.values[0] && r.values[0][0];
-            })() : null;
-
-            const serviceIndicator = varSpotifyId
-                ? `<span class="variant-section-service"><span class="variant-service-icon vsi-spotify"></span>Spotify</span>`
+            // Service indicator: check release_service_links for a Spotify entry for this section
+            const svcResult = _db.exec(`
+                SELECT service FROM release_service_links
+                WHERE release_id = '${safeId}' AND variant_label = '${safeSection}'
+                LIMIT 1
+            `)[0];
+            const svcNum = svcResult?.values[0]?.[0];
+            const svcIconClass = svcNum === 2 ? 'vsi-spotify' : null;
+            const serviceIndicator = svcIconClass
+                ? `<span class="variant-section-service"><span class="variant-service-icon ${svcIconClass}"></span>Spotify</span>`
                 : '';
 
+            const wrap = document.createElement('section');
+            wrap.className = 'variant-section';
             wrap.innerHTML = `
                 <div class="variant-section-header">
-                    <span class="variant-section-title">${
-                        variantHidden
-                            ? escapeHtml(variantTitle)
-                            : `<a href="?view=release&id=${encodeURIComponent(variantId)}">${escapeHtml(variantTitle)}</a>`
-                    }</span>
+                    <span class="variant-section-title">${escapeHtml(variantSection)}</span>
                     ${serviceIndicator}
                 </div>
-                <div class="tracklist variant-tracklist" id="vt-${variantId}"></div>
+                <div class="tracklist variant-tracklist" id="vt-vs-${encodeURIComponent(variantSection)}"></div>
             `;
             section.appendChild(wrap);
 
-            const trackContainer = document.getElementById(`vt-${variantId}`);
+            const trackContainer = document.getElementById(`vt-vs-${encodeURIComponent(variantSection)}`);
             if (HIDE_DUPES) {
                 _renderTracklist(trackContainer, exclusive, true);
             } else {
-                // Show all tracks; mark dupes with a flag for dimmed styling
                 const dupeIds = new Set(dupes.map(t => t.id));
                 _renderTracklist(trackContainer, tracksToShow, true, dupeIds);
             }

@@ -85,9 +85,7 @@ const ViewTopAlbums = (() => {
             LEFT JOIN artists a ON a.id = r.primary_artist_id
             LEFT JOIN tracks t ON t.release_id = r.id
             LEFT JOIN listens l ON l.track_id = t.id
-            WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
-            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
-            ${yearFilter}
+            WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)            ${yearFilter}
             GROUP BY r.id
             HAVING total_listens > 0
             ORDER BY ${orderClause}

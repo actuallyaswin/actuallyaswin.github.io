@@ -320,18 +320,19 @@ const ViewArtist = (() => {
                 r.type_secondary,
                 COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
+                 AND t.variant_section IS NULL
                  AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks,
                 (SELECT COUNT(DISTINCT t.id) FROM tracks t
                  WHERE t.release_id = r.id AND t.hidden = 0
+                 AND t.variant_section IS NULL
                  AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
                  AND EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id)) as listened_tracks,
                 (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
-                 WHERE t.release_id = r.id AND t.hidden = 0) as total_listens
+                 WHERE t.release_id = r.id AND t.hidden = 0
+                 AND t.variant_section IS NULL) as total_listens
             FROM releases r
             WHERE r.primary_artist_id = '${safeId}'
-            AND r.hidden = 0
-            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
-        `)[0];
+            AND r.hidden = 0        `)[0];
 
         const collabResult = _db.exec(`
             SELECT
@@ -342,21 +343,22 @@ const ViewArtist = (() => {
                 r.type_secondary,
                 COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
+                 AND t.variant_section IS NULL
                  AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks,
                 (SELECT COUNT(DISTINCT t.id) FROM tracks t
                  WHERE t.release_id = r.id AND t.hidden = 0
+                 AND t.variant_section IS NULL
                  AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
                  AND EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id)) as listened_tracks,
                 (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
-                 WHERE t.release_id = r.id AND t.hidden = 0) as total_listens,
+                 WHERE t.release_id = r.id AND t.hidden = 0
+                 AND t.variant_section IS NULL) as total_listens,
                 (SELECT a2.name FROM artists a2 WHERE a2.id = r.primary_artist_id) as primary_artist_name
             FROM releases r
             JOIN release_artists ra ON ra.release_id = r.id
             WHERE ra.artist_id = '${safeId}' AND ra.role = 'main'
             AND r.primary_artist_id != '${safeId}'
-            AND r.hidden = 0
-            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
-        `)[0];
+            AND r.hidden = 0        `)[0];
 
         _discData.own = ownResult ? ownResult.values : [];
         _discData.collabs = collabResult ? collabResult.values : [];
@@ -550,20 +552,30 @@ const ViewArtist = (() => {
         const certLabels = { gold: 'Gold — 250+ plays', platinum: 'Platinum — 500+ plays', diamond: 'Diamond — 1,000+ plays' };
         if (certTier) badgesEl.innerHTML = `<span class="badge-cert badge-cert-${certTier}" title="${certLabels[certTier]}">${certTier}</span>`;
 
-        // Peak years → compact stats row instead of badge tower
+        // Peak years → compact stats row instead of badge tower.
+        // Two-step ranking: first find which years this artist has plays,
+        // then rank only across those years — avoids a full cross-artist scan.
         const medalResult = _db.exec(`
-            WITH all_yearly AS (
+            WITH artist_years AS (
+                SELECT l.year
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
+                GROUP BY l.year
+            ),
+            year_plays AS (
                 SELECT ta.artist_id, l.year, COUNT(*) as plays
                 FROM listens l
                 JOIN tracks t ON l.track_id = t.id
                 JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-                WHERE t.hidden = 0
+                WHERE t.hidden = 0 AND l.year IN (SELECT year FROM artist_years)
                 GROUP BY ta.artist_id, l.year
             ),
             ranked AS (
                 SELECT artist_id, year,
                     RANK() OVER (PARTITION BY year ORDER BY plays DESC) as rnk
-                FROM all_yearly
+                FROM year_plays
             )
             SELECT year, rnk FROM ranked
             WHERE artist_id = '${safeId}' AND rnk <= 3

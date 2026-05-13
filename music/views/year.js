@@ -166,10 +166,8 @@ const ViewYear = (() => {
         const thisYearFilter = filterMode === 'this-year';
 
         const whereClause = thisYearFilter
-            ? `r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) AND r.release_year = ${currentYear}
-               AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)`
-            : `l.year = ${currentYear} AND r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
-               AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)`;
+            ? `r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) AND r.release_year = ${currentYear}`
+            : `l.year = ${currentYear} AND r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)`;
 
         const fromClause = thisYearFilter
             ? `FROM releases r
