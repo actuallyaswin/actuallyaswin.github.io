@@ -329,6 +329,17 @@ CREATE TABLE IF NOT EXISTS collection_items (
 CREATE INDEX IF NOT EXISTS ci_release_id ON collection_items(release_id);
 CREATE INDEX IF NOT EXISTS ci_format_coarse ON collection_items(format_coarse);
 CREATE INDEX IF NOT EXISTS ci_coarse_genre ON collection_items(coarse_genre);
+CREATE TABLE IF NOT EXISTS release_service_links (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    release_id    TEXT NOT NULL REFERENCES releases(id),
+    service       INTEGER NOT NULL,
+    service_id    TEXT NOT NULL,
+    variant_label TEXT,
+    release_date  TEXT,
+    created_at    INTEGER,
+    UNIQUE(release_id, service, service_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rsl_release ON release_service_links(release_id);
 """
 
 
@@ -391,6 +402,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN language TEXT",
         "ALTER TABLE releases ADD COLUMN album_art_thumb_url TEXT",
         "ALTER TABLE artists ADD COLUMN image_thumb_url TEXT",
+        "ALTER TABLE tracks ADD COLUMN variant_section TEXT",
     ]:
         try:
             conn.execute(ddl)
@@ -537,6 +549,27 @@ def get_release_by_discogs_id(conn: sqlite3.Connection,
         ' WHERE el.entity_type = ? AND el.service = ? AND el.link_value = ?',
         (EL_RELEASE, EL_SVC_DISCOGS, str(discogs_id)),
     ).fetchone()
+
+
+def upsert_service_link(conn: sqlite3.Connection, release_id: str, service: int,
+                        service_id: str, variant_label: 'str | None' = None,
+                        release_date: 'str | None' = None) -> None:
+    """Insert or update a streaming/service ID for a release in release_service_links.
+
+    variant_label=None means this is the canonical pressing link.
+    variant_label='Deluxe Edition' groups this as a named variant.
+    Safe to call multiple times — idempotent.
+    """
+    now = int(time.time())
+    conn.execute(
+        '''INSERT INTO release_service_links
+           (release_id, service, service_id, variant_label, release_date, created_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(release_id, service, service_id)
+           DO UPDATE SET variant_label = excluded.variant_label,
+                         release_date  = excluded.release_date''',
+        [release_id, service, service_id, variant_label, release_date, now],
+    )
 
 
 def upsert_artist_alias(conn: sqlite3.Connection, artist_id: str, alias: str,
@@ -687,13 +720,23 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
          type_secondary, release_date, release_year, sp_album.get('label'), sid, art, art, 'spotify',
          sp_album.get('total_tracks'), sp_album.get('popularity'), 'spotify', now, now)
     )
+    # Also record the canonical Spotify ID in release_service_links
+    upsert_service_link(cur, release_id, EL_SVC_SPOTIFY, sid,
+                        variant_label=None, release_date=release_date)
     return release_id, True
 
 
 def upsert_tracks(cur, release_id: str, full_tracks: list,
-                  artist_map: dict, mb_by_isrc: dict, mb_by_title: dict) -> 'tuple[int, int]':
+                  artist_map: dict, mb_by_isrc: dict, mb_by_title: dict,
+                  variant_section: 'str | None' = None) -> 'tuple[int, int]':
     """Upsert tracks from Spotify full-track objects enriched with MB MBID dicts.
-    Returns (created_count, updated_count)."""
+
+    variant_section: if set, new tracks are inserted with this variant_section value
+    (marks them as variant-exclusive, grouped under this label in the tracklist).
+    Existing tracks already belonging to a different release are not moved, and their
+    variant_section is only set if it is currently NULL.
+    Returns (created_count, updated_count).
+    """
     created = updated = 0
     now     = int(time.time())
     for sp in full_tracks:
@@ -704,31 +747,33 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
         track_mbid = mb_by_isrc.get(isrc) if isrc else None
         if not track_mbid:
             track_mbid = mb_by_title.get(ascii_key(sp.get('name', '')))
-        row = cur.execute('SELECT id, title, release_id FROM tracks WHERE spotify_id = ?', (sid,)).fetchone()
+        row = cur.execute('SELECT id, title, release_id, variant_section FROM tracks WHERE spotify_id = ?', (sid,)).fetchone()
         if row:
-            track_id, existing_title, existing_release_id = row[0], row[1], row[2]
-            # Don't move a track to a different release — it already has a home.
-            # Only update release_id when re-importing the same album.
+            track_id, existing_title, existing_release_id, existing_vs = row[0], row[1], row[2], row[3]
             target_release_id = release_id if existing_release_id == release_id else existing_release_id
             title_to_store = resolve_title(sp['name'], existing_title)
+            # Only set variant_section if the track doesn't already have one
+            is_canonical_track = (existing_vs is None) and (target_release_id == release_id)
+            new_vs = existing_vs if is_canonical_track else (
+                variant_section if existing_vs is None else existing_vs
+            )
             try:
                 cur.execute(
                     'UPDATE tracks SET release_id = ?, title = ?, track_number = ?,'
                     ' disc_number = ?, duration_ms = ?, is_explicit = ?, isrc = ?,'
-                    ' mbid = ?, spotify_popularity = ?, updated_at = ? WHERE id = ?',
+                    ' mbid = ?, spotify_popularity = ?, variant_section = ?, updated_at = ? WHERE id = ?',
                     (target_release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
                      sp.get('duration_ms'), 1 if sp.get('explicit') else 0,
-                     isrc, track_mbid, sp.get('popularity'), now, track_id)
+                     isrc, track_mbid, sp.get('popularity'), new_vs, now, track_id)
                 )
             except sqlite3.IntegrityError:
-                # MBID already assigned to a different track — update without mbid
                 cur.execute(
                     'UPDATE tracks SET release_id = ?, title = ?, track_number = ?,'
                     ' disc_number = ?, duration_ms = ?, is_explicit = ?, isrc = ?,'
-                    ' spotify_popularity = ?, updated_at = ? WHERE id = ?',
+                    ' spotify_popularity = ?, variant_section = ?, updated_at = ? WHERE id = ?',
                     (target_release_id, title_to_store, sp.get('track_number'), sp.get('disc_number', 1),
                      sp.get('duration_ms'), 1 if sp.get('explicit') else 0,
-                     isrc, sp.get('popularity'), now, track_id)
+                     isrc, sp.get('popularity'), new_vs, now, track_id)
                 )
             updated += 1
         else:
@@ -738,24 +783,23 @@ def upsert_tracks(cur, release_id: str, full_tracks: list,
                 cur.execute(
                     'INSERT INTO tracks (id, title, release_id, track_number, disc_number,'
                     ' duration_ms, is_explicit, spotify_id, mbid, isrc,'
-                    ' spotify_popularity, created_at, updated_at)'
-                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    ' spotify_popularity, variant_section, created_at, updated_at)'
+                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (track_id, title_to_store, release_id, sp.get('track_number'),
                      sp.get('disc_number', 1), sp.get('duration_ms'),
                      1 if sp.get('explicit') else 0, sid, track_mbid, isrc,
-                     sp.get('popularity'), now, now)
+                     sp.get('popularity'), variant_section, now, now)
                 )
             except sqlite3.IntegrityError:
-                # MBID collision — insert without mbid
                 cur.execute(
                     'INSERT INTO tracks (id, title, release_id, track_number, disc_number,'
                     ' duration_ms, is_explicit, spotify_id, isrc,'
-                    ' spotify_popularity, created_at, updated_at)'
-                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    ' spotify_popularity, variant_section, created_at, updated_at)'
+                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (track_id, title_to_store, release_id, sp.get('track_number'),
                      sp.get('disc_number', 1), sp.get('duration_ms'),
                      1 if sp.get('explicit') else 0, sid, isrc,
-                     sp.get('popularity'), now, now)
+                     sp.get('popularity'), variant_section, now, now)
                 )
             created += 1
         cur.execute('DELETE FROM track_artists WHERE track_id = ?', (track_id,))

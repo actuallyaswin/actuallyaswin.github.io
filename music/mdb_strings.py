@@ -535,6 +535,29 @@ def detect_variant_types(title: str) -> list:
     return found
 
 
+def detect_variant_label(title: str) -> str:
+    """Extract a human-readable variant label from a release title.
+
+    Returns the content of the first non-remix parenthetical/bracketed suffix,
+    or the trailing diff from _base_title. Falls back to the full title.
+
+    Examples:
+        "Hold Your Colour (Deluxe)"           → "Deluxe"
+        "In Silico (Special Edition)"         → "Special Edition"
+        "In Silico (Bonus Tracks Version)"    → "Bonus Tracks Version"
+        "Hold Your Colour - 2007 Reissue"     → "2007 Reissue"
+    """
+    m = re.search(r'[\(\[]((?!.*\bremix\b)[^\)\]]+)[\)\]]', title, re.I)
+    if m:
+        return m.group(1).strip()
+    base = _base_title(title)
+    if base and base != title:
+        diff = title[len(base):].strip().lstrip('-–—: ')
+        if diff:
+            return diff
+    return title
+
+
 def _base_title(title: str) -> str:
     """Strip edition/variant qualifiers for grouping similar releases/tracks.
 
@@ -586,6 +609,12 @@ def _base_title(title: str) -> str:
         r'|original\s+(?:motion\s+picture\s+)?(?:sound\s*tracks?|score)(?:\s+from\s+.*)?'
         r'|sound\s*tracks?'   # bare ": Soundtrack" (e.g. "UNDERTALE: Soundtrack")
         r').*$',
+        '', t, flags=re.I)
+    # Strip colon-separated general edition qualifiers (e.g. "Settle: Special Edition")
+    t = re.sub(
+        r'\s*:\s*(?!.*\bremix\b)'
+        r'(?:deluxe|expanded|extended|special|limited|bonus\s+tracks?|'
+        r'(?:\d{4}\s+)?remaster(?:ed)?|anniversary|.*edition|.*version).*$',
         '', t, flags=re.I)
     # Strip bare trailing qualifiers (after dash/em-dash) that don't involve remixes
     t = re.sub(

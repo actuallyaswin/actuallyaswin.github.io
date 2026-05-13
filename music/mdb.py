@@ -47,7 +47,8 @@ from rich.rule import Rule
 from mdb_strings import (
     resolve_title,
     is_valid_mbid,
-    detect_variant_type, detect_variant_types, _base_title, VARIANT_TYPES,
+    detect_variant_type, detect_variant_types, detect_variant_label,
+    _base_title, VARIANT_TYPES,
     _PRIMARY_TYPES, _SECONDARY_TYPES, _EDITION_TYPES,
     ascii_key as _norm,
     MONTHS, _SOURCE_PRIORITY, _date_prec, _should_update_date, _parse_user_date,
@@ -65,7 +66,8 @@ from mdb_ops import (
     bulk_rematch, bulk_rematch_by_name,
     upsert_external_link, EL_ARTIST, EL_RELEASE, EL_TRACK, EL_SVC_WIKIPEDIA,
     EL_SVC_BEATPORT, EL_SVC_BANDCAMP, EL_SVC_DEEZER, EL_SVC_GENIUS, EL_SVC_GENIUS_ID,
-    EL_SVC_DISCOGS, link_discogs, get_release_by_discogs_id,
+    EL_SVC_DISCOGS, EL_SVC_SPOTIFY, link_discogs, get_release_by_discogs_id,
+    upsert_service_link,
     resolve_artist,
     save_aoty_data, save_release_date,
     upsert_artist_alias, upsert_release_alias, upsert_track_alias,
@@ -821,27 +823,29 @@ def _discover_sources(
 
 
 def _find_existing_release_mdb(cur, mdb_r: MDBRelease) -> 'str | None':
-    """Return release_id if a matching release already exists in the DB."""
+    """Return release_id if a matching non-hidden release already exists in the DB."""
     if mdb_r.spotify_id:
-        row = cur.execute('SELECT id FROM releases WHERE spotify_id = ?',
+        row = cur.execute('SELECT id FROM releases WHERE spotify_id = ? AND (hidden IS NULL OR hidden = 0)',
                           (mdb_r.spotify_id,)).fetchone()
         if row:
             return row[0]
     if mdb_r.mbid:
-        row = cur.execute('SELECT id FROM releases WHERE mbid = ?',
+        row = cur.execute('SELECT id FROM releases WHERE mbid = ? AND (hidden IS NULL OR hidden = 0)',
                           (mdb_r.mbid,)).fetchone()
         if row:
             return row[0]
     if mdb_r.beatport_id:
         row = cur.execute(
-            'SELECT entity_id FROM external_links'
-            ' WHERE entity_type = ? AND service = ? AND link_value = ?',
+            'SELECT el.entity_id FROM external_links el'
+            ' JOIN releases r ON r.id = el.entity_id'
+            ' WHERE el.entity_type = ? AND el.service = ? AND el.link_value = ?'
+            '   AND (r.hidden IS NULL OR r.hidden = 0)',
             (EL_RELEASE, EL_SVC_BEATPORT, str(mdb_r.beatport_id)),
         ).fetchone()
         if row:
             return row[0]
     if mdb_r.apple_music_id:
-        row = cur.execute('SELECT id FROM releases WHERE apple_music_id = ?',
+        row = cur.execute('SELECT id FROM releases WHERE apple_music_id = ? AND (hidden IS NULL OR hidden = 0)',
                           (mdb_r.apple_music_id,)).fetchone()
         if row:
             return row[0]
@@ -1371,49 +1375,207 @@ def import_album_unified(
         existing_id = _find_existing_release_mdb(cur, mdb_r)
 
         if existing_id:
-            diffs = _build_enrich_diff(cur, existing_id, mdb_r, mdb_tracks)
-            if diffs:
+            # ── Variant guard on the update path ─────────────────────────────
+            # If the found release is the canonical and the incoming has more tracks,
+            # it's a variant pressing — absorb it rather than overwriting.
+            _is_variant_of_canonical = False
+            if mdb_r.release_group_mbid:
+                _is_not_variant = not conn.execute(
+                    'SELECT 1 FROM release_variants WHERE variant_id=?', [existing_id]
+                ).fetchone()
+                if _is_not_variant:
+                    _canon_tc = conn.execute(
+                        'SELECT COUNT(*) FROM tracks WHERE release_id=? AND hidden=0 AND variant_section IS NULL',
+                        [existing_id]
+                    ).fetchone()[0]
+                    _incoming_tc = len(mdb_tracks)
+                    if _incoming_tc > _canon_tc:
+                        _is_variant_of_canonical = True
+
+            if _is_variant_of_canonical:
+                # More tracks than the canonical → treat as a variant
+                _rdate = mdb_r.release_date or ''
+                _has_qualifier = _base_title(mdb_r.title or '') != (mdb_r.title or '')
+                v_label = detect_variant_label(mdb_r.title or '') if _has_qualifier \
+                    else (_rdate[:4] + ' Reissue' if _rdate else 'Variant')
+                sp_id = (source_data.get('sp') or {}).get('id')
+                if sp_id:
+                    upsert_service_link(conn, existing_id, EL_SVC_SPOTIFY,
+                                        sp_id, variant_label=v_label,
+                                        release_date=mdb_r.release_date)
+                n_created, n_updated = upsert_tracks_mdb(
+                    cur, existing_id, mdb_tracks, variant_section=v_label
+                )
+                conn.commit()
                 console.print(
                     f'[bold]{mdb_r.title}[/bold]  '
                     f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
-                    f'[dim]{src_tok}[/dim]  [yellow]→ updating[/yellow]'
+                    f'[dim]{src_tok}[/dim]  '
+                    f'[green]→ absorbed into canonical[/green] '
+                    f'[dim]({n_created} new, {n_updated} updated, section "{v_label}")[/dim]'
+                )
+                release_id = existing_id
+            else:
+                diffs = _build_enrich_diff(cur, existing_id, mdb_r, mdb_tracks)
+                if diffs:
+                    console.print(
+                        f'[bold]{mdb_r.title}[/bold]  '
+                        f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
+                        f'[dim]{src_tok}[/dim]  [yellow]→ updating[/yellow]'
+                    )
+                    for cl in conflict_lines:
+                        console.print(cl)
+                    _show_enrich_diff(mdb_r, diffs, source_data)
+                    if auto:
+                        apply = True
+                    else:
+                        raw = console.input('  Apply these changes? [Y/n]: ').strip().lower()
+                        apply = raw in ('', 'y', 'yes')
+                    if apply:
+                        upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                        upsert_tracks_mdb(cur, existing_id, mdb_tracks)
+                        conn.commit()
+                        _store_external_links_mdb(conn, existing_id, source_data)
+                        console.print('      [green]Updated.[/green]')
+                else:
+                    console.print(
+                        f'[bold]{mdb_r.title}[/bold]  '
+                        f'[dim]{artist_name}  ·  {year_str}  →  up to date[/dim]'
+                    )
+                    # Nothing changed — skip all post-import steps (variants, AOTY,
+                    # Wikipedia). Only rematch in case new listens arrived since last import.
+                    _auto_rematch(db_path, existing_id, artist_name, mdb_r.title)
+                    return existing_id, mdb_r.title, artist_name, mdb_r.release_date or ''
+                release_id = existing_id
+        else:
+            # ── Canonical detection: if a canonical already exists for this
+            # release group and the incoming title is a variant, absorb the
+            # variant-exclusive tracks into the canonical instead of creating
+            # a new releases row. ────────────────────────────────────────────
+            existing_canonical = None
+            if mdb_r.release_group_mbid:
+                _canon_row = conn.execute(
+                    '''SELECT r.id, r.title FROM releases r
+                       WHERE r.release_group_mbid = ?
+                         AND r.hidden = 0
+                         AND NOT EXISTS (
+                             SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id
+                         )
+                       LIMIT 1''',
+                    [mdb_r.release_group_mbid],
+                ).fetchone()
+                if _canon_row:
+                    canon_base   = _base_title(_canon_row['title'] or '')
+                    incoming_base = _base_title(mdb_r.title or '')
+                    if canon_base.lower() == incoming_base.lower() and \
+                            (mdb_r.title or '') != (_canon_row['title'] or ''):
+                        existing_canonical = _canon_row['id']
+
+            if existing_canonical:
+                # This is a variant — absorb into canonical, no new releases row
+                v_label = detect_variant_label(mdb_r.title or '')
+                # Store the variant's Spotify ID in release_service_links
+                sp_id = (source_data.get('sp') or {}).get('id')
+                if sp_id:
+                    upsert_service_link(conn, existing_canonical, EL_SVC_SPOTIFY,
+                                        sp_id, variant_label=v_label,
+                                        release_date=mdb_r.release_date)
+                # Import variant-exclusive tracks into canonical with variant_section tag
+                n_created, n_updated = upsert_tracks_mdb(
+                    cur, existing_canonical, mdb_tracks, variant_section=v_label
+                )
+                conn.commit()
+                console.print(
+                    f'[bold]{mdb_r.title}[/bold]  '
+                    f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
+                    f'[dim]{src_tok}[/dim]  '
+                    f'[green]→ absorbed into canonical[/green] '
+                    f'[dim]({n_created} new, {n_updated} updated, section "{v_label}")[/dim]'
+                )
+                release_id = existing_canonical
+            elif mdb_r.release_group_mbid and _base_title(mdb_r.title or '') != (mdb_r.title or ''):
+                # ── Proactive MB canonical lookup ────────────────────────────
+                # No canonical in DB yet, but the incoming title has edition
+                # qualifiers → it's a variant of something. Fetch the MB release
+                # group to find the primary pressing and import it first so this
+                # variant absorbs cleanly into it.
+                rg_releases = mb_fetch_release_group_releases(mdb_r.release_group_mbid)
+                # Score candidates; lowest score = most canonical
+                scored = sorted(rg_releases, key=mb_canonical_score)
+                primary_mb = scored[0] if scored else None
+                # Only auto-import if the primary is genuinely different from what
+                # we're importing (otherwise we'd loop)
+                if primary_mb and primary_mb.get('id') != (source_data.get('mb') and
+                        getattr(source_data['mb'], '_mbid', None)):
+                    primary_mbid = primary_mb['id']
+                    primary_title = primary_mb.get('title', '')
+                    primary_tracks = sum(m.get('track-count', 0)
+                                         for m in (primary_mb.get('media') or []))
+                    console.print(
+                        f'[dim]No canonical found — importing primary release from MB first:[/dim]'
+                    )
+                    console.print(
+                        f'  [bold]{primary_title}[/bold]  '
+                        f'[dim]{primary_tracks} tracks  mbid:{primary_mbid}[/dim]'
+                    )
+                    try:
+                        canon_id, _, _, _ = import_album_unified(
+                            db_path,
+                            f'https://musicbrainz.org/release/{primary_mbid}',
+                            client=client,
+                            use_aoty=use_aoty,
+                            use_wiki=use_wiki,
+                            no_gtin=no_gtin,
+                            no_variants=True,   # avoid recursive variant prompts
+                            auto=True,
+                        )
+                        # Now absorb current album as variant of the freshly imported canonical
+                        v_label = detect_variant_label(mdb_r.title or '')
+                        sp_id = (source_data.get('sp') or {}).get('id')
+                        if sp_id:
+                            upsert_service_link(conn, canon_id, EL_SVC_SPOTIFY,
+                                                sp_id, variant_label=v_label,
+                                                release_date=mdb_r.release_date)
+                        n_created, n_updated = upsert_tracks_mdb(
+                            cur, canon_id, mdb_tracks, variant_section=v_label
+                        )
+                        conn.commit()
+                        console.print(
+                            f'[bold]{mdb_r.title}[/bold]  '
+                            f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
+                            f'[dim]{src_tok}[/dim]  '
+                            f'[green]→ absorbed into canonical[/green] '
+                            f'[dim]({n_created} new, {n_updated} updated, section "{v_label}")[/dim]'
+                        )
+                        release_id = canon_id
+                    except Exception as _e:
+                        console.print(f'[yellow]⚠ MB canonical import failed ({_e}); importing as standalone[/yellow]')
+                        release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                        upsert_tracks_mdb(cur, release_id, mdb_tracks)
+                        conn.commit()
+                        _store_external_links_mdb(conn, release_id, source_data)
+                else:
+                    release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                    upsert_tracks_mdb(cur, release_id, mdb_tracks)
+                    conn.commit()
+                    _store_external_links_mdb(conn, release_id, source_data)
+                    console.print(
+                        f'[bold]{mdb_r.title}[/bold]  '
+                        f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
+                        f'[dim]{src_tok}[/dim]  [green]→ imported[/green]'
+                    )
+            else:
+                release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                upsert_tracks_mdb(cur, release_id, mdb_tracks)
+                conn.commit()
+                _store_external_links_mdb(conn, release_id, source_data)
+                console.print(
+                    f'[bold]{mdb_r.title}[/bold]  '
+                    f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
+                    f'[dim]{src_tok}[/dim]  [green]→ imported[/green]'
                 )
                 for cl in conflict_lines:
                     console.print(cl)
-                _show_enrich_diff(mdb_r, diffs, source_data)
-                if auto:
-                    apply = True
-                else:
-                    raw = console.input('  Apply these changes? [Y/n]: ').strip().lower()
-                    apply = raw in ('', 'y', 'yes')
-                if apply:
-                    upsert_release_mdb(cur, mdb_r, primary_artist_id)
-                    upsert_tracks_mdb(cur, existing_id, mdb_tracks)
-                    conn.commit()
-                    _store_external_links_mdb(conn, existing_id, source_data)
-                    console.print('      [green]Updated.[/green]')
-            else:
-                console.print(
-                    f'[bold]{mdb_r.title}[/bold]  '
-                    f'[dim]{artist_name}  ·  {year_str}  →  up to date[/dim]'
-                )
-                # Nothing changed — skip all post-import steps (variants, AOTY,
-                # Wikipedia). Only rematch in case new listens arrived since last import.
-                _auto_rematch(db_path, existing_id, artist_name, mdb_r.title)
-                return existing_id, mdb_r.title, artist_name, mdb_r.release_date or ''
-            release_id = existing_id
-        else:
-            release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
-            upsert_tracks_mdb(cur, release_id, mdb_tracks)
-            conn.commit()
-            _store_external_links_mdb(conn, release_id, source_data)
-            console.print(
-                f'[bold]{mdb_r.title}[/bold]  '
-                f'[dim]{artist_name}  ·  {year_str}{tracks_str}[/dim]  '
-                f'[dim]{src_tok}[/dim]  [green]→ imported[/green]'
-            )
-            for cl in conflict_lines:
-                console.print(cl)
 
     # Variant selection (after closing main DB context)
     if not no_variants and mdb_r.release_group_mbid:

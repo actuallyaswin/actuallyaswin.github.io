@@ -1121,10 +1121,14 @@ def upsert_release_mdb(cur: sqlite3.Cursor,
 
 def upsert_tracks_mdb(cur: sqlite3.Cursor,
                       release_id: str,
-                      tracks: list[MDBTrack]) -> tuple[int, int]:
+                      tracks: list[MDBTrack],
+                      variant_section: 'str | None' = None) -> tuple[int, int]:
     """Insert or update tracks from a list of MDBTrack objects.
 
-    Resolves/creates artist records and inserts track_artists (main/featured/remixer).
+    variant_section: if set, new tracks get this label and existing tracks get it
+    only if their current variant_section is NULL.
+    Tracks that already belong to a different release are not moved.
+
     Returns (created_count, updated_count).
     """
     created = updated = 0
@@ -1135,30 +1139,30 @@ def upsert_tracks_mdb(cur: sqlite3.Cursor,
         row = None
         if t.spotify_id:
             row = cur.execute(
-                'SELECT id, title FROM tracks WHERE spotify_id = ?', (t.spotify_id,)
+                'SELECT id, title, release_id, variant_section FROM tracks WHERE spotify_id = ?', (t.spotify_id,)
             ).fetchone()
         if not row and t.mbid:
             row = cur.execute(
-                'SELECT id, title FROM tracks WHERE mbid = ?', (t.mbid,)
+                'SELECT id, title, release_id, variant_section FROM tracks WHERE mbid = ?', (t.mbid,)
             ).fetchone()
         if not row and t.isrc:
             row = cur.execute(
-                'SELECT id, title FROM tracks WHERE isrc = ?', (t.isrc,)
+                'SELECT id, title, release_id, variant_section FROM tracks WHERE isrc = ?', (t.isrc,)
             ).fetchone()
 
-        def _do_update(track_id, include_ids=True):
+        def _do_update(track_id, target_rid, new_vs, include_ids=True):
             if include_ids:
                 try:
                     cur.execute(
                         'UPDATE tracks SET release_id=?, title=?, track_number=?, disc_number=?,'
                         ' duration_ms=?, is_explicit=?, isrc=?, mbid=?, spotify_id=?,'
                         ' mix_name=?, musical_key=?, beatport_genre=?, beatport_sub_genre=?,'
-                        ' tempo_bpm=?, spotify_popularity=?, updated_at=?'
+                        ' tempo_bpm=?, spotify_popularity=?, variant_section=?, updated_at=?'
                         ' WHERE id=?',
-                        (release_id, t.title, t.track_number, t.disc_number,
+                        (target_rid, t.title, t.track_number, t.disc_number,
                          t.duration_ms, 1 if t.is_explicit else 0, t.isrc, t.mbid, t.spotify_id,
                          t.mix_name, t.musical_key, t.beatport_genre, t.beatport_sub_genre,
-                         t.bpm, t.spotify_popularity, now, track_id),
+                         t.bpm, t.spotify_popularity, new_vs, now, track_id),
                     )
                     return True
                 except sqlite3.IntegrityError:
@@ -1167,18 +1171,28 @@ def upsert_tracks_mdb(cur: sqlite3.Cursor,
                 'UPDATE tracks SET release_id=?, title=?, track_number=?, disc_number=?,'
                 ' duration_ms=?, is_explicit=?, isrc=?,'
                 ' mix_name=?, musical_key=?, beatport_genre=?, beatport_sub_genre=?,'
-                ' tempo_bpm=?, spotify_popularity=?, updated_at=?'
+                ' tempo_bpm=?, spotify_popularity=?, variant_section=?, updated_at=?'
                 ' WHERE id=?',
-                (release_id, t.title, t.track_number, t.disc_number,
+                (target_rid, t.title, t.track_number, t.disc_number,
                  t.duration_ms, 1 if t.is_explicit else 0, t.isrc,
                  t.mix_name, t.musical_key, t.beatport_genre, t.beatport_sub_genre,
-                 t.bpm, t.spotify_popularity, now, track_id),
+                 t.bpm, t.spotify_popularity, new_vs, now, track_id),
             )
             return True
 
         if row:
             track_id = row[0]
-            _do_update(track_id)
+            existing_rid = row[2]
+            existing_vs  = row[3]
+            # Don't move a track to a different release — it already has a home
+            target_rid = release_id if existing_rid == release_id else existing_rid
+            # Canonical tracks (variant_section IS NULL on the canonical release) must
+            # never be tagged with a variant label — they are the source of truth.
+            is_canonical_track = (existing_vs is None) and (target_rid == release_id)
+            new_vs = existing_vs if is_canonical_track else (
+                variant_section if existing_vs is None else existing_vs
+            )
+            _do_update(track_id, target_rid, new_vs)
             updated += 1
         else:
             track_id = new_ulid()
@@ -1187,25 +1201,25 @@ def upsert_tracks_mdb(cur: sqlite3.Cursor,
                     'INSERT INTO tracks (id, title, release_id, track_number, disc_number,'
                     ' duration_ms, is_explicit, spotify_id, mbid, isrc,'
                     ' mix_name, musical_key, beatport_genre, beatport_sub_genre,'
-                    ' tempo_bpm, spotify_popularity, created_at, updated_at)'
-                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    ' tempo_bpm, spotify_popularity, variant_section, created_at, updated_at)'
+                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (track_id, t.title, release_id, t.track_number, t.disc_number,
                      t.duration_ms, 1 if t.is_explicit else 0,
                      t.spotify_id, t.mbid, t.isrc,
                      t.mix_name, t.musical_key, t.beatport_genre, t.beatport_sub_genre,
-                     t.bpm, t.spotify_popularity, now, now),
+                     t.bpm, t.spotify_popularity, variant_section, now, now),
                 )
             except sqlite3.IntegrityError:
                 cur.execute(
                     'INSERT INTO tracks (id, title, release_id, track_number, disc_number,'
                     ' duration_ms, is_explicit, isrc,'
                     ' mix_name, musical_key, beatport_genre, beatport_sub_genre,'
-                    ' tempo_bpm, spotify_popularity, created_at, updated_at)'
-                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    ' tempo_bpm, spotify_popularity, variant_section, created_at, updated_at)'
+                    ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (track_id, t.title, release_id, t.track_number, t.disc_number,
                      t.duration_ms, 1 if t.is_explicit else 0, t.isrc,
                      t.mix_name, t.musical_key, t.beatport_genre, t.beatport_sub_genre,
-                     t.bpm, t.spotify_popularity, now, now),
+                     t.bpm, t.spotify_popularity, variant_section, now, now),
                 )
             created += 1
 
