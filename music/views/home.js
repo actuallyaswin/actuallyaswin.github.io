@@ -36,16 +36,6 @@ const ViewHome = (() => {
                 </a>
             </div>
 
-            <div class="search-section">
-                <div class="search-col">
-                    <input type="text" id="searchInput" class="search-input" placeholder="Search artists..." autocomplete="off">
-                    <div id="searchResults" class="search-results"></div>
-                </div>
-                <div class="search-col">
-                    <input type="text" id="releaseSearchInput" class="search-input" placeholder="Search releases..." autocomplete="off">
-                    <div id="releaseSearchResults" class="search-results"></div>
-                </div>
-            </div>
 
             <div class="stats-row">
                 <section id="weeklyReleasesSection" hidden>
@@ -113,8 +103,6 @@ const ViewHome = (() => {
         loadYearRange();
         loadStats();
         loadNerdsStats();
-        setupSearch();
-        setupReleaseSearch();
         loadWeeklyReleases();
         loadHomeRecentPlays();
         loadGenreCommits();
@@ -161,40 +149,6 @@ const ViewHome = (() => {
         document.getElementById('statTracks').textContent = formatNumber(totalTracks);
     }
 
-    function attachKeyNav(inputEl, resultsEl) {
-        inputEl.addEventListener('keydown', e => {
-            if (!resultsEl.classList.contains('active')) return;
-            const items = Array.from(resultsEl.querySelectorAll('a.search-result-item'));
-            if (!items.length) return;
-            const focused = resultsEl.querySelector('.keyboard-focused');
-            const idx = focused ? items.indexOf(focused) : -1;
-
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                const next = items[idx + 1] ?? items[0];
-                focused?.classList.remove('keyboard-focused');
-                next.classList.add('keyboard-focused');
-                next.scrollIntoView({ block: 'nearest' });
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                if (idx <= 0) {
-                    focused?.classList.remove('keyboard-focused');
-                    inputEl.focus();
-                } else {
-                    const prev = items[idx - 1];
-                    focused?.classList.remove('keyboard-focused');
-                    prev.classList.add('keyboard-focused');
-                    prev.scrollIntoView({ block: 'nearest' });
-                }
-            } else if (e.key === 'Enter' && focused) {
-                e.preventDefault();
-                focused.click();
-            } else if (e.key === 'Escape') {
-                resultsEl.classList.remove('active');
-                focused?.classList.remove('keyboard-focused');
-            }
-        });
-    }
 
     function loadNerdsStats() {
         const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -376,156 +330,6 @@ const ViewHome = (() => {
         lucide.createIcons();
     }
 
-    function setupSearch() {
-        const searchInput = document.getElementById('searchInput');
-        const searchResults = document.getElementById('searchResults');
-        let debounceTimer;
-
-        _abortController = new AbortController();
-        const signal = _abortController.signal;
-
-        searchInput.addEventListener('input', e => {
-            clearTimeout(debounceTimer);
-            const query = e.target.value.trim();
-            if (query.length < 2) {
-                searchResults.classList.remove('active');
-                return;
-            }
-            debounceTimer = setTimeout(() => performSearch(query), 300);
-        });
-
-        attachKeyNav(searchInput, searchResults);
-
-        document.addEventListener('click', e => {
-            if (searchInput && !searchInput.contains(e.target) && searchResults && !searchResults.contains(e.target)) {
-                searchResults.classList.remove('active');
-            }
-        }, { signal });
-    }
-
-    function performSearch(query) {
-        const searchResults = document.getElementById('searchResults');
-        if (!searchResults) return;
-
-        const safeQ = query.replace(/'/g, "''");
-        const result = _db.exec(`
-            SELECT
-                a.id,
-                a.name,
-                COUNT(l.id) as total_listens,
-                (SELECT aa.alias FROM artist_aliases aa
-                 WHERE aa.artist_id = a.id AND lower(aa.alias) LIKE lower('%${safeQ}%')
-                 LIMIT 1) as matched_alias
-            FROM artists a
-            LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
-            LEFT JOIN tracks t ON ta.track_id = t.id AND t.hidden = 0
-            LEFT JOIN listens l ON t.id = l.track_id
-            WHERE (a.name LIKE '%${safeQ}%'
-                   OR a.id IN (SELECT artist_id FROM artist_aliases WHERE lower(alias) LIKE lower('%${safeQ}%')))
-            AND a.hidden = 0
-            GROUP BY a.id
-            ORDER BY total_listens DESC
-            LIMIT 10
-        `)[0];
-
-        searchResults.innerHTML = '';
-
-        if (!result || result.values.length === 0) {
-            searchResults.innerHTML = '<div class="search-result-item">No results found</div>';
-            searchResults.classList.add('active');
-            return;
-        }
-
-        result.values.forEach(([id, name, totalListens, matchedAlias]) => {
-            const item = document.createElement('a');
-            item.className = 'search-result-item';
-            item.href = `?view=artist&id=${encodeURIComponent(id)}`;
-            const showAlias = matchedAlias && name.toLowerCase().indexOf(query.toLowerCase()) === -1;
-            item.innerHTML = `
-                <div class="search-result-main">
-                    <span class="search-result-name">${escapeHtml(name)}${showAlias ? ` <span class="search-result-alias">· ${escapeHtml(matchedAlias)}</span>` : ''}</span>
-                    <span class="search-result-count">${formatNumber(totalListens)}</span>
-                </div>
-            `;
-            searchResults.appendChild(item);
-        });
-
-        searchResults.classList.add('active');
-    }
-
-    function setupReleaseSearch() {
-        const searchInput = document.getElementById('releaseSearchInput');
-        const searchResults = document.getElementById('releaseSearchResults');
-        let debounceTimer;
-
-        const signal = _abortController.signal;
-
-        searchInput.addEventListener('input', e => {
-            clearTimeout(debounceTimer);
-            const query = e.target.value.trim();
-            if (query.length < 2) {
-                searchResults.classList.remove('active');
-                return;
-            }
-            debounceTimer = setTimeout(() => performReleaseSearch(query), 300);
-        });
-
-        attachKeyNav(searchInput, searchResults);
-
-        document.addEventListener('click', e => {
-            if (searchInput && !searchInput.contains(e.target) && searchResults && !searchResults.contains(e.target)) {
-                searchResults.classList.remove('active');
-            }
-        }, { signal });
-    }
-
-    function performReleaseSearch(query) {
-        const searchResults = document.getElementById('releaseSearchResults');
-        if (!searchResults) return;
-
-        const result = _db.exec(`
-            SELECT
-                r.id,
-                r.title,
-                r.release_year,
-                a.name,
-                COUNT(l.id) as total_listens
-            FROM releases r
-            LEFT JOIN artists a ON a.id = r.primary_artist_id
-            LEFT JOIN tracks t ON t.release_id = r.id AND t.hidden = 0
-            LEFT JOIN listens l ON l.track_id = t.id
-            WHERE r.title LIKE '%${query.replace(/'/g, "''")}%'
-            AND r.hidden = 0
-            AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
-            GROUP BY r.id
-            ORDER BY total_listens DESC
-            LIMIT 10
-        `)[0];
-
-        searchResults.innerHTML = '';
-
-        if (!result || result.values.length === 0) {
-            searchResults.innerHTML = '<div class="search-result-item">No results found</div>';
-            searchResults.classList.add('active');
-            return;
-        }
-
-        result.values.forEach(([id, title, year, artistName, totalListens]) => {
-            const item = document.createElement('a');
-            item.className = 'search-result-item';
-            item.href = `?view=release&id=${encodeURIComponent(id)}`;
-            item.innerHTML = `
-                <div class="search-result-main">
-                    <span class="search-result-name">${escapeHtml(title)}</span>
-                    <span class="search-result-count">${formatNumber(totalListens)}</span>
-                </div>
-                <div class="search-result-meta">${escapeHtml(artistName || 'Various Artists')}${year ? ` · ${year}` : ''}</div>
-            `;
-            searchResults.appendChild(item);
-        });
-
-        searchResults.classList.add('active');
-    }
 
     function loadWeeklyReleases() {
         const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400;

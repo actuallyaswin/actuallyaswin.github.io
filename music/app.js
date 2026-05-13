@@ -69,8 +69,10 @@ function _searchQuery(q) {
         FROM releases r
         LEFT JOIN artists a ON a.id = r.primary_artist_id
         WHERE r.hidden = 0
-          AND NOT EXISTS (SELECT 1 FROM release_variants rv WHERE rv.variant_id = r.id)
-          AND (lower(r.title) LIKE lower('%${safe}%') OR lower(a.name) LIKE lower('%${safe}%'))
+          AND (lower(r.title) LIKE lower('%${safe}%')
+            OR lower(a.name) LIKE lower('%${safe}%')
+            OR EXISTS (SELECT 1 FROM artist_aliases aa
+                       WHERE aa.artist_id = a.id AND lower(aa.alias) LIKE lower('%${safe}%')))
         ORDER BY (lower(r.title) LIKE lower('${safe}%')) DESC, r.release_year DESC
         LIMIT 4
     `)[0];
@@ -93,7 +95,9 @@ function _searchQuery(q) {
     const artists = _db.exec(`
         SELECT a.id, a.name, a.image_url
         FROM artists a
-        WHERE lower(a.name) LIKE lower('%${safe}%')
+        WHERE (lower(a.name) LIKE lower('%${safe}%')
+            OR EXISTS (SELECT 1 FROM artist_aliases aa
+                       WHERE aa.artist_id = a.id AND lower(aa.alias) LIKE lower('%${safe}%')))
         ORDER BY (lower(a.name) LIKE lower('${safe}%')) DESC
         LIMIT 4
     `)[0];

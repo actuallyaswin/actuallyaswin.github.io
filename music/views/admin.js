@@ -95,7 +95,17 @@ const ViewAdmin = (() => {
             for (const [col, val] of Object.entries(_filters)) {
                 if (!val) continue;
                 const cell = String(row[col] ?? '').toLowerCase();
-                if (!cell.includes(val.toLowerCase())) return false;
+                // Space-separated terms; prefix with - for negation
+                const terms = val.trim().split(/\s+/);
+                for (const term of terms) {
+                    if (!term) continue;
+                    if (term.startsWith('-')) {
+                        const neg = term.slice(1).toLowerCase();
+                        if (neg && cell.includes(neg)) return false;
+                    } else {
+                        if (!cell.includes(term.toLowerCase())) return false;
+                    }
+                }
             }
             return true;
         });

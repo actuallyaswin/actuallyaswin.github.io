@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>aswin.db/music</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
     <!-- OpenGraph -->
     <meta property="og:url" content="https://actuallyaswin.github.io/music/">
     <meta property="og:type" content="website">
@@ -30,12 +31,14 @@
 <body>
     <!-- Persistent sticky header — present across all views -->
     <div id="siteHeader" class="site-header-sticky">
-        <a href="?" class="site-logo-small">
-            <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-        </a>
-        <button id="searchBtn" class="search-open-btn" aria-label="Search (⌘K)">
-            <i data-lucide="search"></i>
-        </button>
+        <div class="site-header-sticky-inner">
+            <a href="?" class="site-logo-small">
+                <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
+            </a>
+            <button id="searchBtn" class="search-open-btn" aria-label="Search (⌘K)">
+                <i data-lucide="search"></i>
+            </button>
+        </div>
     </div>
 
     <!-- Search modal -->
