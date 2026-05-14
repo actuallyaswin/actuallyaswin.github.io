@@ -12,6 +12,8 @@ const VIEWS = {
     'genre':           () => ViewGenre,
     'admin':           () => ViewAdmin,
     'recommendations': () => ViewRecommendations,
+    'history':         () => ViewHistory,
+    'stats':           () => ViewStats,
 };
 
 function getParams() {
@@ -67,6 +69,8 @@ function _searchQuery(q) {
     // Static view shortcuts
     const VIEW_SHORTCUTS = [
         { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
+        { label: 'History',         view: 'history',         icon: 'history' },
+        { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },
         { label: 'Top Albums',      view: 'top-albums',      icon: 'disc-album' },
         { label: 'Top Artists',     view: 'top-artists',     icon: 'mic-vocal' },
         { label: 'Top Tracks',      view: 'top-tracks',      icon: 'music' },
