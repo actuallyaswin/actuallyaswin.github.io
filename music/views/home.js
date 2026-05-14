@@ -95,6 +95,14 @@ const ViewHome = (() => {
                 </section>
             </div>
 
+            <section id="homeRecsSection" hidden>
+                <div class="section-header">
+                    <h2>Recommendations</h2>
+                    <a href="?view=recommendations" class="home-see-all">See all →</a>
+                </div>
+                <div class="disc-grid" id="homeRecsGrid"></div>
+            </section>
+
             <footer>
                 <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
             </footer>
@@ -105,6 +113,7 @@ const ViewHome = (() => {
         loadNerdsStats();
         loadWeeklyReleases();
         loadHomeRecentPlays();
+        loadRecommendationsPreview();
         loadGenreCommits();
     }
 
@@ -415,6 +424,51 @@ const ViewHome = (() => {
                     <span class="recent-play-date">${dateStr}</span>
                 </div>
             `;
+        }).join('');
+
+        section.removeAttribute('hidden');
+    }
+
+    function loadRecommendationsPreview() {
+        // Counts come from constants.js: SHELF_DESKTOP, SHELF_MOBILE
+        const section = document.getElementById('homeRecsSection');
+        const grid    = document.getElementById('homeRecsGrid');
+        if (!section || !grid) return;
+
+        const now   = Math.floor(Date.now() / 1000);
+        const seed  = _db.exec('SELECT COUNT(*) FROM listens')[0].values[0][0];
+        const since = now - 90 * 86400;
+
+        const result = _db.exec(`
+            SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url), a.name, r.release_year,
+                   COUNT(l.id) plays
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id
+            JOIN releases r ON r.id = t.release_id
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
+            WHERE l.timestamp >= ${since}
+              AND r.hidden = 0 AND t.hidden = 0 AND t.variant_section IS NULL
+            GROUP BY r.id ORDER BY plays DESC LIMIT 30
+        `)[0];
+        if (!result || !result.values.length) return;
+
+        const pool   = [...result.values].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+        const start  = seed % pool.length;
+        const picked = [];
+        for (let i = 0; i < Math.min(SHELF_DESKTOP, pool.length); i++)
+            picked.push(pool[(start + i) % pool.length]);
+
+        grid.innerHTML = picked.map(([id, title, art, artist, year]) => {
+            const img = art
+                ? `<div class="disc-card-img" style="background-image:url('${art}')"></div>`
+                : `<div class="disc-card-img" style="background:var(--bg-tertiary)"></div>`;
+            const sub = [artist, year].filter(Boolean).join(' · ');
+            return `<a class="disc-card" href="?view=release&id=${encodeURIComponent(id)}">
+                ${img}
+                <div class="disc-card-meta"><div class="disc-card-info">
+                    <div class="disc-card-title">${escapeHtml(title || '')}</div>
+                    <div class="disc-card-sub">${escapeHtml(sub)}</div>
+                </div></div></a>`;
         }).join('');
 
         section.removeAttribute('hidden');

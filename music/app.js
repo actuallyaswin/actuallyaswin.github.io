@@ -2,15 +2,16 @@ let _db = null;
 let _currentView = null;
 
 const VIEWS = {
-    'home':        () => ViewHome,
-    'year':        () => ViewYear,
-    'top-albums':  () => ViewTopAlbums,
-    'top-artists': () => ViewTopArtists,
-    'top-tracks':  () => ViewTopTracks,
-    'artist':      () => ViewArtist,
-    'release':     () => ViewRelease,
-    'genre':       () => ViewGenre,
-    'admin':       () => ViewAdmin,
+    'home':            () => ViewHome,
+    'year':            () => ViewYear,
+    'top-albums':      () => ViewTopAlbums,
+    'top-artists':     () => ViewTopArtists,
+    'top-tracks':      () => ViewTopTracks,
+    'artist':          () => ViewArtist,
+    'release':         () => ViewRelease,
+    'genre':           () => ViewGenre,
+    'admin':           () => ViewAdmin,
+    'recommendations': () => ViewRecommendations,
 };
 
 function getParams() {
@@ -62,6 +63,29 @@ function _searchQuery(q) {
 
     const safe = q.replace(/'/g, "''");
     let html = '';
+
+    // Static view shortcuts
+    const VIEW_SHORTCUTS = [
+        { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
+        { label: 'Top Albums',      view: 'top-albums',      icon: 'disc-album' },
+        { label: 'Top Artists',     view: 'top-artists',     icon: 'mic-vocal' },
+        { label: 'Top Tracks',      view: 'top-tracks',      icon: 'music' },
+    ];
+    const matchedViews = VIEW_SHORTCUTS.filter(v =>
+        v.label.toLowerCase().includes(q.toLowerCase())
+    );
+    if (matchedViews.length) {
+        html += `<div class="search-section-label">Pages</div>`;
+        matchedViews.forEach(v => {
+            html += `<a class="search-result-row" href="?view=${v.view}">
+                <div class="search-result-thumb" style="background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center">
+                    <i data-lucide="${v.icon}" style="width:16px;height:16px;color:var(--text-tertiary)"></i>
+                </div>
+                <div class="search-result-text">
+                    <div class="search-result-name">${escapeHtml(v.label)}</div>
+                </div></a>`;
+        });
+    }
 
     // Releases
     const releases = _db.exec(`

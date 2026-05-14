@@ -1612,6 +1612,63 @@ a.stat-card:hover .stat-label::after {
     margin-top: 2rem;
 }
 
+/* ── Recommendations view ─────────────────────────────────────────── */
+.rec-header { margin-bottom: 2rem; }
+.rec-shelves { display: flex; flex-direction: column; }
+.rec-shelf { padding: 2rem 0; border-top: 1px solid var(--border); }
+.rec-shelf:first-child { border-top: none; padding-top: 0; }
+.rec-shelf-header { margin-bottom: 0.75rem; }
+.rec-shelf-header h2 { margin-bottom: 0.2rem; font-size: 1.25rem; }
+.rec-desc {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.75rem;
+    font-style: italic;
+}
+.home-see-all {
+    font-size: 0.82rem;
+    color: var(--primary);
+    text-decoration: none;
+    white-space: nowrap;
+}
+.home-see-all:hover { text-decoration: underline; }
+
+/* ── Recommendations card streaming link (Option B, SHOW_STREAMING_LINKS) ── */
+.disc-card-streaming {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    opacity: 0;
+    transition: opacity 0.15s;
+    text-decoration: none;
+}
+.disc-card:hover .disc-card-streaming { opacity: 1; }
+.disc-card-streaming-icon {
+    display: block;
+    width: 14px;
+    height: 14px;
+    background: #1ED760;
+    -webkit-mask-image: url('images/links/spotify.svg');
+    mask-image: url('images/links/spotify.svg');
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+}
+
+/* ── Recommendations shelf counts ─────────────────────────────────────────── */
+/* SHELF_MOBILE = 6 — hide cards beyond the 6th on small screens */
+@media (max-width: 768px) {
+    .disc-card-streaming { display: none; }
+    .rec-shelf .disc-card:nth-child(n+7),
+    #homeRecsSection .disc-card:nth-child(n+7) { display: none; }
+}
+
 .disc-group {
     margin-bottom: 2.5rem;
 }
@@ -1628,6 +1685,7 @@ a.stat-card:hover .stat-label::after {
     color: inherit;
     position: relative;
     transition: transform 0.3s;
+    cursor: pointer;
 }
 
 .disc-card:hover {
