@@ -10,6 +10,12 @@ const ViewTopAlbums = (() => {
         _db = db;
         document.title = 'aswin.db/music – Top Albums';
 
+        // Restore state from URL params
+        if (params.sort  && ['listens','minutes'].includes(params.sort))   sortBy = params.sort;
+        if (params.count && [10,20,50,100].includes(+params.count))        countLimit = +params.count;
+        if (params.display && ['list','tiles','collage'].includes(params.display)) viewMode = params.display;
+        if (params.year)                                                    releaseYear = params.year;
+
         const countBtns = [10, 20, 50, 100].map(n => {
             const label = viewMode === 'collage' ? (() => { const s = COLLAGE_SIZES[n]; return `${s}×${s}`; })() : n;
             return `<button class="sort-btn${countLimit === n ? ' active' : ''}" data-count="${n}">${label}</button>`;
@@ -201,9 +207,15 @@ const ViewTopAlbums = (() => {
         }
     }
 
+    function _syncUrl() {
+        const p = new URLSearchParams({ view: 'top-albums', sort: sortBy, count: countLimit, display: viewMode, year: releaseYear });
+        history.replaceState(Object.fromEntries(p), '', '?' + p.toString());
+    }
+
     function setupControls() {
         setupToggleGroup('[data-sort]', btn => {
             sortBy = btn.dataset.sort;
+            _syncUrl();
             loadAlbums();
         });
 
@@ -211,17 +223,20 @@ const ViewTopAlbums = (() => {
         if (yearSel) {
             yearSel.addEventListener('change', () => {
                 releaseYear = yearSel.value;
+                _syncUrl();
                 loadAlbums();
             });
         }
 
         setupToggleGroup('[data-count]', btn => {
             countLimit = parseInt(btn.dataset.count);
+            _syncUrl();
             applyCount();
         });
 
         setupToggleGroup('[data-view]', btn => {
             viewMode = btn.dataset.view;
+            _syncUrl();
             updateCountLabels(viewMode);
             renderAlbums();
         });

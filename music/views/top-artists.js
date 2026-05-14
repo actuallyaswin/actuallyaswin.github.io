@@ -16,6 +16,16 @@ const ViewTopArtists = (() => {
         _db = db;
         document.title = 'aswin.db/music – Top Artists';
 
+        // Restore state from URL params
+        if (params.sort  && ['listens','minutes','discoveries','oldies'].includes(params.sort))
+            sortBy = params.sort;
+        if (params.range && ['week','month','year','all'].includes(params.range))
+            range = params.range;
+        if (params.count && [10,20,50,100].includes(+params.count))
+            countLimit = +params.count;
+        if (params.display && ['list','wide','collage'].includes(params.display))
+            viewMode = params.display;
+
         const countBtns = [10, 20, 50, 100].map(n => {
             const label = viewMode === 'collage' ? (() => { const s = COLLAGE_SIZES[n]; return `${s}×${s}`; })() : n;
             return `<button class="sort-btn${countLimit === n ? ' active' : ''}" data-count="${n}">${label}</button>`;
@@ -215,24 +225,33 @@ const ViewTopArtists = (() => {
         }
     }
 
+    function _syncUrl() {
+        const p = new URLSearchParams({ view: 'top-artists', sort: sortBy, range, count: countLimit, display: viewMode });
+        history.replaceState(Object.fromEntries(p), '', '?' + p.toString());
+    }
+
     function setupControls() {
         setupToggleGroup('[data-sort]', btn => {
             sortBy = btn.dataset.sort;
+            _syncUrl();
             loadArtists();
         });
 
         setupToggleGroup('[data-range]', btn => {
             range = btn.dataset.range;
+            _syncUrl();
             loadArtists();
         });
 
         setupToggleGroup('[data-count]', btn => {
             countLimit = parseInt(btn.dataset.count);
+            _syncUrl();
             applyCount();
         });
 
         setupToggleGroup('[data-view]', btn => {
             viewMode = btn.dataset.view;
+            _syncUrl();
             updateCountLabels(viewMode);
             renderArtists();
         });
