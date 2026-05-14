@@ -1,5 +1,5 @@
 const ViewAdmin = (() => {
-    const ROW_H = 44;
+    const ROW_H = 52;
     const BUFFER = 12;
 
     let _db = null;
@@ -167,13 +167,19 @@ const ViewAdmin = (() => {
         const displayRelease = pending._releaseName ?? row.matched_release_name ?? '';
         const releaseId = pending._releaseId ?? row.matched_release_id ?? null;
 
-        const artistLink = artistId
-            ? `<a href="?view=artist&id=${artistId}" class="admin-link">${escapeHtml(displayArtist)}</a>`
-            : (displayArtist ? escapeHtml(displayArtist) : '<span class="admin-empty">—</span>');
+        const rawSub = [row.raw_artist_name, row.raw_album_name].filter(Boolean).map(escapeHtml).join(' · ') || '—';
 
-        const releaseLink = releaseId
+        const artistPart = artistId
+            ? `<a href="?view=artist&id=${artistId}" class="admin-link">${escapeHtml(displayArtist)}</a>`
+            : (displayArtist ? escapeHtml(displayArtist) : '');
+        const releasePart = releaseId
             ? `<a href="?view=release&id=${releaseId}" class="admin-link">${escapeHtml(displayRelease)}</a>`
-            : (displayRelease ? escapeHtml(displayRelease) : '<span class="admin-empty">—</span>');
+            : (displayRelease ? escapeHtml(displayRelease) : '');
+        const matchedSub = [artistPart, releasePart].filter(Boolean).join(' · ') || '<span class="admin-empty">—</span>';
+
+        const langBadge = row.matched_track_language
+            ? `<span class="admin-lang">${escapeHtml(row.matched_track_language)}</span>`
+            : '';
 
         const tr = document.createElement('tr');
         tr.dataset.id = row.id;
@@ -182,20 +188,19 @@ const ViewAdmin = (() => {
         tr.innerHTML = `
             <td class="admin-cell admin-cell--ts">${_fmtTs(row.timestamp)}</td>
             <td class="admin-cell"><span class="admin-source admin-source--${row.source}">${row.source}</span></td>
-            <td class="admin-cell admin-cell--raw" title="${escapeHtml(row.raw_track_name || '')}">${escapeHtml(row.raw_track_name || '—')}</td>
-            <td class="admin-cell admin-cell--raw" title="${escapeHtml(row.raw_artist_name || '')}">${escapeHtml(row.raw_artist_name || '—')}</td>
-            <td class="admin-cell admin-cell--raw" title="${escapeHtml(row.raw_album_name || '')}">${escapeHtml(row.raw_album_name || '—')}</td>
+            <td class="admin-cell admin-cell--meta admin-cell--raw">
+                <div class="admin-meta-name" title="${escapeHtml(row.raw_track_name || '')}">${escapeHtml(row.raw_track_name || '—')}</div>
+                <div class="admin-meta-sub" title="${escapeHtml([row.raw_artist_name, row.raw_album_name].filter(Boolean).join(' · '))}">${rawSub}</div>
+            </td>
             <td class="admin-cell admin-cell--num">${_fmtMs(row.ms_played)}</td>
             <td class="admin-cell admin-cell--center">${row.skipped ? '<span class="admin-skip" title="Skipped">↩</span>' : ''}</td>
-            <td class="admin-cell admin-cell--track-select" data-row-id="${row.id}" title="Click to edit match">
-                <span class="admin-select-text">${displayTrack
-                    ? `${escapeHtml(displayTrack)}<i data-lucide="pencil" class="admin-edit-icon"></i>`
+            <td class="admin-cell admin-cell--meta admin-cell--track-select" data-row-id="${row.id}" title="Click to edit match">
+                <div class="admin-meta-name admin-select-text">${displayTrack
+                    ? `${escapeHtml(displayTrack)}${langBadge}<i data-lucide="pencil" class="admin-edit-icon"></i>`
                     : '<span class="admin-match-prompt">match…</span>'
-                }</span>
+                }</div>
+                <div class="admin-meta-sub">${matchedSub}</div>
             </td>
-            <td class="admin-cell admin-cell--lang">${row.matched_track_language ? `<span class="admin-lang">${escapeHtml(row.matched_track_language)}</span>` : ''}</td>
-            <td class="admin-cell admin-cell--derived">${artistLink}</td>
-            <td class="admin-cell admin-cell--derived">${releaseLink}</td>
             <td class="admin-cell admin-cell--action">
                 <button class="admin-btn admin-btn--eject" data-id="${row.id}" title="Unmatch" ${!isMatched ? 'disabled' : ''}>
                     <i data-lucide="disc-3"></i>
@@ -455,22 +460,17 @@ const ViewAdmin = (() => {
                             <tr>
                                 <th>Date</th>
                                 <th>Src</th>
-                                <th>Raw Track</th>
-                                <th>Raw Artist</th>
-                                <th>Raw Album</th>
+                                <th>Raw Metadata</th>
                                 <th>Dur</th>
                                 <th title="Skipped">↩</th>
-                                <th>Matched Track</th>
-                                <th>Lang</th>
-                                <th>Artist</th>
-                                <th>Release</th>
+                                <th>Matched Metadata</th>
                                 <th></th>
                                 <th></th>
                             </tr>
                         </thead>
-                        <tbody><tr><td id="adminSpacerTop" colspan="13" style="padding:0;height:0"></td></tr></tbody>
+                        <tbody><tr><td id="adminSpacerTop" colspan="8" style="padding:0;height:0"></td></tr></tbody>
                         <tbody id="adminTbody"></tbody>
-                        <tbody><tr><td id="adminSpacerBot" colspan="13" style="padding:0;height:0"></td></tr></tbody>
+                        <tbody><tr><td id="adminSpacerBot" colspan="8" style="padding:0;height:0"></td></tr></tbody>
                     </table>
                 </div>
             </div>

@@ -3433,19 +3433,14 @@ footer a:hover {
 }
 
 /* column widths */
-.admin-table th:nth-child(1)  { width: 90px; }   /* date */
-.admin-table th:nth-child(2)  { width: 60px; }   /* source */
-.admin-table th:nth-child(3)  { width: 160px; }  /* raw track */
-.admin-table th:nth-child(4)  { width: 120px; }  /* raw artist */
-.admin-table th:nth-child(5)  { width: 120px; }  /* raw album */
-.admin-table th:nth-child(6)  { width: 46px; }   /* dur */
-.admin-table th:nth-child(7)  { width: 28px; }   /* skipped */
-.admin-table th:nth-child(8)  { width: 160px; }  /* matched track */
-.admin-table th:nth-child(9)  { width: 36px; }   /* lang */
-.admin-table th:nth-child(10) { width: 120px; }  /* artist */
-.admin-table th:nth-child(11) { width: 140px; }  /* release */
-.admin-table th:nth-child(12),
-.admin-table th:nth-child(13) { width: 32px; }   /* actions */
+.admin-table th:nth-child(1) { width: 90px; }   /* date */
+.admin-table th:nth-child(2) { width: 60px; }   /* source */
+.admin-table th:nth-child(3) { min-width: 200px; } /* raw metadata */
+.admin-table th:nth-child(4) { width: 46px; }   /* dur */
+.admin-table th:nth-child(5) { width: 28px; }   /* skipped */
+.admin-table th:nth-child(6) { min-width: 200px; } /* matched metadata */
+.admin-table th:nth-child(7),
+.admin-table th:nth-child(8) { width: 32px; }   /* actions */
 
 .admin-row {
     border-bottom: 1px solid var(--border);
@@ -3461,7 +3456,7 @@ footer a:hover {
 .admin-cell {
     padding: 0 0.5rem;
     vertical-align: middle;
-    height: 44px;
+    height: 52px;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -3471,7 +3466,29 @@ footer a:hover {
 .admin-cell--raw   { color: var(--text-secondary); }
 .admin-cell--num   { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .admin-cell--center { text-align: center; }
-.admin-cell--derived { color: var(--text-secondary); }
+
+.admin-cell--meta {
+    white-space: normal;
+    overflow: visible;
+}
+.admin-meta-name {
+    font-size: 0.83rem;
+    color: var(--text);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 36vw;
+}
+.admin-cell--raw .admin-meta-name { color: var(--text-secondary); }
+.admin-meta-sub {
+    font-size: 0.74rem;
+    color: var(--text-tertiary);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 36vw;
+    margin-top: 2px;
+}
 
 .admin-cell--track-select {
     cursor: pointer;
