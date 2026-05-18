@@ -64,10 +64,12 @@ function _searchQuery(q) {
     if (!_db || q.trim().length < 2) { results.innerHTML = ''; return; }
 
     const safe = q.replace(/'/g, "''");
+    const isAdmin = getParams().view === 'admin';
     let html = '';
 
-    // Static view shortcuts
-    const VIEW_SHORTCUTS = [
+    // Static view shortcuts — hidden in admin mode (no page navigation from editor)
+    if (!isAdmin) {
+        const VIEW_SHORTCUTS = [
         { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
         { label: 'History',         view: 'history',         icon: 'history' },
         { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },
@@ -76,20 +78,21 @@ function _searchQuery(q) {
         { label: 'Top Tracks',      view: 'top-tracks',      icon: 'music' },
     ];
     const matchedViews = VIEW_SHORTCUTS.filter(v =>
-        v.label.toLowerCase().includes(q.toLowerCase())
-    );
-    if (matchedViews.length) {
-        html += `<div class="search-section-label">Pages</div>`;
-        matchedViews.forEach(v => {
-            html += `<a class="search-result-row" href="?view=${v.view}">
-                <div class="search-result-thumb" style="background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center">
-                    <i data-lucide="${v.icon}" style="width:16px;height:16px;color:var(--text-tertiary)"></i>
-                </div>
-                <div class="search-result-text">
-                    <div class="search-result-name">${escapeHtml(v.label)}</div>
-                </div></a>`;
-        });
-    }
+            v.label.toLowerCase().includes(q.toLowerCase())
+        );
+        if (matchedViews.length) {
+            html += `<div class="search-section-label">Pages</div>`;
+            matchedViews.forEach(v => {
+                html += `<a class="search-result-row" href="?view=${v.view}">
+                    <div class="search-result-thumb" style="background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center">
+                        <i data-lucide="${v.icon}" style="width:16px;height:16px;color:var(--text-tertiary)"></i>
+                    </div>
+                    <div class="search-result-text">
+                        <div class="search-result-name">${escapeHtml(v.label)}</div>
+                    </div></a>`;
+            });
+        }
+    } // end !isAdmin block
 
     // Releases
     const releases = _db.exec(`
@@ -110,7 +113,10 @@ function _searchQuery(q) {
             const thumb = art
                 ? `<img class="search-result-thumb" src="${art}" alt="" loading="lazy">`
                 : `<div class="search-result-thumb" style="background:var(--bg-tertiary)"></div>`;
-            html += `<a class="search-result-row" href="?view=release&id=${encodeURIComponent(id)}">
+            const href = isAdmin
+                ? `?view=admin&content=releases&release_id=${encodeURIComponent(id)}`
+                : `?view=release&id=${encodeURIComponent(id)}`;
+            html += `<a class="search-result-row" href="${href}">
                 ${thumb}
                 <div class="search-result-text">
                     <div class="search-result-name">${escapeHtml(title)}</div>
@@ -121,7 +127,7 @@ function _searchQuery(q) {
 
     // Artists
     const artists = _db.exec(`
-        SELECT a.id, a.name, a.image_url
+        SELECT a.id, a.name, COALESCE(a.image_thumb_url, a.image_url)
         FROM artists a
         WHERE (lower(a.name) LIKE lower('%${safe}%')
             OR EXISTS (SELECT 1 FROM artist_aliases aa
@@ -135,7 +141,10 @@ function _searchQuery(q) {
             const thumb = img
                 ? `<img class="search-result-thumb round" src="${img}" alt="" loading="lazy">`
                 : `<div class="search-result-thumb round" style="background:var(--bg-tertiary)"></div>`;
-            html += `<a class="search-result-row" href="?view=artist&id=${encodeURIComponent(id)}">
+            const href = isAdmin
+                ? `?view=admin&content=artists&artist_id=${encodeURIComponent(id)}`
+                : `?view=artist&id=${encodeURIComponent(id)}`;
+            html += `<a class="search-result-row" href="${href}">
                 ${thumb}
                 <div class="search-result-text">
                     <div class="search-result-name">${escapeHtml(name)}</div>
@@ -156,7 +165,10 @@ function _searchQuery(q) {
     if (tracks?.values.length) {
         html += `<div class="search-section-label">Tracks</div>`;
         for (const [, title, rTitle, rId, artist] of tracks.values) {
-            html += `<a class="search-result-row" href="?view=release&id=${encodeURIComponent(rId)}">
+            const href = isAdmin
+                ? `?view=admin&content=releases&release_id=${encodeURIComponent(rId)}`
+                : `?view=release&id=${encodeURIComponent(rId)}`;
+            html += `<a class="search-result-row" href="${href}">
                 <div class="search-result-thumb" style="background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center">
                     <i data-lucide="music" style="width:16px;height:16px;color:var(--text-tertiary)"></i>
                 </div>
