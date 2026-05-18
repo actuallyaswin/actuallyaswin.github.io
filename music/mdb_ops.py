@@ -403,6 +403,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE releases ADD COLUMN album_art_thumb_url TEXT",
         "ALTER TABLE artists ADD COLUMN image_thumb_url TEXT",
         "ALTER TABLE tracks ADD COLUMN variant_section TEXT",
+        "ALTER TABLE releases ADD COLUMN medium TEXT",
+        "ALTER TABLE releases ADD COLUMN language TEXT",
+        "ALTER TABLE releases ADD COLUMN country TEXT",
     ]:
         try:
             conn.execute(ddl)

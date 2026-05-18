@@ -99,7 +99,8 @@ const ViewArtist = (() => {
         const result = _db.exec(`
             SELECT
                 a.name,
-                a.image_url,
+                COALESCE(a.image_thumb_url, a.image_url) AS image_url,
+                a.image_url AS image_full_url,
                 a.hero_image_url,
                 COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END) as unique_tracks,
                 COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_plays,
@@ -122,7 +123,7 @@ const ViewArtist = (() => {
             return;
         }
 
-        const [name, imageUrl, heroImageUrl, uniqueTracks, totalPlays, totalReleases,
+        const [name, imageUrl, imageFullUrl, heroImageUrl, uniqueTracks, totalPlays, totalReleases,
                spotifyId, mbid, aotyId, aotyUrl] = result.values[0];
 
         const extLinks = new Map();
@@ -200,7 +201,7 @@ const ViewArtist = (() => {
             const photoEl = document.getElementById('artistPhoto');
             photoEl.innerHTML = `<img src="${imageUrl}" alt="${escapeHtml(name)}">`;
             photoEl.classList.add('has-art');
-            photoEl.addEventListener('click', () => _openArtModal(imageUrl));
+            photoEl.addEventListener('click', () => _openArtModal(imageFullUrl || imageUrl));
         }
 
         if (HERO_ENABLED && heroImageUrl) {
