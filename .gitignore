@@ -19,3 +19,8 @@ music/listening_history_overrides.sqlite
 music_editor/listening_history.sqlite
 music_editor/listening_history_overrides.sqlite
 music_editor/config.json
+
+# Jekyll build output
+_site/
+.jekyll-cache/
+.jekyll-metadata

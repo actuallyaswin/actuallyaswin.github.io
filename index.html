@@ -1,35 +1,13 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta http-equiv="x-ua-compatible" content="ie=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Aswin Sivaraman</title>
-  <meta name="description" content="Aswin Sivaraman — ML Engineer at Apple working on Siri. PhD from Indiana University. Research in speech and music processing.">
-  <meta property="og:url" content="https://actuallyaswin.github.io/">
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="Aswin Sivaraman">
-  <meta property="og:description" content="ML Engineer at Apple working on Siri. PhD from Indiana University. Research in speech and music processing.">
-  <meta property="og:image" content="https://actuallyaswin.github.io/img/og-preview.png">
-  <!-- Twitter/X -->
-  <meta name="twitter:card" content="summary_large_image">
-  <meta property="twitter:domain" content="actuallyaswin.github.io">
-  <meta property="twitter:url" content="https://actuallyaswin.github.io/">
-  <meta name="twitter:title" content="Aswin Sivaraman">
-  <meta name="twitter:description" content="ML Engineer at Apple working on Siri. PhD from Indiana University. Research in speech and music processing.">
-  <meta name="twitter:image" content="https://actuallyaswin.github.io/img/og-preview.png">
-  <link rel="stylesheet" type="text/css" href="css/fonts.css">
-  <link rel="stylesheet" type="text/css" href="css/styles.css">
-  <style>
-    :root {
-      --num-journals: 1;
-      --num-pubs-conf: 7;
-      --num-preprints: 4;
-      --num-workshops: 1;
-    }
-  </style>
-</head>
-<body>
+---
+layout: default
+title: "Aswin Sivaraman"
+description: "Aswin Sivaraman — ML Engineer at Apple working on Siri. PhD from Indiana University. Research in speech and music processing."
+og_image: "https://actuallyaswin.github.io/img/og-preview.png"
+num_journals: 1
+num_pubs_conf: 7
+num_preprints: 4
+num_workshops: 1
+---
   <div class="grid-container">
     <div class="grid-x grid-margin-x">
       <div class="cell medium-3 column-profile">
@@ -80,10 +58,21 @@
             <li>In my spare time, I enjoy watching movies, sharing music, DJing, traveling, taking candid photographs, and playing video games (especially DDR or ITG).</li>
           </ul>
         </section>
+        {% if site.posts.size > 0 %}
+        <h2>Recent Posts</h2>
+        <section>
+          <ul class="recent-posts">
+            {% for post in site.posts limit:3 %}
+            <li><time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%b %-d, %Y" }}</time><span class="post-list-sep">:</span> <a href="{{ post.url | relative_url }}">{{ post.title }}</a></li>
+            {% endfor %}
+          </ul>
+          <p><a href="{{ '/blog/' | relative_url }}">All posts &rarr;</a></p>
+        </section>
+        {% endif %}
         <h2>Education</h2>
         <section class="grid-x grid-padding-x">
           <div class="cell large-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_iu.jpg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/iu.jpg" alt=""></div>
             <div class="cell auto">
               <strong>Indiana University</strong>, <small>Bloomington, IN</small><br />
               <span class="degree-title">PhD in Intelligent Systems Engineering</span><br />
@@ -91,7 +80,7 @@
             </div>
           </div>
           <div class="cell large-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_uiuc.jpg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/uiuc.jpg" alt=""></div>
             <div class="cell auto">
               <strong>University of Illinois</strong>, <small>Urbana, IL</small><br />
               <span class="degree-title">BS in Electrical Engineering</span><br />
@@ -103,7 +92,7 @@
           <h3>Full-Time</h3>
         <section class="grid-x grid-padding-x">
           <div class="cell large-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_apple_box.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/apple_box.svg" alt=""></div>
             <div class="cell auto">
               <strong>Apple</strong>, <small>Seattle, WA</small><br />
               <span class="job-title">ML Engineer</span><br />
@@ -111,7 +100,7 @@
             </div>
           </div>
           <div class="cell large-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_qualcomm.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/qualcomm.svg" alt=""></div>
             <div class="cell auto">
               <strong>Qualcomm</strong>, <small>San Diego, CA</small><br />
               <span class="job-title">Embedded Software Engineer</span><br />
@@ -122,7 +111,7 @@
         <h3>Internships</h3>
         <section class="grid-x grid-padding-x">
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_apple_box.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/apple_box.svg" alt=""></div>
             <div class="cell auto">
               <strong>Apple</strong>, <small>Seattle, WA</small><br />
               <span class="job-title">AIML Resident</span><br />
@@ -130,7 +119,7 @@
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_microsoft.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/microsoft.svg" alt=""></div>
             <div class="cell auto">
               <strong>Microsoft</strong>, <small>Redmond, WA</small><br />
               <span class="job-title">Research Intern</span><br />
@@ -138,7 +127,7 @@
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_google.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/google.svg" alt=""></div>
             <div class="cell auto">
               <strong>Google</strong>, <small>Cambridge, MA</small><br />
               <span class="job-title">Research Intern</span><br />
@@ -146,7 +135,7 @@
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_x.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/x.svg" alt=""></div>
             <div class="cell auto">
               <strong>X</strong>, <small>Mountain View, CA</small><br />
               <span class="job-title">AI Resident</span><br />
@@ -154,7 +143,7 @@
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_spotify.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/spotify.svg" alt=""></div>
             <div class="cell auto">
               <strong>Spotify</strong>, <small>Cambridge, MA</small><br />
               <span class="job-title">Research Scientist Intern</span><br />
@@ -162,7 +151,7 @@
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_amazon.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/amazon.svg" alt=""></div>
             <div class="cell auto">
               <strong>Amazon</strong>, <small>Seattle, WA</small><br />
               <span class="job-title">Applied Scientist Intern</span><br />
@@ -170,7 +159,7 @@
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_qualcomm.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/qualcomm.svg" alt=""></div>
             <div class="cell auto">
               <strong>Qualcomm</strong>, <small>San Diego, CA</small><br />
               <span class="job-title">Software Engineer Intern</span><br />
@@ -178,7 +167,7 @@
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
-            <div class="cell shrink"><img class="logo" src="img/logo_viasat.svg" alt=""></div>
+            <div class="cell shrink"><img class="logo" src="img/logos/viasat.svg" alt=""></div>
             <div class="cell auto">
               <strong>Viasat</strong>, <small>Carlsbad, CA</small><br />
               <span class="job-title">Engineer Intern</span><br />
@@ -242,10 +231,9 @@
           </li>
         </ol>
         <footer>
-          <p>Last updated in Mar. 2026.</p>
+          {% assign last_updated = "index.html" | last_commit_date %}
+          <p>Made with &#9829;&#xFE0E;. {% if last_updated != "" %}Last updated in {{ last_updated }}.{% endif %}</p>
         </footer>
       </div>
     </div>
   </div>
-</body>
-</html>

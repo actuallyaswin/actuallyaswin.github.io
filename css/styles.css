@@ -1,7 +1,23 @@
 :root {
     --accent: #87ae73;
-    --accent-dark: #4a7a35;
+    --accent-dark: #9fcf88;
+    --accent-text: #d8e8cf;
+    --bg: #16181d;
+    --fg: #e8e8e8;
+    --muted: #9aa0a6;
+    --panel-strong: #3a3f4d;
+    --panel-soft: #20232c;
+}
+
+:root[data-theme="light"] {
+    --accent: #87ae73;
+    --accent-dark: #3d6529;
     --accent-text: #1a2d13;
+    --bg: #fefefe;
+    --fg: #0a0a0a;
+    --muted: #556270;
+    --panel-strong: #ccc;
+    --panel-soft: #eee;
 }
 
 * {
@@ -19,10 +35,10 @@ html {
 body {
   margin: 0;
   padding: 0;
-  background: #fefefe;
+  background: var(--bg);
   font-family: 'Lato', sans-serif;
   line-height: 1.5;
-  color: #0a0a0a;
+  color: var(--fg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -328,23 +344,34 @@ h1 {
 
 h2 {
     font-size: 1.4em;
-    background: #ccc;
+    font-weight: bold;
+    margin-top: 1.5em;
+}
+
+h3 {
+    font-weight: bold;
+    font-size: 1.05em;
+    margin-top: 1.5em;
+}
+
+/* CV homepage section headers only (banner style); blog posts use the plain h2/h3 above */
+.column-content h2 {
+    background: var(--panel-strong);
     border-radius: 2px;
     padding: 0.1em 0.5em;
     margin: 0 auto;
 }
 
-h3 {
+.column-content h3 {
     font-weight: 100;
-    font-size: 1em;
-    background: #eee;
+    background: var(--panel-soft);
     border-radius: 2px;
     padding: 0.1em 0.5em;
     margin: 0 auto;
 }
 
 .time {
-    color: slategray;
+    color: var(--muted);
     font-style: italic;
     line-height: inherit;
     font-size: 0.8em;
@@ -400,9 +427,8 @@ section > .grid-x:not(:last-child) {
 }
 
 .emoji > li {
-    padding: 0 1.75em;
-    padding-bottom: 1em;
-    text-indent: -1.75em;
+    position: relative;
+    padding: 0 1.75em 1em 2.3em;
     page-break-inside: avoid;
     break-inside: avoid-column;
 }
@@ -412,35 +438,44 @@ section > .grid-x:not(:last-child) {
 }
 
 .emoji > li::before {
-    display: inline-block;
-    text-align: center;
-    width: 1.75em;
-    transform-origin: top left;
-    transform: scale(1.5);
+    position: absolute;
+    left: 0;
+    top: 0.3em;
+    width: 1.3em;
+    height: 1.3em;
+    content: "";
+    background-color: var(--fg);
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
 }
 
-.emoji > li:nth-child(n+1)::before {
-    content: "\F8FF "; /* apple logo */
+.emoji > li:nth-child(1)::before {
+    -webkit-mask-image: url('../img/icons/apple.svg');
+    mask-image: url('../img/icons/apple.svg');
 }
 
-.emoji > li:nth-child(n+2)::before {
-    content: "\1F468\1F3FD\200D\1F393 "; /* man_student_medium_skin_tone */
+.emoji > li:nth-child(2)::before {
+    -webkit-mask-image: url('../img/icons/graduation-cap.svg');
+    mask-image: url('../img/icons/graduation-cap.svg');
 }
 
-.emoji > li:nth-child(n+3)::before {
-    content: "\1F52C "; /* microscope */
+.emoji > li:nth-child(3)::before {
+    -webkit-mask-image: url('../img/icons/brain-circuit.svg');
+    mask-image: url('../img/icons/brain-circuit.svg');
 }
 
-.emoji > li:nth-child(n+4)::before {
-    content: "\1F468\1F3FD\200D\1F3EB "; /* man_teacher_medium_skin_tone */
+.emoji > li:nth-child(4)::before {
+    -webkit-mask-image: url('../img/icons/presentation.svg');
+    mask-image: url('../img/icons/presentation.svg');
 }
 
-.emoji > li:nth-child(n+5)::before {
-    content: "\1F39B\FE0F "; /* control_knobs */
-}
-
-.emoji > li:nth-child(n+6)::before {
-    content: "\1F3A5 "; /* movie_camera */
+.emoji > li:nth-child(5)::before {
+    -webkit-mask-image: url('../img/icons/turntable.svg');
+    mask-image: url('../img/icons/turntable.svg');
 }
 
 footer {
@@ -528,6 +563,11 @@ footer {
 }
 
 @media print {
+  .masthead,
+  .theme-toggle {
+    display: none;
+  }
+
   body {
     orphans: 3;
     widows: 3;

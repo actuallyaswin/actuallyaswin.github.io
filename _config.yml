@@ -1,9 +1,31 @@
+title: Aswin Sivaraman
+description: >-
+  Aswin Sivaraman — ML Engineer at Apple working on Siri. PhD from Indiana
+  University. Research in speech and music processing.
+url: "https://actuallyaswin.github.io"
+
+permalink: /blog/:title/
+
+plugins:
+  - jekyll-feed
+  - kramdown-math-katex
+
+feed:
+  path: blog/feed.xml
+
+kramdown:
+  math_engine: katex
+  math_engine_opts: {}
+
 # GitHub Pages Configuration
 # This file tells Jekyll which files/folders to exclude from the built site
 
 # Exclude these paths from being built/served on GitHub Pages
 # music_editor/ is a private local-only tool and should not be publicly accessible
+# docs/ holds Claude Code planning artifacts (specs/plans) — not meant to be published
 exclude:
   - music_editor/
   - README.md
+  - blog/README.md
   - .gitignore
+  - docs/
