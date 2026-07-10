@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title | default: site.title }}</title>
+  <meta name="description" content="{{ page.description | default: site.description }}">
+  <link rel="canonical" href="{{ page.url | absolute_url }}">
+  <meta property="og:url" content="{{ page.url | absolute_url }}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{{ page.title | default: site.title }}">
+  <meta property="og:description" content="{{ page.description | default: site.description }}">
+  <meta property="og:image" content="{{ page.og_image | default: 'https://actuallyaswin.github.io/img/og-preview.png' }}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta property="twitter:domain" content="actuallyaswin.github.io">
+  <meta property="twitter:url" content="{{ page.url | absolute_url }}">
+  <meta name="twitter:title" content="{{ page.title | default: site.title }}">
+  <meta name="twitter:description" content="{{ page.description | default: site.description }}">
+  <meta name="twitter:image" content="{{ page.og_image | default: 'https://actuallyaswin.github.io/img/og-preview.png' }}">
+  {% feed_meta %}
+  <link rel="stylesheet" type="text/css" href="{{ '/css/fonts.css' | relative_url }}">
+  <link rel="stylesheet" type="text/css" href="{{ '/css/styles.css' | relative_url }}">
+  <link rel="stylesheet" type="text/css" href="{{ '/css/blog.css' | relative_url }}">
+  <link rel="stylesheet" type="text/css" href="{{ '/css/katex/katex.css' | relative_url }}">
+  <link rel="stylesheet" type="text/css" href="{{ '/css/code.css' | relative_url }}">
+  <style>
+    :root {
+      --num-journals: {{ page.num_journals | default: 0 }};
+      --num-pubs-conf: {{ page.num_pubs_conf | default: 0 }};
+      --num-preprints: {{ page.num_preprints | default: 0 }};
+      --num-workshops: {{ page.num_workshops | default: 0 }};
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <a class="masthead-title" href="{{ '/' | relative_url }}">Aswin Sivaraman</a>
+    <nav class="masthead-nav">
+      <a href="{{ '/' | relative_url }}">Home</a>
+      <a href="{{ '/blog/' | relative_url }}">Blog</a>
+      <a href="{{ '/music/' | relative_url }}">Music</a>
+      <a href="{{ '/blog/feed.xml' | relative_url }}" title="RSS" aria-label="RSS">RSS</a>
+      {% include theme-toggle.html %}
+    </nav>
+  </header>
+  <main>
+    {{ content }}
+  </main>
+  <script src="{{ '/js/theme.js' | relative_url }}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="{{ '/js/mermaid-init.js' | relative_url }}"></script>
+</body>
+</html>

@@ -1,0 +1,308 @@
+/* masthead & nav (shared by CV and blog via _layouts/default.html) */
+
+.masthead {
+  max-width: 75rem;
+  margin: 0 auto;
+  padding: 1em 0.9375rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.masthead-title {
+  font-family: 'Raleway', sans-serif;
+  font-weight: bold;
+  color: var(--fg);
+}
+
+.masthead-title:hover {
+  text-decoration: none;
+  color: var(--accent-dark);
+}
+
+.masthead-nav {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+}
+
+.masthead-nav a {
+  color: var(--muted);
+}
+
+.masthead-nav a:hover {
+  color: var(--accent-dark);
+}
+
+.theme-toggle {
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 1.1em;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+/* blog index & tag pages */
+
+.blog-index {
+  max-width: 42.5rem; /* ~680px reading measure */
+  margin: 2em auto;
+  padding: 0 0.9375rem;
+}
+
+.blog-index-description {
+  color: var(--muted);
+  margin-top: -0.3em;
+  margin-bottom: 1.5em;
+}
+
+.blog-index-empty {
+  color: var(--muted);
+  padding: 1em 0;
+}
+
+.post-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.post-list-item {
+  padding: 0.4em 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5em;
+}
+
+.post-list-item time {
+  color: var(--muted);
+  font-size: 0.85em;
+  min-width: 6em;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+.post-list-title {
+  font-weight: bold;
+  color: var(--fg);
+}
+
+.tag-pill {
+  font-size: 0.75em;
+  color: var(--muted);
+  background: var(--panel-soft);
+  border-radius: 2px;
+  padding: 0.1em 0.5em;
+}
+
+.tag-pill:hover {
+  text-decoration: none;
+  color: var(--accent-dark);
+}
+
+.link-glyph {
+  color: var(--muted);
+}
+
+/* single post */
+
+.post {
+  max-width: 42.5rem;
+  margin: 2em auto;
+  padding: 0 0.9375rem;
+}
+
+.post-title {
+  font-size: 1.8em;
+  text-align: left;
+  margin: 0 0 0.5em 0;
+}
+
+.post-meta {
+  color: var(--muted);
+  font-size: 0.85em;
+  display: flex;
+  gap: 0.75em;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.post-hr {
+  margin: 1.25em 0 1.5em 0;
+  border: none;
+  border-top: 1px solid var(--panel-soft);
+}
+
+.post-content {
+  line-height: 1.6;
+}
+
+.post-content > :first-child {
+  margin-top: 0;
+}
+
+.post-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid var(--panel-soft);
+}
+
+/* recent posts teaser on the cv homepage */
+
+.recent-posts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recent-posts li {
+  padding: 0.25em 0;
+}
+
+.recent-posts time {
+  color: var(--muted);
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+/* figures (captioned via _includes/figure.html, or plain markdown images) */
+
+.post-figure {
+  margin: 1.5em 0;
+  text-align: center;
+}
+
+.post-figure img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
+.post-figure figcaption {
+  margin-top: 0.5em;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.post-content img:not(.post-figure img) {
+  max-width: 100%;
+  border-radius: 4px;
+  display: block;
+  margin: 1.5em auto;
+}
+
+/* redesigned minimal blog index */
+
+.post-list-sep {
+  color: var(--muted);
+}
+
+.tag-browse-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+}
+
+/* product cards (baby gear, gift guides, etc. via _includes/product.html) */
+
+.product-card {
+  display: flex;
+  gap: 1em;
+  align-items: flex-start;
+  margin: 1.5em 0;
+  padding: 1em;
+  border: 1px solid var(--panel-soft);
+  border-radius: 4px;
+}
+
+.product-card-img {
+  width: 5.5em;
+  height: 5.5em;
+  object-fit: contain;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.product-card-body {
+  min-width: 0;
+}
+
+.product-card-name {
+  font-weight: bold;
+  margin: 0 0 0.25em 0;
+}
+
+.product-card-price {
+  color: var(--muted);
+  margin: 0 0 0.5em 0;
+}
+
+.product-card-links {
+  display: flex;
+  gap: 0.5em;
+  margin: 0;
+}
+
+.product-card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  font-size: 0.85em;
+  font-weight: bold;
+  color: #fff;
+  padding: 0.35em 0.8em;
+  border-radius: 999px;
+}
+
+.product-card-link:hover {
+  text-decoration: none;
+  opacity: 0.85;
+}
+
+.product-card-link-icon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+.product-card-link-amazon {
+  background: #ff9900;
+}
+
+.product-card-link-amazon .product-card-link-icon {
+  -webkit-mask-image: url('../img/logos/amazon_pill.svg');
+  mask-image: url('../img/logos/amazon_pill.svg');
+}
+
+.product-card-link-target {
+  background: #cc0000;
+}
+
+.product-card-link-target .product-card-link-icon {
+  -webkit-mask-image: url('../img/logos/target.svg');
+  mask-image: url('../img/logos/target.svg');
+}
+
+/* real embeddable Bandcamp player (_includes/bandcamp-embed.html) */
+
+.bandcamp-embed {
+  margin: 1.5em 0;
+}
+
+.bandcamp-embed-caption {
+  margin-top: 0.5em;
+  font-size: 0.85em;
+  color: var(--muted);
+}

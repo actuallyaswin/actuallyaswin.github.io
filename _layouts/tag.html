@@ -1,0 +1,20 @@
+---
+layout: default
+---
+<div class="blog-index">
+  <h1>#{{ page.tag }}</h1>
+  <section>
+    <ul class="post-list">
+      {% assign tagged = site.tags[page.tag] %}
+      {% for post in tagged %}
+      <li class="post-list-item">
+        <time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%b %-d, %Y" }}</time>
+        <span class="post-list-sep">:</span>
+        <a class="post-list-title" href="{{ post.url | relative_url }}">{{ post.title }}</a>
+      </li>
+      {% else %}
+      <li class="blog-index-empty">No posts yet.</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>

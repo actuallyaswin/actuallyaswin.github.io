@@ -1,0 +1,11 @@
+<div class="product-card">
+  <img class="product-card-img" src="{{ include.src }}" alt="{{ include.name }}">
+  <div class="product-card-body">
+    <p class="product-card-name">{{ include.name }}</p>
+    {% if include.price %}<p class="product-card-price">{{ include.price }}</p>{% endif %}
+    <p class="product-card-links">
+      {% if include.amazon %}<a class="product-card-link product-card-link-amazon" href="{{ include.amazon }}" target="_blank" rel="noopener nofollow"><span class="product-card-link-icon" aria-hidden="true"></span>Amazon</a>{% endif %}
+      {% if include.target %}<a class="product-card-link product-card-link-target" href="{{ include.target }}" target="_blank" rel="noopener nofollow"><span class="product-card-link-icon" aria-hidden="true"></span>Target</a>{% endif %}
+    </p>
+  </div>
+</div>

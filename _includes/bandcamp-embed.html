@@ -1,0 +1,10 @@
+<div class="bandcamp-embed">
+  <iframe
+    style="border: 0; width: 100%; height: {% if include.tracklist %}472px{% else %}120px{% endif %};"
+    src="https://bandcamp.com/EmbeddedPlayer/{% if include.album_id %}album={{ include.album_id }}{% else %}track={{ include.track_id }}{% endif %}/size=large/bgcol=ffffff/linkcol=0687f5{% if include.tracklist %}/tracklist=true{% endif %}/transparent=true/"
+    seamless
+    loading="lazy">
+    <a href="{{ include.link }}">{{ include.title }}</a>
+  </iframe>
+  {% if include.caption %}<p class="bandcamp-embed-caption">{{ include.caption }}</p>{% endif %}
+</div>

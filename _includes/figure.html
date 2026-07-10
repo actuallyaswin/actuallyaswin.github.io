@@ -1,0 +1,6 @@
+<figure class="post-figure">
+  {% if include.link %}<a href="{{ include.link }}" target="_blank" rel="noopener">{% endif %}
+  <img src="{{ include.src }}" alt="{{ include.alt | default: '' }}">
+  {% if include.link %}</a>{% endif %}
+  {% if include.caption %}<figcaption>{{ include.caption }}</figcaption>{% endif %}
+</figure>

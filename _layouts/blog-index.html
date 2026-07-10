@@ -1,0 +1,35 @@
+---
+layout: default
+---
+<div class="blog-index">
+  <h1>{{ page.title | default: "Blog" }}</h1>
+  <section>
+    {% if page.description %}<p class="blog-index-description">{{ page.description }}</p>{% endif %}
+    {% if content and content != "" %}{{ content }}{% endif %}
+    {% if site.posts.size > 0 %}
+    <ul class="post-list">
+      {% for post in site.posts %}
+      <li class="post-list-item">
+        <time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: "%b %-d, %Y" }}</time>
+        <span class="post-list-sep">:</span>
+        <a class="post-list-title" href="{{ post.url | relative_url }}">{{ post.title }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="blog-index-empty">Nothing published yet — check back soon, or <a href="{{ '/blog/feed.xml' | relative_url }}">subscribe via RSS</a> to get notified.</p>
+    {% endif %}
+  </section>
+
+  {% assign tag_entries = site.tags | tags_by_count: site.data.tags %}
+  {% if tag_entries.size > 0 %}
+  <h2>Browse by tag</h2>
+  <section>
+    <ul class="tag-browse-list">
+      {% for entry in tag_entries %}
+        <li><a class="tag-pill" href="{{ '/blog/tag/' | append: entry.name | append: '/' | relative_url }}">#{{ entry.name }} ({{ entry.count }})</a></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
