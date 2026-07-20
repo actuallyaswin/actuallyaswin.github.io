@@ -243,6 +243,73 @@ _FEAT_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Bare/dash-inline feat. clause with no surrounding parentheses at all, e.g.
+# "Song ft. Artist" or "Song - feat. Artist" (common in Last.fm scrobbles,
+# which don't follow Spotify's "(feat. X)" convention). Requires a word
+# boundary before ft./feat. and an immediately-following alphanumeric so
+# "6000 Ft." (a unit, not a feature credit) doesn't false-positive.
+_INLINE_FEAT_RE = re.compile(
+    r'\s*-?\s*\b(?:feat(?:uring)?\.?|ft\.?)\s*(?=[A-Za-z0-9])',
+    re.IGNORECASE,
+)
+
+# A trailing [bracket] tag that's pure clean/explicit-edition noise (this DB
+# tracks one canonical recording, not clean vs. explicit as distinct listens)
+# rather than a genuine attribution/remix credit like "[Deadmeat]" (a real
+# subtitle, e.g. Steve Aoki's "Come With Me (Deadmeat)").
+_NOISE_BRACKET_RE = re.compile(
+    r'\s*[;,]?\s*\[\s*(?:\w+\s+)*?(?:clean|explicit)(?:\s+version|\s+edition)?\s*\]\s*$',
+    re.IGNORECASE,
+)
+
+# A [bracket] group remaining in the head after feat.-clause extraction —
+# real title content (e.g. "Come With Me [Deadmeat]"), not noise. Normalized
+# to parens so the main parser's trailing-paren classification handles it.
+_HEAD_BRACKET_RE = re.compile(r'^(.*?)\s*\[([^\]]+)\]\s*$')
+
+# Indian-cinema scrobble noise: a trailing "(From "Film")" source-attribution
+# group, and/or a trailing bare-language tag like "(Tamil)"/"[TELUGU]". Either
+# can trail the other, so both patterns are applied twice.
+_FROM_FILM_RE = re.compile(r'\s*[\(\[]from\s+["\'].*?["\'][\)\]]', re.IGNORECASE)
+_LANG_TAG_RE = re.compile(
+    r'\s*[\(\[](?:tamil|telugu|hindi|kannada|malayalam)[\)\]]\s*$',
+    re.IGNORECASE,
+)
+
+
+def strip_scrobble_source_noise(title: str) -> str:
+    """Strip Indian-cinema scrobble noise: '(From "Film")' and/or a trailing
+    bare-language tag like '(Tamil)' / '[TELUGU]'. Order-independent — either
+    can trail the other in real scrobble data.
+    """
+    title = _LANG_TAG_RE.sub('', title).strip()
+    title = _FROM_FILM_RE.sub('', title).strip()
+    title = _LANG_TAG_RE.sub('', title).strip()
+    return title
+
+
+def _extract_inline_feat(title: str) -> 'tuple[str, list[str]]':
+    """Convert a bare/dash-inline feat. clause to (head, feat_artists).
+
+    Strips a trailing clean/explicit-edition [bracket] tag first (noise, not
+    content). A [bracket] group still present in the head afterward is real
+    title content and is normalized to parens rather than discarded.
+    """
+    if '(' in title:
+        return title, []
+    stripped = _NOISE_BRACKET_RE.sub('', title).rstrip(' ;,')
+    m = _INLINE_FEAT_RE.search(stripped)
+    if not m:
+        return title, []
+    head = stripped[:m.start()].rstrip(' ;,-').rstrip()
+    tail = stripped[m.end():].strip()
+    if not head or not tail:
+        return title, []
+    bm = _HEAD_BRACKET_RE.match(head)
+    if bm:
+        head = f'{bm.group(1).rstrip()} ({bm.group(2)})'
+    return head, _split_feat_group(tail)
+
 
 def _split_feat_group(group: str) -> List[str]:
     """
@@ -311,6 +378,16 @@ def parse_track_title(title: str) -> TrackParseResult:
     rest = title.strip()
     feat_artists: list[str] = []
     eti_parts:    list[str] = []
+
+    # ------------------------------------------------------------------
+    # Step 0 — Bare/dash-inline feat. clause with no parentheses at all
+    #   "Song ft. Artist"  →  rest="Song", feat_artists=["Artist"]
+    # Common in Last.fm scrobbles; Step 1 below still runs afterward so a
+    # trailing descriptor like "Remix" in "Song - Remix; feat. Artist" is
+    # still correctly classified as ETI, not swallowed into the feat group.
+    # ------------------------------------------------------------------
+    rest, inline_feat = _extract_inline_feat(rest)
+    feat_artists.extend(inline_feat)
 
     # ------------------------------------------------------------------
     # Step 1 — Convert dash-suffix ETI to parentheses first

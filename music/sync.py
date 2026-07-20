@@ -39,6 +39,7 @@ from mdb_strings import (
     normalize_text as _norm,
     ascii_key as _ascii_key,
     parse_track_title as _parse_track_title,
+    strip_scrobble_source_noise as _strip_scrobble_source_noise,
     detect_variant_type as _detect_variant_type,
     _PRIMARY_TYPES, _SECONDARY_TYPES, _EDITION_TYPES,
     extract_mbid as _extract_mbid,
@@ -123,7 +124,7 @@ def _mb_key(title: str) -> str:
     """
     import re as _re
     title = _re.sub(r'\s*\(With [^)]+\)', '', title).strip()
-    title = _re.sub(r'\s*\(from\s+["\'].*?["\']\)', '', title, flags=_re.IGNORECASE).strip()
+    title = _strip_scrobble_source_noise(title)
     r = _parse_track_title(title)
     full = r.clean_title
     if r.feat_artists:

@@ -15,6 +15,7 @@ from mdb_strings import (
     normalize_text,
     normalize_upc,
     parse_track_title as _parse_track_title,
+    strip_scrobble_source_noise as _strip_scrobble_source_noise,
     _should_update_date,
     is_soundtrack_title,
     _base_title,
@@ -1376,7 +1377,7 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         Strips MB '(With X)' collaborator credits — scrobbles never include them."""
         import re as _re
         title = _re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
-        title = _re.sub(r'\s*\(from\s+["\'].*?["\']\)', '', title, flags=_re.IGNORECASE).strip()
+        title = _strip_scrobble_source_noise(title)
         r = _parse_track_title(title)
         full = r.clean_title
         if r.feat_artists:
@@ -1391,7 +1392,7 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         'Suit & Tie featuring JAY Z'."""
         import re as _re
         title = _re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
-        title = _re.sub(r'\s*\(from\s+["\'].*?["\']\)', '', title, flags=_re.IGNORECASE).strip()
+        title = _strip_scrobble_source_noise(title)
         r = _parse_track_title(title)
         return ascii_key(r.clean_title)
 
