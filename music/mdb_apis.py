@@ -110,24 +110,37 @@ class RateLimiter:
 
 
 def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = None,
-              timeout: int = 10) -> bytes:
+              timeout: int = 10, retry_attempts: int = 0, retry_backoff: float = 1.0) -> bytes:
     """Make a GET request and return the raw response bytes.
 
     Centralises urllib boilerplate used across all provider classes.
     Applies the rate limiter before opening the connection (so the limiter
     fires even when the caller caches the result and skips the call).
+
+    retry_attempts retries connection resets / TLS handshake blips (e.g. the
+    sandbox's local proxy occasionally drops the tunnel to a provider
+    mid-handshake) that succeed on a bare retry a moment later. Does not
+    retry HTTP error status codes (404, 429, 5xx) — those need
+    caller-specific handling, not a blind resend.
     """
-    if lim:
-        lim.wait()
-    req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+    for attempt in range(retry_attempts + 1):
+        if lim:
+            lim.wait()
+        try:
+            req = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            if attempt == retry_attempts:
+                raise
+            time.sleep(retry_backoff * (attempt + 1))
 
 
 def _http_get_json(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = None,
-                   timeout: int = 10) -> dict:
+                   timeout: int = 10, retry_attempts: int = 0, retry_backoff: float = 1.0) -> dict:
     """GET + JSON decode."""
-    return json.loads(_http_get(url, headers=headers, lim=lim, timeout=timeout))
+    return json.loads(_http_get(url, headers=headers, lim=lim, timeout=timeout,
+                                 retry_attempts=retry_attempts, retry_backoff=retry_backoff))
 
 
 _mb_lim   = RateLimiter(MB_INTERVAL)
@@ -843,7 +856,8 @@ def compare_releases(*releases: MetadataRelease) -> dict:
 def _mb_get(path: str, params: dict = None) -> dict:
     p = {'fmt': 'json', **(params or {})}
     url = f'{MB_API}{path}?' + urllib.parse.urlencode(p)
-    return _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_mb_lim)
+    return _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_mb_lim,
+                           retry_attempts=2, retry_backoff=1.0)
 
 
 def _mb_get_safe(path: str, params: dict = None) -> 'dict | None':
