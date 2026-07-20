@@ -2458,17 +2458,35 @@ def cmd_enrich_deezer_links(args):
     load_dotenv()
 
     with managed_db(args.db or DB_PATH) as conn:
+        artist_clause  = ''
+        release_clause = ''
+        params: list   = [EL_RELEASE, EL_SVC_DEEZER]
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            # release_artists isn't populated for every release (e.g. direct-SQL
+            # imports), so also match on the primary_artist_id fallback.
+            artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            release_clause = 'AND r.id = ?'
+            params.append(args.release_id)
+
         # Releases without a Deezer external link
-        rows = conn.execute('''
-            SELECT r.id, r.title, r.spotify_id, r.mbid, r.upc
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.spotify_id, r.mbid, r.upc
             FROM   releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
             WHERE  r.hidden = 0
               AND  NOT EXISTS (
                   SELECT 1 FROM external_links el
                   WHERE  el.entity_type = ? AND el.service = ? AND el.entity_id = r.id
               )
+              {artist_clause} {release_clause}
             ORDER BY r.title
-        ''', (EL_RELEASE, EL_SVC_DEEZER)).fetchall()
+        ''', params).fetchall()
 
         queue = rows[args.skip:]
         if args.limit:
