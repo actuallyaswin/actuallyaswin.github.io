@@ -98,7 +98,8 @@ const ViewTop = (() => {
                 else if (sortBy === 'discoveries') orderClause = 'avg_ts DESC';
                 else if (sortBy === 'oldies')      orderClause = 'avg_ts ASC';
                 else                                orderClause = 'total_listens DESC';
-                const yearFilter = releaseYear !== 'all' ? `AND r.release_year = ${parseInt(releaseYear)}` : '';
+                const yearInt = parseInt(releaseYear);
+                const yearFilter = releaseYear !== 'all' && !isNaN(yearInt) ? `AND r.release_year = ${yearInt}` : '';
 
                 return _db.exec(`
                     SELECT
