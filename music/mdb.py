@@ -5063,6 +5063,35 @@ def cmd_stats_refresh(args):
             [(key, json.dumps(value), now) for key, value in cache.items()]
         )
 
+        # ── avg_listen_ts (tracks) ──────────────────────────────────────
+        t0 = time.perf_counter()
+        track_avg_rows = conn.execute('''
+            SELECT l.track_id, CAST(AVG(l.timestamp) AS INTEGER) as avg_ts
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            GROUP BY l.track_id
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE tracks SET avg_listen_ts = ? WHERE id = ?',
+            [(r['avg_ts'], r['track_id']) for r in track_avg_rows]
+        )
+        _vlog('track_avg_ts', track_avg_rows, t0)
+
+        # ── avg_listen_ts (releases) ────────────────────────────────────
+        t0 = time.perf_counter()
+        release_avg_rows = conn.execute('''
+            SELECT t.release_id, CAST(AVG(l.timestamp) AS INTEGER) as avg_ts
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            JOIN releases r ON r.id = t.release_id AND r.hidden = 0
+            GROUP BY t.release_id
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE releases SET avg_listen_ts = ? WHERE id = ?',
+            [(r['avg_ts'], r['release_id']) for r in release_avg_rows]
+        )
+        _vlog('release_avg_ts', release_avg_rows, t0)
+
         # ── Artist year-medal ranking (replaces artist.js's mislabeled
         # "avoids a full cross-artist scan" CTE, which didn't) ───────────
         t0 = time.perf_counter()
