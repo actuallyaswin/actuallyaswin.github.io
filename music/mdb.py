@@ -5065,6 +5065,7 @@ def cmd_stats_refresh(args):
 
         # ── avg_listen_ts (tracks) ──────────────────────────────────────
         t0 = time.perf_counter()
+        conn.execute('UPDATE tracks SET avg_listen_ts = NULL WHERE avg_listen_ts IS NOT NULL')
         track_avg_rows = conn.execute('''
             SELECT l.track_id, CAST(AVG(l.timestamp) AS INTEGER) as avg_ts
             FROM listens l
@@ -5079,6 +5080,7 @@ def cmd_stats_refresh(args):
 
         # ── avg_listen_ts (releases) ────────────────────────────────────
         t0 = time.perf_counter()
+        conn.execute('UPDATE releases SET avg_listen_ts = NULL WHERE avg_listen_ts IS NOT NULL')
         release_avg_rows = conn.execute('''
             SELECT t.release_id, CAST(AVG(l.timestamp) AS INTEGER) as avg_ts
             FROM listens l

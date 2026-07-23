@@ -271,6 +271,7 @@ CREATE TABLE IF NOT EXISTS listens (
     raw_source_id   TEXT,
     source          TEXT NOT NULL DEFAULT 'lastfm'
 );
+CREATE INDEX IF NOT EXISTS idx_listens_track_id ON listens(track_id);
 CREATE TABLE IF NOT EXISTS legacy_track_map (
     lastfm_id    TEXT PRIMARY KEY,
     track_id     TEXT REFERENCES tracks(id),
