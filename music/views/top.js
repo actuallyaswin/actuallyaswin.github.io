@@ -22,10 +22,66 @@ const ViewTop = (() => {
         diamond:  'Diamond — 1,000+ plays',
     };
 
+    function _rangeStartTs() {
+        if (range === 'all') return null;
+        const now = Math.floor(Date.now() / 1000);
+        if (range === 'week')  return now - 7   * 86400;
+        if (range === 'month') return now - 30  * 86400;
+        if (range === 'year')  return now - 365 * 86400;
+        return null;
+    }
+
     // Filled in by later tasks. Each entry: { title, sortOptions, hasRange,
     // hasYearFilter, query(), cardHref(id), buildCardFields(row) }
     const ENTITY_CONFIG = {
-        artists: null,
+        artists: {
+            title: 'Top Artists',
+            sortOptions: [
+                { key: 'listens',     icon: 'headphones', title: 'Sort by listens' },
+                { key: 'minutes',     icon: 'clock',       title: 'Sort by minutes' },
+                { key: 'discoveries', icon: 'sparkles',    title: 'Latest discoveries — artists with newest average listen date' },
+                { key: 'oldies',      icon: 'history',     title: 'Golden oldies — artists with oldest average listen date' },
+            ],
+            hasRange: true,
+            hasYearFilter: false,
+            query() {
+                const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
+                const startTs = isTemporalSort ? null : _rangeStartTs();
+                const tsFilter = startTs ? `AND l.timestamp >= ${startTs}` : '';
+                document.getElementById('rangeControlBlock')?.classList.toggle('controls-dimmed', isTemporalSort);
+
+                let orderClause;
+                if (sortBy === 'minutes')     orderClause = 'total_minutes DESC';
+                else if (sortBy === 'discoveries') orderClause = 'avg_ts DESC';
+                else if (sortBy === 'oldies')      orderClause = 'avg_ts ASC';
+                else                               orderClause = 'total_listens DESC';
+
+                return _db.exec(`
+                    SELECT
+                        a.id, a.name,
+                        COALESCE(a.image_thumb_url, a.image_url) as image_url,
+                        a.cert,
+                        COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as unique_tracks,
+                        COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
+                        CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
+                        CAST(AVG(CASE WHEN t.hidden = 0 THEN l.timestamp END) AS INTEGER) as avg_ts
+                    FROM artists a
+                    LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
+                    LEFT JOIN tracks t ON ta.track_id = t.id
+                    LEFT JOIN listens l ON t.id = l.track_id ${tsFilter}
+                    WHERE a.hidden = 0
+                    GROUP BY a.id
+                    HAVING total_listens > 0
+                    ORDER BY ${orderClause}
+                    LIMIT 100
+                `)[0];
+            },
+            cardHref: id => `?view=artist&id=${encodeURIComponent(id)}`,
+            buildCardFields(row) {
+                const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes, avgTs] = row;
+                return { id, name, imageUrl, cert, meta2: uniqueTracks, totalListens, totalMinutes, avgTs, label: name };
+            },
+        },
         albums:  null,
         tracks:  null,
     };
@@ -183,19 +239,86 @@ const ViewTop = (() => {
     }
 
     function _load() {
-        // Later tasks fill in per-entity query execution here.
-        cachedResults = [];
+        const result = ENTITY_CONFIG[entityType].query();
+        cachedResults = result ? result.values.map(ENTITY_CONFIG[entityType].buildCardFields) : [];
+        if (_scrollEl) _scrollEl.scrollTop = 0;  // no-op until a later task defines _scrollEl for tracks
         _render();
     }
 
     function _render() {
-        // Later tasks fill in real rendering; another later task adds collage.
-        const el = document.getElementById('topContainer');
-        if (el) el.innerHTML = '<div class="loading">Not yet implemented</div>';
+        if (viewMode === 'collage') return _renderCollage();   // a later task
+        if (entityType === 'tracks' && viewMode === 'list') return _renderTrackList();  // a later task
+        return _renderListOrTiles();
+    }
+
+    function _renderListOrTiles() {
+        const container = document.getElementById('topContainer');
+        if (!container) return;
+        container.innerHTML = '';
+        container.style.gridTemplateColumns = '';
+
+        if (cachedResults.length === 0) {
+            container.className = 'image-grid';
+            container.innerHTML = `<div class="loading">No ${entityType} found</div>`;
+            return;
+        }
+
+        const cfg = ENTITY_CONFIG[entityType];
+        const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
+
+        if (viewMode === 'list') {
+            container.className = 'wide-grid';
+            cachedResults.forEach((f, i) => {
+                let meta;
+                if (isTemporalSort && f.avgTs) {
+                    const d = new Date(f.avgTs * 1000);
+                    meta = `avg. ${d.toLocaleString('en-US', { month: 'short', year: 'numeric' })}`;
+                } else {
+                    meta = f.meta || (f.meta2 != null ? `${formatNumber(f.meta2)} tracks` : '');
+                }
+                const card = createWideCard({
+                    href: cfg.cardHref(f.id),
+                    imageUrl: f.imageUrl,
+                    name: f.name || f.title,
+                    meta,
+                    totalListens: f.totalListens,
+                    totalMinutes: f.totalMinutes,
+                    rounded: entityType === 'artists',
+                    cert: f.cert || null,
+                });
+                if (i >= countLimit) card.style.display = 'none';
+                container.appendChild(card);
+            });
+        } else {
+            container.className = 'image-grid';
+            cachedResults.forEach((f, i) => {
+                const card = document.createElement('a');
+                card.className = 'image-card';
+                card.href = cfg.cardHref(f.id);
+                const imgSrc = f.imageUrl || getFallbackImageUrl();
+                card.innerHTML = `
+                    <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
+                    <div class="image-card-overlay">
+                        <div class="image-card-name">${escapeHtml(f.name || f.title || '')}</div>
+                        ${f.artistName ? `<div class="image-card-artist">${escapeHtml(f.artistName)}</div>` : ''}
+                        <div class="image-card-stats">
+                            <span class="stat-item"><i data-lucide="headphones" style="width:14px;height:14px;"></i>${formatNumber(f.totalListens)}</span>
+                            <span class="stat-item"><i data-lucide="clock" style="width:14px;height:14px;"></i>${formatNumber(f.totalMinutes)} min</span>
+                        </div>
+                    </div>`;
+                if (i >= countLimit) card.style.display = 'none';
+                container.appendChild(card);
+            });
+        }
+        lucide.createIcons();
     }
 
     function _applyCount() {
-        // Mirrors existing top-artists.js/top-albums.js applyCount() — filled in fully once _render() is real (a later task).
+        const container = document.getElementById('topContainer');
+        if (!container) return;
+        Array.from(container.children).forEach((el, i) => {
+            el.style.display = i < countLimit ? '' : 'none';
+        });
     }
 
     return { mount, unmount };
