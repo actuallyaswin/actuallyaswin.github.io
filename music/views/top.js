@@ -317,6 +317,15 @@ const ViewTop = (() => {
                     <select id="customRows">${Array.from({length:10},(_,i)=>i+1).map(n=>`<option value="${n}">${n}</option>`).join('')}</select>
                     <select id="customCols">${Array.from({length:10},(_,i)=>i+1).map(n=>`<option value="${n}">${n}</option>`).join('')}</select>
                 </div>
+            </div>
+            <div class="control-block">
+                <span class="control-block-label">Export</span>
+                <div class="sort-controls" style="gap:0.5rem;align-items:center">
+                    <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.8rem;cursor:pointer">
+                        <input type="checkbox" id="collageShowLabels"> Show labels
+                    </label>
+                    <button class="sort-btn" id="collageDownloadBtn" title="Download Image"><i data-lucide="download"></i></button>
+                </div>
             </div>`;
     }
 
@@ -394,6 +403,28 @@ const ViewTop = (() => {
         document.querySelector('[data-grid-custom]')?.addEventListener('click', () => {
             const block = document.getElementById('customGridBlock');
             if (block) block.style.display = block.style.display === 'none' ? '' : 'none';
+        });
+
+        document.getElementById('collageDownloadBtn')?.addEventListener('click', async e => {
+            const btn = e.currentTarget;
+            const showLabels = document.getElementById('collageShowLabels')?.checked || false;
+            const cells = cachedResults.slice(0, gridShape.rows * gridShape.cols).map(f => ({
+                imageUrl: f.imageUrl || getFallbackImageUrl(),
+                label: f.label || f.name || f.title || '',
+            }));
+            btn.disabled = true;
+            btn.innerHTML = '<i data-lucide="loader-2" class="spin"></i>';
+            lucide.createIcons({ root: btn });
+            try {
+                await CollageExport.exportCollage({
+                    rows: gridShape.rows, cols: gridShape.cols, cells, showLabels,
+                    filenamePrefix: `top-${entityType}`,
+                });
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i data-lucide="download"></i>';
+                lucide.createIcons({ root: btn });
+            }
         });
     }
 
