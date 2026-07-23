@@ -7,7 +7,7 @@ Consolidated import and enrichment tool for master.sqlite.
 Usage:
   mdb import  <album…|file>               Import Spotify album(s) + MB + AOTY + Wikipedia
   mdb enrich  aoty  [options]             Scrape AOTY for genres, dates, and types
-  mdb enrich  art   [options]             Fill in missing album art (CAA → Spotify → manual)
+  mdb enrich  art   [options]             Fill in missing album art (Apple Music → Spotify → manual)
   mdb enrich  dates [options]             Look up release dates via Wikipedia + MusicBrainz
   mdb enrich  tracks [options]            Fetch track MBIDs from MusicBrainz
   mdb enrich  soundtracks [options]       Tag soundtrack releases with source type, region, and language
@@ -28,9 +28,11 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -79,6 +81,9 @@ from mdb_apis import (
     MB_API, MB_UA, SP_TOKEN,
     AOTY_AHEAD, DATES_AHEAD,
     caa_fetch_front_image_url,
+    itunes_fetch_artwork_url,
+    itunes_lookup_by_upc,
+    apple_music_fetch_editorial_note,
     _mb_get, _mb_get_safe,
     mb_find_release, mb_fetch_recording_ids, mb_fetch_artist_data,
     mb_fetch_release_group_releases,
@@ -1860,20 +1865,99 @@ def cmd_discography(args):
 
 # ── cmd: enrich art ──────────────────────────────────────────────────────────
 
+def _chafa_available() -> bool:
+    return shutil.which('chafa') is not None
+
+
+def _preview_art(url: str, label: str) -> None:
+    """Print a labeled URL and, if chafa is installed, render the image
+    inline in the terminal below it. Never raises — a failed download or
+    render just falls back to the printed label + URL."""
+    console.print(f'  [bold]{label}[/bold]  [dim]{url[:80]}[/dim]')
+    if not _chafa_available():
+        return
+    tmp_path = None
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'actuallyaswin-music/1.0'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+        suffix = os.path.splitext(urllib.parse.urlparse(url).path)[1] or '.jpg'
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            f.write(data)
+            tmp_path = f.name
+        subprocess.run(
+            ['chafa', '--size', '50x', '-c', '240', '--color-space', 'rgb', '-w', '1', tmp_path],
+            check=False,
+        )
+    except Exception as e:
+        console.print(f'  [dim yellow](preview failed: {e})[/dim yellow]')
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _fetch_art_candidates(apple_music_id: 'str | None', spotify_id: 'str | None',
+                          get_sp_client) -> dict:
+    """Fetch Apple Music + Spotify art candidates concurrently (one thread
+    per provider — this is what actually parallelizes the pipeline; a
+    release with both IDs no longer pays for two sequential round trips).
+    Returns {'apple_music': url_or_None, 'spotify': url_or_None}."""
+    def _sp_fetch():
+        client = get_sp_client()
+        if not client:
+            return None
+        album  = client.get_album(spotify_id)
+        images = album.get('images') or []
+        return max(images, key=lambda x: (x.get('width') or 0))['url'] if images else None
+
+    tasks = {}
+    if apple_music_id:
+        tasks['apple_music'] = lambda: itunes_fetch_artwork_url(apple_music_id)
+    if spotify_id:
+        tasks['spotify'] = _sp_fetch
+
+    results = {}
+    if not tasks:
+        return results
+    with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
+        futures = {ex.submit(fn): source for source, fn in tasks.items()}
+        for fut in futures:
+            source = futures[fut]
+            try:
+                results[source] = fut.result()
+            except Exception as e:
+                console.print(f'  [yellow]{source} error:[/yellow] {e}')
+                results[source] = None
+    return results
+
+
+# ── cmd: enrich art ──────────────────────────────────────────────────────────
+
 def cmd_enrich_art(args):
     """Fill in missing album art, or interactively replace existing art.
 
-    Auto mode (default): tries Cover Art Archive then Spotify for each release
-    with no album_art_url; auto-applies the first found URL without prompting.
+    Auto mode (default): tries Apple Music then Spotify for each release
+    with no album_art_url (fetched concurrently, not sequentially);
+    auto-applies the first found URL without prompting.
 
-    Interactive mode (--interactive): for every release in the queue, displays
-    found URLs and prompts for confirmation or a custom URL.  Useful for
+    Interactive mode (--interactive): for every release in the queue,
+    previews each found candidate inline via chafa (if installed) and
+    prompts for a choice, confirmation, or a custom URL. Useful for
     reviewing and replacing art on already-populated releases (combine with
     --overwrite or --release-id).
     """
     load_dotenv()
     cid = os.environ.get('SPOTIFY_CLIENT_ID')
     csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+
+    if args.interactive and not _chafa_available():
+        console.print(
+            '[dim yellow]chafa not found on PATH — previews will be text-only '
+            '(brew install chafa for inline image rendering)[/dim yellow]\n'
+        )
 
     updated = skipped = 0
     try:
@@ -1899,7 +1983,7 @@ def cmd_enrich_art(args):
 
             rows = conn.execute(f'''
                 SELECT DISTINCT r.id, r.title, r.release_year, r.mbid, r.spotify_id,
-                       r.album_art_url, a.name AS artist_name
+                       r.apple_music_id, r.album_art_url, a.name AS artist_name
                 FROM releases r
                 LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
                 LEFT JOIN artists a ON ra.artist_id = a.id
@@ -1929,40 +2013,29 @@ def cmd_enrich_art(args):
             now = int(time.time())
 
             for i, row in enumerate(queue):
-                release_id  = row['id']
-                title       = row['title']
-                year        = row['release_year'] or '?'
-                mbid        = row['mbid']
-                spotify_id  = row['spotify_id']
-                artist_name = row['artist_name'] or ''
-                current_url = row['album_art_url']
+                release_id     = row['id']
+                title          = row['title']
+                year           = row['release_year'] or '?'
+                spotify_id     = row['spotify_id']
+                apple_music_id = row['apple_music_id']
+                artist_name    = row['artist_name'] or ''
+                current_url    = row['album_art_url']
 
                 prefix = f'[dim][{i+1}/{len(queue)}][/dim]  '
                 console.print(f'{prefix}[bold]{_trunc(title, 40)}[/bold]  [dim]{artist_name} · {year}[/dim]')
 
-                # ── Fetch candidates ───────────────────────────────────────────
-                caa_url = sp_url = None
+                # ── Fetch candidates (Apple Music + Spotify concurrently) ──────
+                if apple_music_id or spotify_id:
+                    with console.status('  [dim]fetching art…[/dim]', spinner='dots'):
+                        candidates = _fetch_art_candidates(apple_music_id, spotify_id, _get_sp)
+                else:
+                    candidates = {}
+                am_url = candidates.get('apple_music')
+                sp_url = candidates.get('spotify')
 
-                if mbid:
-                    try:
-                        caa_url = caa_fetch_front_image_url(mbid)
-                    except Exception as e:
-                        console.print(f'  [yellow]CAA error:[/yellow] {e}')
-
-                if spotify_id:
-                    try:
-                        client = _get_sp()
-                        if client:
-                            album  = client.get_album(spotify_id)
-                            images = album.get('images') or []
-                            if images:
-                                sp_url = max(images, key=lambda x: (x.get('width') or 0))['url']
-                    except Exception as e:
-                        console.print(f'  [yellow]Spotify error:[/yellow] {e}')
-
-                # CAA preferred over Spotify
-                auto_url    = caa_url or sp_url
-                auto_source = ('musicbrainz' if caa_url else 'spotify') if auto_url else None
+                # Apple Music preferred over Spotify
+                auto_url    = am_url or sp_url
+                auto_source = ('apple_music' if am_url else 'spotify') if auto_url else None
 
                 if not args.interactive:
                     # ── Auto mode ──────────────────────────────────────────────
@@ -1978,44 +2051,43 @@ def cmd_enrich_art(args):
                         console.print('  [dim]no art found[/dim]')
                         skipped += 1
                 else:
-                    # ── Interactive mode ───────────────────────────────────────
-                    if caa_url:
-                        console.print(f'  [dim]CAA:[/dim]     {caa_url[:70]}')
-                    if sp_url:
-                        console.print(f'  [dim]Spotify:[/dim] {sp_url[:70]}')
+                    # ── Interactive mode: sequential preview walk-through ───────
+                    ordered = [('apple_music', am_url), ('spotify', sp_url)]
+                    ordered = [(src, url) for src, url in ordered if url]
                     if current_url:
                         console.print(f'  [dim]current:[/dim] {current_url[:70]}')
-                    if not caa_url and not sp_url:
-                        console.print('  [dim]no art sources found[/dim]')
-
-                    # Build keys based on what's available
-                    both    = caa_url and sp_url
-                    hint    = '[a] CAA  [b] Spotify' if both else '[a] accept' if auto_url else ''
-                    prompt  = '  ' + ('  '.join(filter(None, [hint, '[u]rl', '[s]kip', '[q]uit']))) + ': '
 
                     chosen_url = chosen_source = None
-                    while True:
+                    if not ordered:
+                        console.print('  [dim]no art sources found[/dim]')
+                        skipped += 1
+
+                    idx = 0
+                    while idx < len(ordered):
+                        src, url = ordered[idx]
+                        label = f'[{idx+1}/{len(ordered)}]  {src}'
+                        _preview_art(url, label)
+
+                        nxt_hint = '  [n]ext' if idx + 1 < len(ordered) else ''
+                        prompt = (f'  [p]ick this{nxt_hint}  [u]rl  [s]kip  [q]uit: ')
                         try:
-                            raw = input(prompt).strip()
+                            raw = input(prompt).strip().lower()
                         except EOFError:
                             raw = 'q'
 
-                        lo = raw.lower()
-                        if lo == 'q':
+                        if raw == 'q':
                             return
-                        elif lo in ('s', ''):
+                        elif raw == 'p':
+                            chosen_url, chosen_source = url, src
+                            break
+                        elif raw == 'n' and idx + 1 < len(ordered):
+                            idx += 1
+                            continue
+                        elif raw in ('s', ''):
                             skipped += 1
                             break
-                        elif lo == 'a' and auto_url:
-                            chosen_url    = caa_url if caa_url else sp_url
-                            chosen_source = 'musicbrainz' if caa_url else 'spotify'
-                            break
-                        elif lo == 'b' and sp_url:
-                            chosen_url, chosen_source = sp_url, 'spotify'
-                            break
-                        elif lo == 'u' or raw.startswith('http') or raw.startswith('spotify:'):
-                            url_in = raw if (raw.startswith('http') or raw.startswith('spotify:')) else input('  URL: ').strip()
-                            # Detect Spotify album URL/URI → resolve to actual image
+                        elif raw == 'u':
+                            url_in = input('  URL: ').strip()
                             sp_id = extract_spotify_id(url_in) if 'spotify' in url_in.lower() else None
                             if sp_id:
                                 try:
@@ -2034,7 +2106,6 @@ def cmd_enrich_art(args):
                                 except Exception as e:
                                     console.print(f'  [yellow]Spotify error:[/yellow] {e}')
                             elif url_in.startswith('http'):
-                                # Validate the URL resolves to an image via HEAD request
                                 try:
                                     req = urllib.request.Request(
                                         url_in, method='HEAD',
@@ -2551,17 +2622,31 @@ def cmd_enrich_deezer_links(args):
                 skipped += 1
                 continue
 
-            # Deezer UPC lookup
+            # Deezer UPC lookup — Deezer's own catalog/lookup uses unpadded
+            # UPC-A (12 digits), while we store EAN-13 (zero-padded to 13).
+            # Try the stored form first, then the unpadded form if that
+            # 404s — a leading-zero mismatch alone caused most "not on
+            # Deezer" results to be false negatives.
             try:
                 import json as _json
                 import urllib.request as _urlreq
-                req = _urlreq.Request(
-                    f'https://api.deezer.com/album/upc:{upc}',
-                    headers={'User-Agent': 'mdb/1.0'},
-                )
-                with _urlreq.urlopen(req, timeout=8) as resp:
-                    data = _json.loads(resp.read())
-                if data.get('id') and not data.get('error'):
+
+                candidates = [upc]
+                if len(upc) == 13 and upc[0] == '0':
+                    candidates.append(upc[1:])
+
+                data = None
+                for candidate in candidates:
+                    req = _urlreq.Request(
+                        f'https://api.deezer.com/album/upc:{candidate}',
+                        headers={'User-Agent': 'mdb/1.0'},
+                    )
+                    with _urlreq.urlopen(req, timeout=8) as resp:
+                        data = _json.loads(resp.read())
+                    if data.get('id') and not data.get('error'):
+                        break
+
+                if data and data.get('id') and not data.get('error'):
                     dz_id = str(data['id'])
                     upsert_external_link(conn, EL_RELEASE, rel_id, EL_SVC_DEEZER, dz_id)
                     conn.commit()
@@ -2569,6 +2654,173 @@ def cmd_enrich_deezer_links(args):
                     found += 1
                 else:
                     console.print(f'  [dim]–  {title}  (not on Deezer)[/dim]')
+                    skipped += 1
+            except Exception as e:
+                console.print(f'  [red]✗[/red]  {title}  [dim]{e}[/dim]')
+                errors += 1
+
+        console.rule(style='dim')
+        console.print(f'  [dim]Found: {found} · No UPC/match: {skipped} · Errors: {errors}[/dim]')
+
+
+def cmd_enrich_descriptions(args):
+    """Backfill editorial 'About this Album' blurbs scraped from Apple
+    Music's web player for releases that have an apple_music_id but no
+    editorial_note yet. Most albums don't have one — that's expected."""
+    with managed_db(args.db or DB_PATH) as conn:
+        where = 'WHERE r.hidden = 0 AND r.apple_music_id IS NOT NULL'
+        params: list = []
+        if not args.force:
+            where += " AND (r.editorial_note IS NULL OR r.editorial_note = '')"
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            where += ' AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            where += ' AND r.id = ?'
+            params.append(args.release_id)
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.apple_music_id
+            FROM releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            {where}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        queue = rows[args.skip:]
+        if args.limit:
+            queue = queue[:args.limit]
+
+        console.print(f'[dim]{len(rows)} releases without an editorial note, processing {len(queue)}[/dim]\n')
+
+        found = skipped = errors = 0
+        for r in queue:
+            try:
+                note = apple_music_fetch_editorial_note(r['apple_music_id'])
+                if note:
+                    conn.execute('UPDATE releases SET editorial_note=? WHERE id=?', (note, r['id']))
+                    conn.commit()
+                    console.print(f'  [green]✓[/green]  {r["title"]}  [dim]({len(note)} chars)[/dim]')
+                    found += 1
+                else:
+                    console.print(f'  [dim]–  {r["title"]}  (no editorial note)[/dim]')
+                    skipped += 1
+            except Exception as e:
+                console.print(f'  [red]✗[/red]  {r["title"]}  [dim]{e}[/dim]')
+                errors += 1
+
+        console.rule(style='dim')
+        console.print(f'  [dim]Found: {found} · No note: {skipped} · Errors: {errors}[/dim]')
+
+
+def cmd_enrich_apple_links(args):
+    """Backfill Apple Music IDs for releases that have a UPC but no apple_music_id.
+
+    UPC is re-fetched from Spotify (batch 50/call) or MusicBrainz (barcode field),
+    same as deezer-links. Unlike Deezer, iTunes matches on padded or unpadded UPC.
+    """
+    load_dotenv()
+
+    with managed_db(args.db or DB_PATH) as conn:
+        artist_clause  = ''
+        release_clause = ''
+        params: list   = []
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            release_clause = 'AND r.id = ?'
+            params.append(args.release_id)
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.spotify_id, r.mbid, r.upc
+            FROM   releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            WHERE  r.hidden = 0
+              AND  r.apple_music_id IS NULL
+              {artist_clause} {release_clause}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        queue = rows[args.skip:]
+        if args.limit:
+            queue = queue[:args.limit]
+
+        console.print(f'[dim]{len(rows)} releases without Apple Music ID, processing {len(queue)}[/dim]\n')
+
+        # ── Phase 1: batch-fetch UPCs from Spotify (for rows where upc IS NULL) ─
+        sp_upc: dict[str, str] = {}
+        sp_rows = [(r['id'], r['spotify_id']) for r in queue
+                   if r['spotify_id'] and not r['upc']]
+        if sp_rows:
+            cid = os.environ.get('SPOTIFY_CLIENT_ID', '')
+            csc = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
+            if cid and csc:
+                client = SpotifyClient(cid, csc)
+                for chunk_start in range(0, len(sp_rows), 50):
+                    chunk = sp_rows[chunk_start:chunk_start + 50]
+                    ids   = [sid for _, sid in chunk]
+                    try:
+                        data   = client.get(f'/albums?ids={",".join(ids)}')
+                        albums = data.get('albums') or []
+                        for (rel_id, _), album in zip(chunk, albums):
+                            if not album:
+                                continue
+                            upc = (album.get('external_ids') or {}).get('upc')
+                            if upc:
+                                from mdb_strings import normalize_upc as _nupc
+                                n = _nupc(upc)
+                                if n:
+                                    sp_upc[rel_id] = n
+                                    conn.execute('UPDATE releases SET upc=? WHERE id=? AND upc IS NULL',
+                                                 (n, rel_id))
+                    except Exception as e:
+                        console.print(f'  [dim yellow]Spotify batch {chunk_start//50+1} failed: {e}[/dim yellow]')
+            else:
+                console.print('  [dim yellow]No Spotify credentials — skipping Spotify UPC fetch[/dim yellow]')
+
+        # ── Phase 2: per-release MB barcode fallback + iTunes UPC lookup ─────
+        found = skipped = errors = 0
+        for r in queue:
+            rel_id = r['id']
+            title  = r['title']
+
+            upc = r['upc'] or sp_upc.get(rel_id)
+
+            if not upc and r['mbid']:
+                try:
+                    from mdb_apis import _mb_get
+                    data    = _mb_get(f'/release/{r["mbid"]}', {'inc': ''})
+                    barcode = (data.get('barcode') or '').strip()
+                    if barcode:
+                        from mdb_strings import normalize_upc as _nupc
+                        upc = _nupc(barcode) or None
+                        if upc:
+                            conn.execute('UPDATE releases SET upc=? WHERE id=?', (upc, rel_id))
+                except Exception:
+                    pass
+
+            if not upc:
+                skipped += 1
+                continue
+
+            try:
+                am_id = itunes_lookup_by_upc(upc)
+                if am_id:
+                    conn.execute('UPDATE releases SET apple_music_id=? WHERE id=?', (am_id, rel_id))
+                    conn.commit()
+                    console.print(f'  [green]✓[/green]  {title}  [dim]→ apple:{am_id}[/dim]')
+                    found += 1
+                else:
+                    console.print(f'  [dim]–  {title}  (not on Apple Music)[/dim]')
                     skipped += 1
             except Exception as e:
                 console.print(f'  [red]✗[/red]  {title}  [dim]{e}[/dim]')
@@ -2907,6 +3159,7 @@ def cmd_enrich_artists(args):
                     skipped += 1
                     continue
                 wiki_url = data.pop('wikipedia_url', None)
+                members  = data.pop('members', None)
                 updates = {col: data[key] for key, col in _MB_COL_MAP.items() if key in data}
                 if wiki_url:
                     upsert_external_link(conn, EL_ARTIST, artist['id'], EL_SVC_WIKIPEDIA, wiki_url)
@@ -2915,6 +3168,26 @@ def cmd_enrich_artists(args):
                 set_clause = ', '.join(f'{k} = ?' for k in updates)
                 conn.execute(f'UPDATE artists SET {set_clause} WHERE id = ?',
                              (*updates.values(), artist['id']))
+
+                members_added = 0
+                if members:
+                    cur_max = conn.execute(
+                        'SELECT COALESCE(MAX(sort_order), -1) FROM artist_members WHERE group_artist_id = ?',
+                        (artist['id'],)
+                    ).fetchone()[0]
+                    for i, m in enumerate(members):
+                        if m['ended']:
+                            continue  # only link current members automatically
+                        member_id, _ = upsert_artist_mb(conn.cursor(), {'id': m['mbid'], 'name': m['name']})
+                        try:
+                            conn.execute(
+                                'INSERT INTO artist_members (group_artist_id, member_artist_id, sort_order) '
+                                'VALUES (?, ?, ?)',
+                                (artist['id'], member_id, cur_max + 1 + i)
+                            )
+                            members_added += 1
+                        except sqlite3.IntegrityError:
+                            pass  # already linked
                 conn.commit()
                 parts = []
                 if 'type'           in updates: parts.append(updates['type'])
@@ -2923,6 +3196,7 @@ def cmd_enrich_artists(args):
                 if 'formed_year'    in updates: parts.append(str(updates['formed_year']))
                 if 'disbanded_year' in updates: parts.append(f'–{updates["disbanded_year"]}')
                 if wiki_url:                    parts.append(f'[link={wiki_url}]wikipedia[/link]')
+                if members_added:               parts.append(f'{members_added} member(s)')
                 console.print(f'  [green]✓[/green]  {artist["name"]:<30}  [dim]{" · ".join(parts)}[/dim]')
                 updated += 1
 
@@ -4305,12 +4579,20 @@ def _blend_genres(
 def cmd_certs_refresh(args):
     """Recompute cert tiers for all artists based on all-time listen counts."""
     with managed_db(args.db or DB_PATH) as conn:
+        # Counts main-artist plays via track_artists (per-track credit), not
+        # release_artists (per-release credit) — an artist can be the main
+        # credit on individual tracks (remixes, compilation cuts, features)
+        # within a release primarily credited to someone else. Every other
+        # view (top-artists.js, stats.js, artist.js) already counts this way;
+        # release_artists undercounted artists like The Bloody Beetroots
+        # (625 track-level plays vs. 447 release-level), misclassifying them
+        # a tier low.
         rows = conn.execute('''
             SELECT a.id, a.name, COUNT(l.id) AS total
             FROM   artists a
-            JOIN   release_artists ra ON ra.artist_id = a.id AND ra.role = 'main'
-            JOIN   tracks t           ON t.release_id = ra.release_id AND (t.hidden IS NULL OR t.hidden = 0)
-            JOIN   listens l          ON l.track_id = t.id
+            JOIN   track_artists ta ON ta.artist_id = a.id AND ta.role = 'main'
+            JOIN   tracks t         ON t.id = ta.track_id AND (t.hidden IS NULL OR t.hidden = 0)
+            JOIN   listens l        ON l.track_id = t.id
             WHERE  (a.hidden IS NULL OR a.hidden = 0)
             GROUP  BY a.id
         ''').fetchall()
@@ -4348,6 +4630,475 @@ def cmd_certs_refresh(args):
         n = tier_counts.get(tier, 0)
         if n:
             console.print(f'  {tier:10s}  {n}')
+
+
+# ── cmd: stats refresh ───────────────────────────────────────────────────────
+# Precomputes everything music/views/stats.js needs into `stats_cache`, plus
+# the per-artist year-medal ranking artist.js needs into `artist_year_medals`.
+# stats.js was previously running ~20 live aggregate queries (several full
+# table scans) on every page load — ~12s of blocked JS/WASM time by HAR
+# measurement. This turns that into flat SELECTs against pre-baked rows.
+# Every SQL query here is a direct port of the matching stats.js section —
+# keep them in sync if a section's logic changes.
+
+def _drill_artists(conn, extra_where, params=()):
+    rows = conn.execute(f'''
+        SELECT a.id, a.name, COALESCE(a.image_thumb_url, a.image_url) as image_url,
+               COUNT(l.id) as total_listens
+        FROM artists a
+        JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
+        JOIN tracks t ON ta.track_id = t.id AND t.hidden = 0
+        JOIN listens l ON t.id = l.track_id
+        WHERE a.hidden = 0 {extra_where}
+        GROUP BY a.id
+        ORDER BY total_listens DESC
+        LIMIT 4
+    ''', params).fetchall()
+    return [[r['id'], r['name'], r['image_url'], r['total_listens']] for r in rows]
+
+
+def _drill_albums(conn, extra_where, params=()):
+    rows = conn.execute(f'''
+        SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
+               COUNT(l.id) as total_listens
+        FROM releases r
+        JOIN tracks t ON t.release_id = r.id AND t.hidden = 0
+        JOIN listens l ON l.track_id = t.id
+        LEFT JOIN artists a ON a.id = r.primary_artist_id
+        WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) {extra_where}
+        GROUP BY r.id
+        ORDER BY total_listens DESC
+        LIMIT 4
+    ''', params).fetchall()
+    return [[r['id'], r['title'], r['art_url'], r['total_listens']] for r in rows]
+
+
+def _drill(conn, kind, extra_where, params, n):
+    """Skip the query entirely for a zero-listen row — trivially no top-4."""
+    if not n:
+        return []
+    return _drill_artists(conn, extra_where, params) if kind == 'artist' \
+        else _drill_albums(conn, extra_where, params)
+
+
+def _breakdown_section(conn, rows, kind, where_fn):
+    """rows: [(group_value, label, n), ...]. Returns the enriched list of
+    {label, n, drill: [...]} dicts stats.js's _breakdownRows/_coloredRows
+    expect, computing each row's drill-down eagerly."""
+    return [
+        {'label': label, 'n': n, 'drill': _drill(conn, kind, *where_fn(group_value), n)}
+        for group_value, label, n in rows
+    ]
+
+
+def cmd_stats_refresh(args):
+    """Precompute every stats.js section + artist.js's year-medal ranking."""
+    verbose = getattr(args, 'verbose', False)
+
+    def _vlog(label, value, t0):
+        if not verbose:
+            return
+        n = len(value) if isinstance(value, list) else 1
+        console.print(f'  [dim]✓[/dim] {label:<14} {n:>5}   [dim]{time.perf_counter() - t0:.2f}s[/dim]')
+
+    t_total = time.perf_counter()
+    with managed_db(args.db or DB_PATH) as conn:
+        cache = {}
+        if verbose:
+            console.print('[bold]Refreshing stats cache...[/bold]')
+
+        # ── Language Breakdown ───────────────────────────────────────────
+        t0 = time.perf_counter()
+        lang_rows = conn.execute('''
+            SELECT t.language, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            WHERE t.language IS NOT NULL
+            GROUP BY t.language ORDER BY n DESC LIMIT 12
+        ''').fetchall()
+        cache['language'] = _breakdown_section(
+            conn, [(r['language'], r['language'] or '?', r['n']) for r in lang_rows],
+            'release', lambda lang: (' AND t.language = ?', (lang,)))
+        _vlog('language', cache['language'], t0)
+
+        # ── Artist Gender ─────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        gender_labels = {'Male': 'Male', 'Female': 'Female', 'Non-binary': 'Non-binary', 'Other': 'Other'}
+        gender_rows = conn.execute('''
+            SELECT a.gender, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+            JOIN artists a ON a.id = ta.artist_id
+            WHERE a.type = 'Person'
+            GROUP BY a.gender ORDER BY n DESC
+        ''').fetchall()
+        cache['gender'] = _breakdown_section(
+            conn, [(r['gender'], gender_labels.get(r['gender'], 'Unknown'), r['n']) for r in gender_rows],
+            'artist', lambda g: (" AND a.type = 'Person' AND a.gender = ?", (g,)))
+        _vlog('gender', cache['gender'], t0)
+
+        # ── Artist Type ───────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        artist_types = ['Person', 'Group', 'Orchestra', 'Choir', 'Character', 'Other']
+        type_counts = dict(conn.execute('''
+            SELECT a.type, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+            JOIN artists a ON a.id = ta.artist_id
+            WHERE a.type IS NOT NULL AND a.type != ''
+            GROUP BY a.type
+        ''').fetchall())
+        all_types = {r[0] for r in conn.execute(
+            "SELECT DISTINCT type FROM artists WHERE type IS NOT NULL AND type != ''")}
+        cache['artistType'] = _breakdown_section(
+            conn, [(t, t, type_counts.get(t, 0)) for t in artist_types if t in all_types],
+            'artist', lambda t: (' AND a.type = ?', (t,)))
+        _vlog('artistType', cache['artistType'], t0)
+
+        # ── Release Era (by release_year decade, NOT artist formed_year —
+        # formed_year is closer to a solo artist's birth year in MusicBrainz) ─
+        t0 = time.perf_counter()
+        era_rows = conn.execute('''
+            SELECT (r.release_year / 10) * 10 as decade, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN releases r ON r.id = t.release_id
+            WHERE r.release_year IS NOT NULL
+            GROUP BY decade ORDER BY decade
+        ''').fetchall()
+        cache['era'] = _breakdown_section(
+            conn, [(r['decade'], f"{r['decade']}s", r['n']) for r in era_rows],
+            'release', lambda decade: (' AND (r.release_year / 10) * 10 = ?', (decade,)))
+        _vlog('era', cache['era'], t0)
+
+        # ── Artist Country ────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        country_rows = conn.execute('''
+            SELECT a.country, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+            JOIN artists a ON a.id = ta.artist_id
+            WHERE a.country IS NOT NULL AND a.country != ''
+            GROUP BY a.country ORDER BY n DESC LIMIT 12
+        ''').fetchall()
+        cache['country'] = _breakdown_section(
+            conn, [(r['country'], r['country'], r['n']) for r in country_rows],
+            'artist', lambda code: (' AND a.country = ?', (code,)))
+        _vlog('country', cache['country'], t0)
+
+        # ── Release Type ──────────────────────────────────────────────────
+        t0 = time.perf_counter()
+        type_rows = conn.execute('''
+            SELECT r.type, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN releases r ON r.id = t.release_id
+            WHERE r.type IS NOT NULL AND r.type != ''
+            GROUP BY r.type ORDER BY n DESC
+        ''').fetchall()
+        cache['releaseType'] = _breakdown_section(
+            conn, [(r['type'], r['type'].capitalize(), r['n']) for r in type_rows],
+            'release', lambda t: (' AND r.type = ?', (t,)))
+        _vlog('releaseType', cache['releaseType'], t0)
+
+        # ── Release Recency ───────────────────────────────────────────────
+        t0 = time.perf_counter()
+        recency_buckets = [
+            ('Pre-release',    lambda g: g < 0,               ' AND r.release_year IS NOT NULL AND (l.year - r.release_year) < 0'),
+            ('Same year',      lambda g: g == 0,              ' AND r.release_year IS NOT NULL AND (l.year - r.release_year) = 0'),
+            ('1-2 years old',  lambda g: 1 <= g <= 2,         ' AND r.release_year IS NOT NULL AND (l.year - r.release_year) BETWEEN 1 AND 2'),
+            ('3-5 years old',  lambda g: 3 <= g <= 5,         ' AND r.release_year IS NOT NULL AND (l.year - r.release_year) BETWEEN 3 AND 5'),
+            ('6-10 years old', lambda g: 6 <= g <= 10,        ' AND r.release_year IS NOT NULL AND (l.year - r.release_year) BETWEEN 6 AND 10'),
+            ('10+ years old',  lambda g: g > 10,              ' AND r.release_year IS NOT NULL AND (l.year - r.release_year) > 10'),
+        ]
+        gap_rows = conn.execute('''
+            SELECT (l.year - r.release_year) as gap, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN releases r ON r.id = t.release_id
+            WHERE r.release_year IS NOT NULL
+            GROUP BY gap
+        ''').fetchall()
+        bucket_totals = {label: 0 for label, _, _ in recency_buckets}
+        for r in gap_rows:
+            for label, test, _ in recency_buckets:
+                if test(r['gap']):
+                    bucket_totals[label] += r['n']
+                    break
+        where_by_label = {label: where for label, _, where in recency_buckets}
+        cache['recency'] = _breakdown_section(
+            conn, [(label, label, n) for label, n in bucket_totals.items() if n > 0],
+            'release', lambda label: (where_by_label[label], ()))
+        _vlog('recency', cache['recency'], t0)
+
+        # ── Explicit Content ──────────────────────────────────────────────
+        t0 = time.perf_counter()
+        explicit_rows = sorted(conn.execute('''
+            SELECT t.is_explicit, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            WHERE t.is_explicit IS NOT NULL
+            GROUP BY t.is_explicit
+        ''').fetchall(), key=lambda r: -r['is_explicit'])
+        cache['explicit'] = _breakdown_section(
+            conn, [(r['is_explicit'], 'Explicit' if r['is_explicit'] else 'Clean', r['n']) for r in explicit_rows],
+            'artist', lambda is_explicit: (' AND t.is_explicit = ?', (is_explicit,)))
+        _vlog('explicit', cache['explicit'], t0)
+
+        # ── Mainstream vs. Deep Cuts ──────────────────────────────────────
+        t0 = time.perf_counter()
+        popularity_tiers = {
+            'Mainstream (70+)': ' AND a.spotify_popularity >= 70',
+            'Mid-tier (40-69)': ' AND a.spotify_popularity >= 40 AND a.spotify_popularity < 70',
+            'Deep cuts (<40)':  ' AND a.spotify_popularity < 40',
+        }
+        pop_rows = conn.execute('''
+            SELECT
+              CASE WHEN a.spotify_popularity >= 70 THEN 'Mainstream (70+)'
+                   WHEN a.spotify_popularity >= 40 THEN 'Mid-tier (40-69)'
+                   ELSE 'Deep cuts (<40)' END as tier,
+              COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+            JOIN artists a ON a.id = ta.artist_id
+            WHERE a.spotify_popularity IS NOT NULL
+            GROUP BY tier ORDER BY n DESC
+        ''').fetchall()
+        cache['popularity'] = _breakdown_section(
+            conn, [(r['tier'], r['tier'], r['n']) for r in pop_rows],
+            'artist', lambda tier: (' AND a.spotify_popularity IS NOT NULL' + popularity_tiers[tier], ()))
+        _vlog('popularity', cache['popularity'], t0)
+
+        # ── Top Labels (no drill-down — a label already implies its own
+        # releases, drilling in would just echo the section itself) ────────
+        t0 = time.perf_counter()
+        label_rows = conn.execute('''
+            SELECT r.label, COUNT(l.id) n
+            FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN releases r ON r.id = t.release_id
+            WHERE r.label IS NOT NULL AND r.label != ''
+            GROUP BY r.label ORDER BY n DESC LIMIT 12
+        ''').fetchall()
+        cache['labels'] = [{'label': r['label'], 'n': r['n']} for r in label_rows]
+        _vlog('labels', cache['labels'], t0)
+
+        # ── Album Completion ──────────────────────────────────────────────
+        # HAVING is applied via an outer WHERE on a subquery rather than
+        # directly after GROUP BY — sqlite mis-evaluates a direct HAVING
+        # comparison between two COUNT(DISTINCT CASE...) aliases in some
+        # versions. Verified against master.sqlite directly.
+        t0 = time.perf_counter()
+        completion_rows = conn.execute('''
+            SELECT * FROM (
+                SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
+                       COUNT(DISTINCT CASE
+                           WHEN t.hidden = 0 AND t.variant_section IS NULL
+                            AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+                           THEN t.id END) as total_tracks,
+                       COUNT(DISTINCT CASE
+                           WHEN t.hidden = 0 AND t.variant_section IS NULL
+                            AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+                            AND l.id IS NOT NULL
+                           THEN t.id END) as heard_tracks,
+                       COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens
+                FROM releases r
+                JOIN tracks t ON t.release_id = r.id
+                LEFT JOIN listens l ON l.track_id = t.id
+                LEFT JOIN artists a ON a.id = r.primary_artist_id
+                WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
+                GROUP BY r.id
+            )
+            WHERE heard_tracks > 0 AND heard_tracks < total_tracks AND total_listens > 0
+            ORDER BY total_listens DESC LIMIT 8
+        ''').fetchall()
+        cache['completion'] = [
+            {'id': r['id'], 'title': r['title'], 'total': r['total_tracks'],
+             'heard': r['heard_tracks'], 'listens': r['total_listens']}
+            for r in completion_rows
+        ]
+        _vlog('completion', cache['completion'], t0)
+
+        # ── Most Relistened Tracks ────────────────────────────────────────
+        t0 = time.perf_counter()
+        relistened_rows = conn.execute('''
+            SELECT t.id, t.title, a.name,
+                   COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
+                   r.id as release_id, COUNT(l.id) as total_listens
+            FROM tracks t
+            LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            LEFT JOIN artists a ON ta.artist_id = a.id
+            LEFT JOIN releases r ON t.release_id = r.id
+            JOIN listens l ON t.id = l.track_id
+            WHERE t.hidden = 0
+            GROUP BY t.id ORDER BY total_listens DESC LIMIT 8
+        ''').fetchall()
+        cache['relistened'] = [
+            {'id': r['id'], 'title': r['title'], 'artist': r['name'], 'art_url': r['art_url'],
+             'release_id': r['release_id'], 'n': r['total_listens']}
+            for r in relistened_rows
+        ]
+        _vlog('relistened', cache['relistened'], t0)
+
+        # ── Vinyl Ownership ───────────────────────────────────────────────
+        t0 = time.perf_counter()
+        owned = conn.execute('''
+            SELECT COUNT(*) FROM listens l JOIN tracks t ON l.track_id = t.id
+            JOIN collection_items ci ON ci.release_id = t.release_id
+        ''').fetchone()[0]
+        total_listens_all = conn.execute(
+            'SELECT COUNT(*) FROM listens l JOIN tracks t ON l.track_id = t.id').fetchone()[0]
+        cache['vinyl'] = {'owned': owned, 'total': total_listens_all}
+        _vlog('vinyl', cache['vinyl'], t0)
+
+        # ── Certified Artists ─────────────────────────────────────────────
+        t0 = time.perf_counter()
+        cert_order = {'diamond': 0, 'platinum': 1, 'gold': 2}
+        cert_rows = sorted(
+            conn.execute("SELECT id, name, cert FROM artists WHERE cert IS NOT NULL").fetchall(),
+            key=lambda r: cert_order.get(r['cert'], 99))
+        cache['cert'] = [{'id': r['id'], 'name': r['name'], 'cert': r['cert']} for r in cert_rows]
+        _vlog('cert', cache['cert'], t0)
+
+        # ── Stats for Nerds (currently live in views/home.js) ────────────
+        t0 = time.perf_counter()
+        days_row = conn.execute('''
+            SELECT COUNT(DISTINCT date(l.timestamp, 'unixepoch')) as active_days,
+                   CAST(julianday(date(MAX(l.timestamp), 'unixepoch'))
+                        - julianday(date(MIN(l.timestamp), 'unixepoch')) + 1 AS INTEGER) as total_days,
+                   COUNT(l.id) as total_listens
+            FROM listens l JOIN tracks t ON l.track_id = t.id WHERE t.hidden = 0
+        ''').fetchone()
+        time_row = conn.execute('''
+            SELECT SUM(COALESCE(l.ms_played, t.duration_ms)) as total_ms
+            FROM listens l JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+        ''').fetchone()
+        peak_row = conn.execute('''
+            SELECT strftime('%Y-%m', datetime(l.timestamp, 'unixepoch')) as ym, COUNT(l.id) as cnt
+            FROM listens l JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            GROUP BY ym ORDER BY cnt DESC LIMIT 1
+        ''').fetchone()
+        ohw_row = conn.execute('''
+            WITH artist_counts AS (
+                SELECT ta.artist_id, COUNT(l.id) as play_count
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                JOIN artists a ON ta.artist_id = a.id AND a.hidden = 0
+                GROUP BY ta.artist_id
+            )
+            SELECT SUM(CASE WHEN play_count = 1 THEN 1 ELSE 0 END) as ohw, COUNT(*) as total
+            FROM artist_counts
+        ''').fetchone()
+        ey_rows = conn.execute('''
+            WITH artist_years AS (
+                SELECT ta.artist_id, strftime('%Y', datetime(l.timestamp, 'unixepoch')) AS yr
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                WHERE t.hidden = 0
+                GROUP BY ta.artist_id, yr
+            ),
+            total_years AS (
+                SELECT COUNT(DISTINCT strftime('%Y', datetime(l.timestamp, 'unixepoch'))) AS n
+                FROM listens l JOIN tracks t ON l.track_id = t.id WHERE t.hidden = 0
+            ),
+            every_year AS (
+                SELECT artist_id, COUNT(DISTINCT yr) AS yrs FROM artist_years
+                GROUP BY artist_id HAVING yrs = (SELECT n FROM total_years)
+            )
+            SELECT a.id, a.name, (SELECT n FROM total_years) AS total_yrs
+            FROM every_year ey JOIN artists a ON a.id = ey.artist_id
+            WHERE a.hidden = 0 ORDER BY a.name
+        ''').fetchall()
+        edd_row = conn.execute('''
+            WITH track_counts AS (
+                SELECT l.track_id, COUNT(l.id) as play_count
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                GROUP BY l.track_id
+            ),
+            ranked AS (
+                SELECT play_count, ROW_NUMBER() OVER (ORDER BY play_count DESC) as rank
+                FROM track_counts
+            )
+            SELECT MAX(rank) as eddington FROM ranked WHERE play_count >= rank
+        ''').fetchone()
+        cutover_row = conn.execute('''
+            WITH artist_counts AS (
+                SELECT ta.artist_id, COUNT(l.id) as play_count
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                JOIN artists a ON ta.artist_id = a.id AND a.hidden = 0
+                GROUP BY ta.artist_id
+            ),
+            ranked AS (
+                SELECT play_count, ROW_NUMBER() OVER (ORDER BY play_count DESC) as rank
+                FROM artist_counts
+            )
+            SELECT MAX(rank) as cutover FROM ranked WHERE play_count >= rank
+        ''').fetchone()
+
+        active = days_row['active_days'] or 0
+        total_days = days_row['total_days'] or 0
+        total_listens_n = days_row['total_listens'] or 0
+        total_ms = time_row['total_ms'] or 0
+        cache['nerd'] = {
+            'active_days': active,
+            'total_days': total_days,
+            'active_pct': round(active / total_days * 100, 1) if total_days else 0,
+            'avg_per_day': round(total_listens_n / active, 1) if active else 0,
+            'total_hours': total_ms // 3600000,
+            'peak_month': peak_row['ym'] if peak_row else None,
+            'peak_month_count': peak_row['cnt'] if peak_row else 0,
+            'one_hit_wonders': ohw_row['ohw'] or 0,
+            'one_hit_wonders_total': ohw_row['total'] or 0,
+            'every_year_artists': [{'id': r['id'], 'name': r['name']} for r in ey_rows],
+            'every_year_total_years': ey_rows[0]['total_yrs'] if ey_rows else 0,
+            'eddington': edd_row['eddington'] if edd_row else 0,
+            'artist_cutover': cutover_row['cutover'] if cutover_row else 0,
+        }
+        _vlog('nerd', [cache['nerd']], t0)
+
+        # ── Write cache ───────────────────────────────────────────────────
+        now = int(time.time())
+        conn.execute('DELETE FROM stats_cache')
+        conn.executemany(
+            'INSERT INTO stats_cache (key, value_json, updated_at) VALUES (?, ?, ?)',
+            [(key, json.dumps(value), now) for key, value in cache.items()]
+        )
+
+        # ── Artist year-medal ranking (replaces artist.js's mislabeled
+        # "avoids a full cross-artist scan" CTE, which didn't) ───────────
+        t0 = time.perf_counter()
+        medal_rows = conn.execute('''
+            SELECT ta.artist_id, l.year, COUNT(*) as plays
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            GROUP BY ta.artist_id, l.year
+        ''').fetchall()
+        by_year = {}
+        for r in medal_rows:
+            by_year.setdefault(r['year'], []).append((r['artist_id'], r['plays']))
+        conn.execute('DELETE FROM artist_year_medals')
+        medal_inserts = []
+        for year, artist_plays in by_year.items():
+            ranked = sorted(artist_plays, key=lambda ap: -ap[1])
+            rank = 0
+            prev_plays = None
+            for i, (artist_id, plays) in enumerate(ranked):
+                if plays != prev_plays:
+                    rank = i + 1
+                    prev_plays = plays
+                if rank > 3:
+                    break
+                medal_inserts.append((artist_id, year, rank, plays))
+        conn.executemany(
+            'INSERT INTO artist_year_medals (artist_id, year, rank, plays) VALUES (?, ?, ?, ?)',
+            medal_inserts
+        )
+        _vlog('year_medals', medal_inserts, t0)
+
+        conn.commit()
+
+    console.print(f'[bold]Stats cache refreshed[/bold]  ({len(cache)} sections, {len(medal_inserts)} year-medals'
+                  f'{f", {time.perf_counter() - t_total:.2f}s" if verbose else ""})')
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -5283,6 +6034,15 @@ def main():
     p_deezer.set_defaults(func=cmd_enrich_deezer_links)
     p_audio.set_defaults(func=cmd_enrich_audio)
 
+    p_apple = es.add_parser('apple-links', help='Backfill Apple Music IDs via UPC lookup')
+    _add_filter_args(p_apple)
+    p_apple.set_defaults(func=cmd_enrich_apple_links)
+
+    p_desc = es.add_parser('descriptions', help="Scrape Apple Music 'About this Album' editorial notes")
+    _add_filter_args(p_desc)
+    p_desc.add_argument('--force', action='store_true', help='Re-fetch even if editorial_note already present')
+    p_desc.set_defaults(func=cmd_enrich_descriptions)
+
     p_artists_enrich = es.add_parser('artists', help='Fetch artist metadata from MusicBrainz')
     _add_filter_args(p_artists_enrich)
     p_artists_enrich.add_argument('--force', action='store_true', help='Re-fetch even if already populated')
@@ -5485,6 +6245,14 @@ def main():
     p_c_ref  = cs_.add_parser('refresh', help='Recompute gold/platinum/diamond tiers for all artists')
     p_c_ref.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
     p_c_ref.set_defaults(func=cmd_certs_refresh)
+
+    # stats
+    p_stats  = sub.add_parser('stats', help='Manage precomputed stats cache')
+    ss_      = p_stats.add_subparsers(dest='stats_cmd', required=True)
+    p_s_ref  = ss_.add_parser('refresh', help='Recompute the stats.js cache + artist year-medals')
+    p_s_ref.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_s_ref.add_argument('--verbose', action='store_true', help='Print per-section row counts + timings')
+    p_s_ref.set_defaults(func=cmd_stats_refresh)
 
     # genre-relations
     p_gr = sub.add_parser('genre-relations', help='Populate genre parent/child relations from tree file')
