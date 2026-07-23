@@ -82,7 +82,54 @@ const ViewTop = (() => {
                 return { id, name, imageUrl, cert, meta2: uniqueTracks, totalListens, totalMinutes, avgTs, label: name };
             },
         },
-        albums:  null,
+        albums: {
+            title: 'Top Albums',
+            sortOptions: [
+                { key: 'listens',     icon: 'headphones', title: 'Sort by listens' },
+                { key: 'minutes',     icon: 'clock',       title: 'Sort by minutes' },
+                { key: 'discoveries', icon: 'sparkles',    title: 'Latest discoveries — albums with newest average listen date' },
+                { key: 'oldies',      icon: 'history',     title: 'Golden oldies — albums with oldest average listen date' },
+            ],
+            hasRange: false,
+            hasYearFilter: true,
+            query() {
+                let orderClause;
+                if (sortBy === 'minutes')          orderClause = 'total_minutes DESC';
+                else if (sortBy === 'discoveries') orderClause = 'avg_ts DESC';
+                else if (sortBy === 'oldies')      orderClause = 'avg_ts ASC';
+                else                                orderClause = 'total_listens DESC';
+                const yearFilter = releaseYear !== 'all' ? `AND r.release_year = ${parseInt(releaseYear)}` : '';
+
+                return _db.exec(`
+                    SELECT
+                        r.id, r.title, r.release_year, r.type,
+                        COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
+                        a.name, a.id as artist_id,
+                        COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as tracks_listened,
+                        COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
+                        CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
+                        r.avg_listen_ts as avg_ts
+                    FROM releases r
+                    LEFT JOIN artists a ON a.id = r.primary_artist_id
+                    LEFT JOIN tracks t ON t.release_id = r.id
+                    LEFT JOIN listens l ON l.track_id = t.id
+                    WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) ${yearFilter}
+                    GROUP BY r.id
+                    HAVING total_listens > 0
+                    ORDER BY ${orderClause}
+                    LIMIT 100
+                `)[0];
+            },
+            cardHref: id => `?view=release&id=${encodeURIComponent(id)}`,
+            buildCardFields(row) {
+                const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes, avgTs] = row;
+                return {
+                    id, title, name: title, imageUrl: albumArtUrl, artistName: artistName || 'Various Artists',
+                    meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
+                    totalListens, totalMinutes, avgTs, label: title,
+                };
+            },
+        },
         tracks:  null,
     };
 
@@ -106,6 +153,7 @@ const ViewTop = (() => {
 
         container.innerHTML = _renderShell();
         _setupControls();
+        if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
         _load();
     }
 
@@ -235,7 +283,28 @@ const ViewTop = (() => {
     function _rerenderForModeChange() {
         // Re-render the whole shell since Count vs. grid-shape controls differ by mode (a later task).
         const container = document.getElementById('view-container');
-        if (container) { container.innerHTML = _renderShell(); _setupControls(); _load(); }
+        if (container) {
+            container.innerHTML = _renderShell();
+            _setupControls();
+            if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
+            _load();
+        }
+    }
+
+    function _populateYearFilter() {
+        const sel = document.getElementById('yearFilter');
+        if (!sel) return;
+        const res = _db.exec(`
+            SELECT DISTINCT release_year FROM releases
+            WHERE release_year IS NOT NULL AND hidden = 0
+            ORDER BY release_year DESC
+        `)[0];
+        if (res) res.values.forEach(([yr]) => {
+            const opt = document.createElement('option');
+            opt.value = yr; opt.textContent = yr;
+            if (String(yr) === String(releaseYear)) opt.selected = true;
+            sel.appendChild(opt);
+        });
     }
 
     function _load() {
