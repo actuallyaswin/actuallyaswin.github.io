@@ -58,7 +58,7 @@ const CollageExport = (() => {
             if (row >= rows) break;
             const x = col * CELL_PX, y = row * CELL_PX;
             const bitmap = await _loadCellImage(cells[i].imageUrl);
-            if (bitmap) ctx.drawImage(bitmap, x, y, CELL_PX, CELL_PX);
+            if (bitmap) { ctx.drawImage(bitmap, x, y, CELL_PX, CELL_PX); bitmap.close(); }
             else _drawFallbackTile(ctx, x, y);
             if (showLabels) _drawLabel(ctx, x, y, cells[i].label);
         }
