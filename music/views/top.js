@@ -201,6 +201,10 @@ const ViewTop = (() => {
         // or redirected — this is an accepted, intentional gap, not a bug.
         if (params.display && ['list','tiles','collage'].includes(params.display)) viewMode = params.display;
         if (params.year) releaseYear = params.year;
+        if (params.grid && /^\d+x\d+$/.test(params.grid)) {
+            const [rows, cols] = params.grid.split('x').map(Number);
+            if (rows >= 1 && rows <= 10 && cols >= 1 && cols <= 10) gridShape = { rows, cols };
+        }
 
         container.innerHTML = _renderShell();
         _setupControls();
@@ -220,7 +224,7 @@ const ViewTop = (() => {
                 ${_entityToggleHtml()}
                 ${_sortControlsHtml()}
                 ${ENTITY_CONFIG[entityType]?.hasRange ? _rangeControlsHtml() : ''}
-                ${_countControlsHtml()}
+                ${viewMode === 'collage' ? _collageControlsHtml() : _countControlsHtml()}
                 ${ENTITY_CONFIG[entityType]?.hasYearFilter ? _yearFilterHtml() : ''}
                 ${_displayControlsHtml()}
             </div>
@@ -284,6 +288,37 @@ const ViewTop = (() => {
             </div>`;
     }
 
+    const _GRID_PRESETS = [3, 4, 5, 6, 7, 10];
+    const _ASPECT_PRESETS = [
+        { key: 'square',  label: 'Square',   icon: 'square',    ratio: 1 },
+        { key: 'portrait',label: 'Portrait', icon: 'rectangle-vertical', ratio: 4 / 5 },
+        { key: 'story',   label: 'Story',    icon: 'smartphone', ratio: 9 / 16 },
+    ];
+
+    function _collageControlsHtml() {
+        return `
+            <div class="control-block">
+                <span class="control-block-label">Grid</span>
+                <div class="sort-controls">
+                    ${_GRID_PRESETS.map(n => `<button class="sort-btn" data-grid-fixed="${n}">${n}×${n}</button>`).join('')}
+                </div>
+            </div>
+            <div class="control-block">
+                <span class="control-block-label">Shape</span>
+                <div class="sort-controls">
+                    ${_ASPECT_PRESETS.map(p => `<button class="sort-btn" data-grid-aspect="${p.key}" title="${p.label}"><i data-lucide="${p.icon}"></i></button>`).join('')}
+                    <button class="sort-btn" data-grid-custom title="Custom">Custom</button>
+                </div>
+            </div>
+            <div class="control-block" id="customGridBlock" style="display:none">
+                <span class="control-block-label">Rows × Cols</span>
+                <div class="sort-controls">
+                    <select id="customRows">${Array.from({length:10},(_,i)=>i+1).map(n=>`<option value="${n}">${n}</option>`).join('')}</select>
+                    <select id="customCols">${Array.from({length:10},(_,i)=>i+1).map(n=>`<option value="${n}">${n}</option>`).join('')}</select>
+                </div>
+            </div>`;
+    }
+
     function _yearFilterHtml() {
         return `
             <div class="control-block">
@@ -312,6 +347,7 @@ const ViewTop = (() => {
         const p = new URLSearchParams({ view: 'top', type: entityType, sort: sortBy, count: countLimit, display: viewMode });
         if (ENTITY_CONFIG[entityType]?.hasRange) p.set('range', range);
         if (ENTITY_CONFIG[entityType]?.hasYearFilter) p.set('year', releaseYear);
+        if (viewMode === 'collage') p.set('grid', `${gridShape.rows}x${gridShape.cols}`);
         history.replaceState(Object.fromEntries(p), '', '?' + p.toString());
     }
 
@@ -331,6 +367,33 @@ const ViewTop = (() => {
 
         const yearSel = document.getElementById('yearFilter');
         if (yearSel) yearSel.addEventListener('change', () => { releaseYear = yearSel.value; _syncUrl(); _load(); });
+
+        document.querySelectorAll('[data-grid-fixed]').forEach(btn => btn.addEventListener('click', () => {
+            const n = parseInt(btn.dataset.gridFixed);
+            gridShape = { rows: n, cols: n };
+            _syncUrl(); _renderCollage();
+        }));
+        document.querySelectorAll('[data-grid-aspect]').forEach(btn => btn.addEventListener('click', () => {
+            const preset = _ASPECT_PRESETS.find(p => p.key === btn.dataset.gridAspect);
+            const approxCellCount = gridShape.rows * gridShape.cols || 25;
+            gridShape = _nearestGridForRatio(preset.ratio, approxCellCount);
+            _syncUrl(); _renderCollage();
+        }));
+        document.getElementById('customGridBlock') && (() => {
+            const rowsSel = document.getElementById('customRows');
+            const colsSel = document.getElementById('customCols');
+            rowsSel.value = gridShape.rows; colsSel.value = gridShape.cols;
+            const onChange = () => {
+                gridShape = { rows: parseInt(rowsSel.value), cols: parseInt(colsSel.value) };
+                _syncUrl(); _renderCollage();
+            };
+            rowsSel.addEventListener('change', onChange);
+            colsSel.addEventListener('change', onChange);
+        })();
+        document.querySelector('[data-grid-custom]')?.addEventListener('click', () => {
+            const block = document.getElementById('customGridBlock');
+            if (block) block.style.display = block.style.display === 'none' ? '' : 'none';
+        });
     }
 
     function _rerenderForModeChange() {
@@ -437,6 +500,25 @@ const ViewTop = (() => {
             });
         }
         lucide.createIcons();
+    }
+
+    function _renderCollage() {
+        const container = document.getElementById('topContainer');
+        if (!container) return;
+        container.innerHTML = '';
+        container.className = 'collage-grid';
+        container.style.gridTemplateColumns = `repeat(${gridShape.cols}, 1fr)`;
+
+        const show = gridShape.rows * gridShape.cols;
+        const cfg = ENTITY_CONFIG[entityType];
+        cachedResults.forEach((f, i) => {
+            const card = document.createElement('a');
+            card.className = 'image-card';
+            card.href = cfg.cardHref(f);
+            card.innerHTML = `<div class="image-card-img" style="background-image: url('${f.imageUrl || getFallbackImageUrl()}')"></div>`;
+            if (i >= show) card.style.display = 'none';
+            container.appendChild(card);
+        });
     }
 
     function _applyCount() {
