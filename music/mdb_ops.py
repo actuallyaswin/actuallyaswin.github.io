@@ -225,12 +225,14 @@ CREATE TABLE IF NOT EXISTS tracks (
 CREATE INDEX IF NOT EXISTS idx_tracks_canonical
     ON tracks(canonical_track_id)
     WHERE canonical_track_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tracks_language ON tracks(language);
 CREATE TABLE IF NOT EXISTS track_artists (
     track_id  TEXT NOT NULL REFERENCES tracks(id),
     artist_id TEXT NOT NULL REFERENCES artists(id),
     role      TEXT NOT NULL DEFAULT 'main',
     PRIMARY KEY (track_id, artist_id, role)
 );
+CREATE INDEX IF NOT EXISTS idx_track_artists_artist_role ON track_artists(artist_id, role);
 CREATE TABLE IF NOT EXISTS genres (
     aoty_id INTEGER PRIMARY KEY,
     name    TEXT NOT NULL UNIQUE,
@@ -341,6 +343,19 @@ CREATE TABLE IF NOT EXISTS release_service_links (
     UNIQUE(release_id, service, service_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rsl_release ON release_service_links(release_id);
+CREATE TABLE IF NOT EXISTS stats_cache (
+    key        TEXT PRIMARY KEY,   -- e.g. 'gender', 'era', 'nerd_days'
+    value_json TEXT NOT NULL,      -- precomputed result, shape defined per key
+    updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS artist_year_medals (
+    artist_id  TEXT NOT NULL REFERENCES artists(id),
+    year       INTEGER NOT NULL,
+    rank       INTEGER NOT NULL,   -- 1 = most-played artist that year, etc.
+    plays      INTEGER NOT NULL,
+    PRIMARY KEY (artist_id, year)
+);
+CREATE INDEX IF NOT EXISTS idx_artist_year_medals_artist ON artist_year_medals(artist_id);
 """
 
 
@@ -407,6 +422,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE releases ADD COLUMN medium TEXT",
         "ALTER TABLE releases ADD COLUMN language TEXT",
         "ALTER TABLE releases ADD COLUMN country TEXT",
+        "ALTER TABLE releases ADD COLUMN avg_listen_ts INTEGER",
+        "ALTER TABLE tracks ADD COLUMN avg_listen_ts INTEGER",
     ]:
         try:
             conn.execute(ddl)
@@ -1258,11 +1275,21 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
                          raw_album: str | None = None) -> int:
     """Name-based listen matching for tracks without MBIDs.
 
-    Scopes to listens whose raw_artist_name matches the release's artists (or
-    any known alias), then joins on normalised track title using three phases:
+    Scopes to listens whose raw_artist_name matches a release's OWN artists
+    (or any known alias) — computed and applied per release_id, never pooled
+    across release_ids — then joins on normalised track title using three
+    phases:
       Phase 1 (SQL): apostrophe variants, feat. credits, mix suffixes.
       Phase 2 (Python): ETI-normalised clean-title comparison.
       Phase 3 (Python): fuzzy ascii_key ratio (threshold 0.85).
+
+    IMPORTANT: release_ids belonging to different artists must never be
+    passed to a single call expecting shared scoping — each release_id's
+    valid-artist-name set is computed independently and a listen can only
+    match a track whose own release credits that listen's raw_artist_name.
+    Passing e.g. a canonical + deluxe pair of the SAME artist is fine and
+    is what this is designed for; passing unrelated artists' release_ids
+    together just runs each one through this independently (no bleed-over).
 
     raw_artist and raw_album are optional seeds for the filter. When raw_album
     is None the album-name filter is omitted so all unmatched listens by the
@@ -1272,6 +1299,22 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     """
     if not release_ids:
         return 0
+
+    total = 0
+    for release_id in release_ids:
+        total += _rematch_by_name_one_release(conn, release_id, raw_artist, raw_album)
+    return total
+
+
+def _rematch_by_name_one_release(conn: sqlite3.Connection,
+                                 release_id: str,
+                                 raw_artist: str | None,
+                                 raw_album: str | None) -> int:
+    """Single-release worker for bulk_rematch_by_name — see that docstring.
+    Computes this release's OWN valid artist-name set (credited artists +
+    their aliases + the release's primary_artist_id) and only matches
+    listens whose raw_artist_name is in that set."""
+    release_ids = [release_id]
 
     # SQLite's built-in lower() is ASCII-only (e.g. 'ROSALÍA' → 'rosalÍa').
     # Register a Python-backed function so Unicode lowercasing works correctly.
@@ -1295,6 +1338,35 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
         JOIN   tracks t         ON t.id = ta.track_id
         LEFT   JOIN artist_aliases aa ON aa.artist_id = a.id
         WHERE  t.release_id IN ({rph})
+    ''', release_ids).fetchall()
+    for r in rows:
+        if r['name']:
+            artist_name_set |= _name_forms(r['name'])
+        if r['alias']:
+            artist_name_set |= _name_forms(r['alias'])
+    # release_artists credits (e.g. compilation/collab primary artists that
+    # may not appear in track_artists) and the release's own primary_artist —
+    # both are valid credits even if track_artists doesn't separately list them
+    # (e.g. ¥$ is primary_artist_id on VULTURES but only Ye/Ty Dolla $ign are
+    # in track_artists).
+    rows = conn.execute(f'''
+        SELECT DISTINCT a.name, aa.alias
+        FROM   release_artists ra
+        JOIN   artists a ON a.id = ra.artist_id
+        LEFT   JOIN artist_aliases aa ON aa.artist_id = a.id
+        WHERE  ra.release_id IN ({rph})
+    ''', release_ids).fetchall()
+    for r in rows:
+        if r['name']:
+            artist_name_set |= _name_forms(r['name'])
+        if r['alias']:
+            artist_name_set |= _name_forms(r['alias'])
+    rows = conn.execute(f'''
+        SELECT DISTINCT a.name, aa.alias
+        FROM   releases r
+        JOIN   artists a ON a.id = r.primary_artist_id
+        LEFT   JOIN artist_aliases aa ON aa.artist_id = a.id
+        WHERE  r.id IN ({rph})
     ''', release_ids).fetchall()
     for r in rows:
         if r['name']:
