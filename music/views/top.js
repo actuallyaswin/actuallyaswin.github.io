@@ -296,11 +296,12 @@ const ViewTop = (() => {
     ];
 
     function _collageControlsHtml() {
+        const isFixedActive = n => gridShape.rows === n && gridShape.cols === n;
         return `
             <div class="control-block">
                 <span class="control-block-label">Grid</span>
                 <div class="sort-controls">
-                    ${_GRID_PRESETS.map(n => `<button class="sort-btn" data-grid-fixed="${n}">${n}×${n}</button>`).join('')}
+                    ${_GRID_PRESETS.map(n => `<button class="sort-btn${isFixedActive(n) ? ' active' : ''}" data-grid-fixed="${n}">${n}×${n}</button>`).join('')}
                 </div>
             </div>
             <div class="control-block">
@@ -371,13 +372,13 @@ const ViewTop = (() => {
         document.querySelectorAll('[data-grid-fixed]').forEach(btn => btn.addEventListener('click', () => {
             const n = parseInt(btn.dataset.gridFixed);
             gridShape = { rows: n, cols: n };
-            _syncUrl(); _renderCollage();
+            _syncUrl(); _renderCollage(); _updateGridButtonStates();
         }));
         document.querySelectorAll('[data-grid-aspect]').forEach(btn => btn.addEventListener('click', () => {
             const preset = _ASPECT_PRESETS.find(p => p.key === btn.dataset.gridAspect);
             const approxCellCount = gridShape.rows * gridShape.cols || 25;
             gridShape = _nearestGridForRatio(preset.ratio, approxCellCount);
-            _syncUrl(); _renderCollage();
+            _syncUrl(); _renderCollage(); _updateGridButtonStates();
         }));
         document.getElementById('customGridBlock') && (() => {
             const rowsSel = document.getElementById('customRows');
@@ -385,7 +386,7 @@ const ViewTop = (() => {
             rowsSel.value = gridShape.rows; colsSel.value = gridShape.cols;
             const onChange = () => {
                 gridShape = { rows: parseInt(rowsSel.value), cols: parseInt(colsSel.value) };
-                _syncUrl(); _renderCollage();
+                _syncUrl(); _renderCollage(); _updateGridButtonStates();
             };
             rowsSel.addEventListener('change', onChange);
             colsSel.addEventListener('change', onChange);
@@ -393,6 +394,17 @@ const ViewTop = (() => {
         document.querySelector('[data-grid-custom]')?.addEventListener('click', () => {
             const block = document.getElementById('customGridBlock');
             if (block) block.style.display = block.style.display === 'none' ? '' : 'none';
+        });
+    }
+
+    // Fixed-size buttons' "active" state reflects the current gridShape —
+    // re-synced after every grid-shape change (fixed/aspect/custom) rather
+    // than only on initial render, since aspect presets and Custom can also
+    // land on a shape that happens to match a fixed-size button.
+    function _updateGridButtonStates() {
+        document.querySelectorAll('[data-grid-fixed]').forEach(btn => {
+            const n = parseInt(btn.dataset.gridFixed);
+            btn.classList.toggle('active', gridShape.rows === n && gridShape.cols === n);
         });
     }
 
