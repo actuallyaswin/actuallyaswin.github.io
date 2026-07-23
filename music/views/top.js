@@ -83,7 +83,7 @@ const ViewTop = (() => {
                     LIMIT 100
                 `)[0];
             },
-            cardHref: id => `?view=artist&id=${encodeURIComponent(id)}`,
+            cardHref: f => `?view=artist&id=${encodeURIComponent(f.id)}`,
             buildCardFields(row) {
                 const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes, avgTs] = row;
                 return { id, name, imageUrl, cert, meta2: uniqueTracks, totalListens, totalMinutes, avgTs, label: name };
@@ -128,7 +128,7 @@ const ViewTop = (() => {
                     LIMIT 100
                 `)[0];
             },
-            cardHref: id => `?view=release&id=${encodeURIComponent(id)}`,
+            cardHref: f => `?view=release&id=${encodeURIComponent(f.id)}`,
             buildCardFields(row) {
                 const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes, avgTs] = row;
                 return {
@@ -176,7 +176,7 @@ const ViewTop = (() => {
                     LIMIT 5000
                 `)[0];
             },
-            cardHref: releaseId => releaseId ? `?view=release&id=${encodeURIComponent(releaseId)}` : '#',
+            cardHref: f => f.releaseId ? `?view=release&id=${encodeURIComponent(f.releaseId)}` : '#',
             buildCardFields(row) {
                 const [id, title, artistName, artistId, art, releaseId, totalListens, totalMinutes, avgTs] = row;
                 return { id, title, name: title, artistName, imageUrl: art, releaseId, totalListens, totalMinutes, avgTs, label: title };
@@ -321,6 +321,7 @@ const ViewTop = (() => {
             sortBy = 'listens';
             releaseYear = 'all';
             _syncUrl();
+            unmount();  // tear down tracks' virtualized-scroll listener/RAF before switching away
             mount(document.getElementById('view-container'), _db, Object.fromEntries(new URLSearchParams(location.search)));
         });
         setupToggleGroup('[data-sort]', btn => { sortBy = btn.dataset.sort; _syncUrl(); _load(); });
@@ -334,6 +335,10 @@ const ViewTop = (() => {
 
     function _rerenderForModeChange() {
         // Re-render the whole shell since Count vs. grid-shape controls differ by mode (a later task).
+        // Tear down tracks' virtualized-scroll listener/RAF first — the shell rebuild below replaces
+        // #ttScroll, orphaning the old listener/RAF if left running.
+        if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
+        _scrollEl = null;
         const container = document.getElementById('view-container');
         if (container) {
             container.innerHTML = _renderShell();
@@ -398,7 +403,7 @@ const ViewTop = (() => {
                     meta = f.meta || (f.meta2 != null ? `${formatNumber(f.meta2)} tracks` : '');
                 }
                 const card = createWideCard({
-                    href: cfg.cardHref(f.id),
+                    href: cfg.cardHref(f),
                     imageUrl: f.imageUrl,
                     name: f.name || f.title,
                     meta,
@@ -415,7 +420,7 @@ const ViewTop = (() => {
             cachedResults.forEach((f, i) => {
                 const card = document.createElement('a');
                 card.className = 'image-card';
-                card.href = cfg.cardHref(f.id);
+                card.href = cfg.cardHref(f);
                 const imgSrc = f.imageUrl || getFallbackImageUrl();
                 card.innerHTML = `
                     <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
@@ -488,7 +493,7 @@ const ViewTop = (() => {
     function _buildTrackRow(f, rank) {
         const el = document.createElement('a');
         el.className = 'recent-play-row';
-        el.href = ENTITY_CONFIG.tracks.cardHref(f.releaseId);
+        el.href = ENTITY_CONFIG.tracks.cardHref(f);
         el.style.height = ROW_H + 'px';
         el.style.boxSizing = 'border-box';
 
