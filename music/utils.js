@@ -121,6 +121,27 @@ function getFallbackImageUrl() {
 
 const COLLAGE_SIZES = { 10: 3, 20: 4, 50: 7, 100: 10 };
 
+// Given a target cols/rows ratio (e.g. 0.5625 for a 9:16 Story export) and an
+// approximate desired total cell count, finds the closest-fitting integer
+// {rows, cols} within a 1-10 bound per axis (matches the largest fixed
+// preset, 10x10, and keeps PNG export capped at 100 images). Ratio fidelity
+// is weighted 4x over exact cell-count match, since a "Story-shaped" grid
+// that's slightly bigger/smaller than requested reads better than a
+// correctly-sized grid that looks square when it should look tall.
+function _nearestGridForRatio(targetRatio, approxCellCount) {
+    let best = null, bestErr = Infinity;
+    for (let rows = 1; rows <= 10; rows++) {
+        for (let cols = 1; cols <= 10; cols++) {
+            const cellCount = rows * cols;
+            const ratioErr = Math.abs((cols / rows) - targetRatio);
+            const countErr = Math.abs(cellCount - approxCellCount) / approxCellCount;
+            const err = ratioErr * 4 + countErr;
+            if (err < bestErr) { bestErr = err; best = { rows, cols }; }
+        }
+    }
+    return best;
+}
+
 function renderGenreTags(rows) {
     // rows: [[aoty_id, name, is_primary], ...]
     if (!rows || !rows.length) return '';
