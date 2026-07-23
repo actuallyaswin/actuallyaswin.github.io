@@ -218,16 +218,22 @@ const ViewTop = (() => {
     }
 
     function _renderShell() {
+        // In Collage mode, the grid-shape/export controls are numerous enough
+        // to overflow a single row (offscreen horizontal scroll) — they get
+        // their own second .page-controls row instead of packing in with
+        // Type/Sort/Range/Display.
+        const primaryControls = `
+            ${_entityToggleHtml()}
+            ${_sortControlsHtml()}
+            ${ENTITY_CONFIG[entityType]?.hasRange ? _rangeControlsHtml() : ''}
+            ${viewMode !== 'collage' ? _countControlsHtml() : ''}
+            ${ENTITY_CONFIG[entityType]?.hasYearFilter ? _yearFilterHtml() : ''}
+            ${_displayControlsHtml()}
+        `;
         return `
             <header><h1>${ENTITY_CONFIG[entityType]?.title || 'Top'}</h1></header>
-            <div class="page-controls">
-                ${_entityToggleHtml()}
-                ${_sortControlsHtml()}
-                ${ENTITY_CONFIG[entityType]?.hasRange ? _rangeControlsHtml() : ''}
-                ${viewMode === 'collage' ? _collageControlsHtml() : _countControlsHtml()}
-                ${ENTITY_CONFIG[entityType]?.hasYearFilter ? _yearFilterHtml() : ''}
-                ${_displayControlsHtml()}
-            </div>
+            <div class="page-controls">${primaryControls}</div>
+            ${viewMode === 'collage' ? `<div class="page-controls">${_collageControlsHtml()}</div>` : ''}
             <div id="topContainer" class="image-grid">
                 <div class="loading">Loading...</div>
             </div>

@@ -19,6 +19,16 @@ const CollageExport = (() => {
         }
     }
 
+    // Draws `bitmap` into the CELL_PX×CELL_PX square at (x, y) using a
+    // cover-fit crop (like CSS `object-fit: cover`) so non-square source
+    // images (e.g. portrait artist photos) fill the cell without stretching.
+    function _drawCover(ctx, bitmap, x, y) {
+        const scale = Math.max(CELL_PX / bitmap.width, CELL_PX / bitmap.height);
+        const sw = CELL_PX / scale, sh = CELL_PX / scale;
+        const sx = (bitmap.width - sw) / 2, sy = (bitmap.height - sh) / 2;
+        ctx.drawImage(bitmap, sx, sy, sw, sh, x, y, CELL_PX, CELL_PX);
+    }
+
     function _drawFallbackTile(ctx, x, y) {
         ctx.fillStyle = '#20232c';
         ctx.fillRect(x, y, CELL_PX, CELL_PX);
@@ -58,7 +68,7 @@ const CollageExport = (() => {
             if (row >= rows) break;
             const x = col * CELL_PX, y = row * CELL_PX;
             const bitmap = await _loadCellImage(cells[i].imageUrl);
-            if (bitmap) { ctx.drawImage(bitmap, x, y, CELL_PX, CELL_PX); bitmap.close(); }
+            if (bitmap) { _drawCover(ctx, bitmap, x, y); bitmap.close(); }
             else _drawFallbackTile(ctx, x, y);
             if (showLabels) _drawLabel(ctx, x, y, cells[i].label);
         }
