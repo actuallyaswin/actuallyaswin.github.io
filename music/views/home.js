@@ -22,15 +22,15 @@ const ViewHome = (() => {
                     <div class="stat-value" id="statListens">-</div>
                     <div class="stat-label">Total Listens</div>
                 </div>
-                <a href="?view=top-artists" class="stat-card">
+                <a href="?view=top&type=artists" class="stat-card">
                     <div class="stat-value" id="statArtists">-</div>
                     <div class="stat-label">Artists</div>
                 </a>
-                <a href="?view=top-albums" class="stat-card">
+                <a href="?view=top&type=albums" class="stat-card">
                     <div class="stat-value" id="statReleases">-</div>
                     <div class="stat-label">Releases</div>
                 </a>
-                <a href="?view=top-tracks" class="stat-card">
+                <a href="?view=top&type=tracks" class="stat-card">
                     <div class="stat-value" id="statTracks">-</div>
                     <div class="stat-label">Tracks</div>
                 </a>

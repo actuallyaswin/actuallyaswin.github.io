@@ -4,9 +4,7 @@ let _currentView = null;
 const VIEWS = {
     'home':            () => ViewHome,
     'year':            () => ViewYear,
-    'top-albums':      () => ViewTopAlbums,
-    'top-artists':     () => ViewTopArtists,
-    'top-tracks':      () => ViewTopTracks,
+    'top':             () => ViewTop,
     'artist':          () => ViewArtist,
     'release':         () => ViewRelease,
     'genre':           () => ViewGenre,
@@ -274,9 +272,7 @@ window.addEventListener('popstate', e => {
         'release':      'Loading release…',
         'genre':        'Loading genre…',
         'year':         'Loading year…',
-        'top-albums':   'Loading top albums…',
-        'top-artists':  'Loading top artists…',
-        'top-tracks':   'Loading top tracks…',
+        'top':          'Loading...',
     };
     container.innerHTML = `<div class="loading">${VIEW_LOADING[params.view] || 'Loading…'}</div>`;
 
