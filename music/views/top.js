@@ -16,6 +16,13 @@ const ViewTop = (() => {
     let releaseYear = 'all';       // albums/tracks only (existing Released filter)
     let cachedResults = [];
 
+    // Tracks-only virtualized-list state (List mode keeps its existing
+    // dedicated UI rather than createWideCard(), per spec §1).
+    let _scrollEl = null;
+    let _raf = null;
+    const ROW_H = 44;
+    const BUFFER = 8;
+
     const CERT_LABELS = {
         gold:     'Gold — 250+ plays',
         platinum: 'Platinum — 500+ plays',
@@ -131,7 +138,50 @@ const ViewTop = (() => {
                 };
             },
         },
-        tracks:  null,
+        tracks: {
+            title: 'Top Tracks',
+            sortOptions: [
+                { key: 'listens',     icon: 'headphones', title: 'Sort by listens' },
+                { key: 'minutes',     icon: 'clock',       title: 'Sort by minutes' },
+                { key: 'discoveries', icon: 'sparkles',    title: 'Latest discoveries — tracks with newest average listen date' },
+                { key: 'oldies',      icon: 'history',     title: 'Golden oldies — tracks with oldest average listen date' },
+            ],
+            hasRange: false,
+            hasYearFilter: true,
+            query() {
+                let orderClause;
+                if (sortBy === 'minutes')          orderClause = 'total_minutes DESC';
+                else if (sortBy === 'discoveries') orderClause = 'avg_ts DESC';
+                else if (sortBy === 'oldies')      orderClause = 'avg_ts ASC';
+                else                                orderClause = 'total_listens DESC';
+                const yearInt = parseInt(releaseYear);
+                const yf = releaseYear !== 'all' && !isNaN(yearInt) ? `AND r.release_year = ${yearInt}` : '';
+
+                return _db.exec(`
+                    SELECT t.id, t.title, a.name, a.id,
+                           COALESCE(r.album_art_thumb_url, r.album_art_url),
+                           r.id,
+                           COUNT(l.id) total_listens,
+                           CAST(SUM(COALESCE(t.duration_ms,0))/60000.0 AS INTEGER) total_minutes,
+                           t.avg_listen_ts as avg_ts
+                    FROM tracks t
+                    LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                    LEFT JOIN artists a ON ta.artist_id = a.id
+                    LEFT JOIN releases r ON t.release_id = r.id
+                    LEFT JOIN listens l ON t.id = l.track_id
+                    WHERE t.hidden = 0 ${yf}
+                    GROUP BY t.id
+                    HAVING total_listens > 0
+                    ORDER BY ${orderClause}
+                    LIMIT 5000
+                `)[0];
+            },
+            cardHref: releaseId => releaseId ? `?view=release&id=${encodeURIComponent(releaseId)}` : '#',
+            buildCardFields(row) {
+                const [id, title, artistName, artistId, art, releaseId, totalListens, totalMinutes, avgTs] = row;
+                return { id, title, name: title, artistName, imageUrl: art, releaseId, totalListens, totalMinutes, avgTs, label: title };
+            },
+        },
     };
 
     function mount(container, db, params) {
@@ -159,7 +209,8 @@ const ViewTop = (() => {
     }
 
     function unmount() {
-        // A later task adds track-specific virtualized-scroll teardown here.
+        if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
+        _scrollEl = null;
     }
 
     function _renderShell() {
@@ -389,6 +440,109 @@ const ViewTop = (() => {
         Array.from(container.children).forEach((el, i) => {
             el.style.display = i < countLimit ? '' : 'none';
         });
+    }
+
+    function _renderTrackList() {
+        const container = document.getElementById('topContainer');
+        if (!container) return;
+        container.className = '';
+        container.innerHTML = `
+            <div class="list-with-sidebar">
+                <div class="list-scroll" id="ttScroll">
+                    <div id="ttSpacerTop" style="height:0"></div>
+                    <div id="ttList"></div>
+                    <div id="ttSpacerBot" style="height:0"></div>
+                </div>
+                <aside class="view-sidebar" id="ttSidebar"></aside>
+            </div>`;
+
+        _scrollEl = document.getElementById('ttScroll');
+        requestAnimationFrame(() => {
+            const top = _scrollEl.getBoundingClientRect().top;
+            _scrollEl.style.height = `${window.innerHeight - top - 16}px`;
+        });
+        _scrollEl.addEventListener('scroll', _scheduleTrackRender, { passive: true });
+        _renderTrackRows();
+        _renderTrackSidebar();
+    }
+
+    function _scheduleTrackRender() {
+        if (_raf) cancelAnimationFrame(_raf);
+        _raf = requestAnimationFrame(() => { _raf = null; _renderTrackRows(); });
+    }
+
+    function _renderTrackRows() {
+        if (!_scrollEl) return;
+        const scrollTop = _scrollEl.scrollTop;
+        const start = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+        const end   = Math.min(cachedResults.length, start + Math.ceil(_scrollEl.clientHeight / ROW_H) + BUFFER * 2);
+
+        const list = document.getElementById('ttList');
+        list.innerHTML = '';
+        for (let i = start; i < end; i++) list.appendChild(_buildTrackRow(cachedResults[i], i));
+
+        document.getElementById('ttSpacerTop').style.height = `${start * ROW_H}px`;
+        document.getElementById('ttSpacerBot').style.height = `${(cachedResults.length - end) * ROW_H}px`;
+    }
+
+    function _buildTrackRow(f, rank) {
+        const el = document.createElement('a');
+        el.className = 'recent-play-row';
+        el.href = ENTITY_CONFIG.tracks.cardHref(f.releaseId);
+        el.style.height = ROW_H + 'px';
+        el.style.boxSizing = 'border-box';
+
+        const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
+        const stat = isTemporalSort && f.avgTs
+            ? new Date(f.avgTs * 1000).toLocaleString('en-US', { month: 'short', year: 'numeric' })
+            : (sortBy === 'minutes' ? `${formatNumber(f.totalMinutes)} min` : `${formatNumber(f.totalListens)} plays`);
+
+        el.innerHTML = `
+            <span class="track-rank">${rank + 1}</span>
+            <div class="recent-play-thumb" style="background-image:url('${f.imageUrl || getFallbackImageUrl()}')"></div>
+            <div class="recent-play-info">
+                <div class="recent-play-name">${escapeHtml(f.title || '')}</div>
+                ${f.artistName ? `<div class="recent-play-album">${escapeHtml(f.artistName)}</div>` : ''}
+            </div>
+            <span class="recent-play-date">${stat}</span>`;
+        return el;
+    }
+
+    function _renderTrackSidebar() {
+        const el = document.getElementById('ttSidebar');
+        if (!el) return;
+
+        const totalPlays = cachedResults.reduce((s, f) => s + (f.totalListens || 0), 0);
+        const totalMins  = cachedResults.reduce((s, f) => s + (f.totalMinutes || 0), 0);
+        const avgPlays   = cachedResults.length ? Math.round(totalPlays / cachedResults.length) : 0;
+
+        const artistCount = {};
+        cachedResults.forEach(f => { if (f.artistName) artistCount[f.artistName] = (artistCount[f.artistName] || 0) + 1; });
+        const topArtists = Object.entries(artistCount).sort(([,a],[,b]) => b-a).slice(0, 7);
+
+        const summaryRows = [
+            ['Tracks',         cachedResults.length.toLocaleString()],
+            ['Total plays',    formatNumber(totalPlays)],
+            ['Listening time', `${Math.round(totalMins / 60).toLocaleString()} hr`],
+            ['Avg plays',      formatNumber(avgPlays)],
+        ];
+
+        el.innerHTML = `
+            <div class="sidebar-section">
+                <p class="sidebar-heading">Summary</p>
+                <dl class="nerds-list" style="border:none;border-radius:0">
+                    ${summaryRows.map(([k,v]) => `<div class="nerds-row"><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
+                </dl>
+            </div>
+            <div class="sidebar-section">
+                <p class="sidebar-heading">Top Artists</p>
+                ${topArtists.map(([name, count], i) => `
+                    <div class="sidebar-row">
+                        <span class="track-rank">${i + 1}</span>
+                        <span class="sidebar-row-name">${escapeHtml(name)}</span>
+                        <span class="sidebar-row-count">${count} tracks</span>
+                    </div>`).join('')}
+            </div>`;
     }
 
     return { mount, unmount };
