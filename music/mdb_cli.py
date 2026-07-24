@@ -240,7 +240,8 @@ def _prompt_choice(label: str, options: list, current=None,
 
 # ── Diff rendering ─────────────────────────────────────────────────────────────
 
-def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
+def render_diff(*releases: 'SpotifyRelease', compact: bool = False,
+                id_labels: 'dict[str, str] | None' = None) -> None:
     """
     Render a diff of two or more SpotifyRelease objects.
 
@@ -248,6 +249,11 @@ def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
         tracklist diff + canonical recommendation.  Used by `mdb diff`.
     compact=True: comparison table + tracklist diff + recommendation only.
         Used by `sync match` inline [d]iff.
+
+    id_labels: optional {spotify_id: display_number} map — when the caller
+        already showed these releases as a numbered list (e.g. "sp  2."),
+        pass it so the table's column headers carry the same number instead
+        of just a truncated ID with no visible link back to that list.
 
     Display mode is driven by Jaccard similarity over track title sets:
       similarity == 0   → unrelated albums: table + warning only
@@ -301,7 +307,8 @@ def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
     tbl = Table(box=box.SIMPLE_HEAD, show_header=True, header_style='bold')
     tbl.add_column('', style='dim')
     for r in releases:
-        tbl.add_column(r.id[:12] + '…', no_wrap=True)
+        prefix = f'{id_labels[r.id]}.  ' if id_labels and r.id in id_labels else ''
+        tbl.add_column(prefix + r.id[:12] + '…', no_wrap=True)
 
     rows_meta = [
         ('Title',         lambda r: r.name,                              similarity >= 0.7),
@@ -344,7 +351,8 @@ def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
             for t in shared_titles:
                 console.print(f'    = {t}')
         for sp_id, titles in unique_per:
-            console.print(f'  [bold]Only in {sp_id[:12]}…:[/bold]')
+            prefix = f'{id_labels[sp_id]}.  ' if id_labels and sp_id in id_labels else ''
+            console.print(f'  [bold]Only in {prefix}{sp_id[:12]}…:[/bold]')
             for t in titles:
                 console.print(f'    + {t}')
         console.print()
@@ -362,20 +370,23 @@ def render_diff(*releases: 'SpotifyRelease', compact: bool = False) -> None:
             console.print('  [dim]All track durations are byte-for-byte identical.[/dim]')
     else:
         for sp_id, titles in unique_per:
-            console.print(f'  [bold]Tracks only in {sp_id[:12]}…:[/bold]')
+            prefix = f'{id_labels[sp_id]}.  ' if id_labels and sp_id in id_labels else ''
+            console.print(f'  [bold]Tracks only in {prefix}{sp_id[:12]}…:[/bold]')
             for t in titles:
                 console.print(f'    + {t}')
     console.print()
 
+    canon_prefix = f'{id_labels[canon.id]}.  ' if id_labels and canon.id in id_labels else ''
     console.print(
         f'  [green]·  Canonical:[/green]  [bold]{canon.name}[/bold]  '
-        f'[dim]({canon.id[:12]}…)  {canon.date}  {canon.track_count} tracks[/dim]'
+        f'[dim]({canon_prefix}{canon.id[:12]}…)  {canon.date}  {canon.track_count} tracks[/dim]'
     )
     for alt in ranked[1:]:
         rs = [r for r in (reasons.get(alt.id) or []) if r != 'lower canonical score']
         reason_str = ('; '.join(rs)) if rs else ''
+        alt_prefix = f'{id_labels[alt.id]}.  ' if id_labels and alt.id in id_labels else ''
         console.print(
-            f'  [red]·  Hide:[/red]  [dim]{alt.name}  ({alt.id[:12]}…)  '
+            f'  [red]·  Hide:[/red]  [dim]{alt.name}  ({alt_prefix}{alt.id[:12]}…)  '
             f'{alt.date or "?"}  {alt.track_count} tracks[/dim]'
             + (f'  — {reason_str}' if reason_str else '')
         )
@@ -550,7 +561,7 @@ def cmd_track_variants(conn, include_linked: bool = False) -> None:
                 f'  [bold]{i}.[/bold]  [bold]{m["title"]}[/bold]'
                 f'  [dim]{m["listen_count"]} listens[/dim]'
                 f'  [dim cyan]db:{m["id"][:14]}…[/dim cyan]'
-                f'  [dim]\[{m["release_type"] or "?"}] {m["release_title"]}[/dim]'
+                f'  [dim]\\[{m["release_type"] or "?"}] {m["release_title"]}[/dim]'
                 f'{vtype_str}{canon_str}'
             )
 

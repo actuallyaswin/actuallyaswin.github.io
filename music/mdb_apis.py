@@ -17,6 +17,8 @@ __all__ = [
     'AOTY_AHEAD', 'DATES_AHEAD',
     '_extract_mbid',
     'caa_fetch_front_image_url',
+    'caa_fetch_front_image_urls',
+    'itunes_fetch_artwork_url',
     'mb_find_release', 'mb_fetch_recording_ids',
     'mb_fetch_release_data', 'mb_fetch_artist_data',
     'mb_fetch_release_group_releases',
@@ -28,6 +30,7 @@ __all__ = [
 ]
 
 import json
+import html as html_lib
 import logging
 import os
 import re
@@ -184,7 +187,7 @@ class SpotifyClient:
                 'Content-Type':  'application/x-www-form-urlencoded',
             },
         )
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             d = json.loads(r.read())
         self._token  = d['access_token']
         self._expiry = time.time() + d['expires_in']
@@ -287,6 +290,16 @@ def caa_fetch_front_image_url(release_mbid: str) -> 'str | None':
     """Fetch the front cover art URL from Cover Art Archive for a release MBID.
     Uses the 'large' thumbnail when available (still high-res, faster than original).
     Returns None on 404 or if no Front image is found."""
+    urls = caa_fetch_front_image_urls(release_mbid)
+    return urls[0] if urls else None
+
+
+def caa_fetch_front_image_urls(release_mbid: str) -> list:
+    """Fetch every Front-tagged cover art URL from Cover Art Archive for a
+    release MBID — a release can carry more than one (e.g. a reissue with
+    both an original and a redesigned cover attached to the same release).
+    Uses the 'large' thumbnail when available. Returns [] on 404 or if no
+    Front image is found."""
     try:
         data = _http_get_json(
             f'{CAA_API}/release/{release_mbid}',
@@ -295,13 +308,16 @@ def caa_fetch_front_image_url(release_mbid: str) -> 'str | None':
         )
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            return None
+            return []
         raise
+    urls = []
     for image in data.get('images', []):
         if 'Front' in (image.get('types') or []):
             thumbs = image.get('thumbnails') or {}
-            return thumbs.get('large') or thumbs.get('small') or image.get('image')
-    return None
+            url = thumbs.get('large') or thumbs.get('small') or image.get('image')
+            if url:
+                urls.append(url)
+    return urls
 
 
 # ── MusicBrainzRelease ────────────────────────────────────────────────────────
@@ -696,6 +712,7 @@ class SpotifyRelease:
             'artists':      item.get('artists', []),
             'release_date': item.get('release_date', ''),
             'album_type':   item.get('album_type', ''),
+            'total_tracks': item.get('total_tracks'),
         })
 
     # -- lazy helpers --
@@ -723,6 +740,13 @@ class SpotifyRelease:
         if artists and isinstance(artists[0], dict):
             return artists[0].get('name', '')
         return ''
+
+    @property
+    def total_tracks_hint(self) -> 'int | None':
+        """Track count from the search-result seed, if available — cheap,
+        no network fetch. None if constructed some other way (e.g. by ID
+        directly) rather than via from_search_item."""
+        return (self._data or {}).get('total_tracks')
 
     @property
     def year(self) -> str:
@@ -993,8 +1017,10 @@ def mb_fetch_release_data(mbid: str) -> 'tuple[str, str, str | None]':
 def mb_fetch_artist_data(mbid: str) -> dict:
     """Fetch artist metadata from MusicBrainz.
     Returns dict with type, gender, country, formed_year, disbanded_year,
-    sort_name, disambiguation, and wikipedia_url."""
-    data = _mb_get_safe(f'/artist/{mbid}', {'inc': 'url-rels'})
+    sort_name, disambiguation, wikipedia_url, and members (list of dicts
+    with mbid/name/ended for 'member of band' relations, present only when
+    this artist is a Group)."""
+    data = _mb_get_safe(f'/artist/{mbid}', {'inc': 'url-rels+artist-rels'})
     if not data:
         return {}
     out = {}
@@ -1014,6 +1040,27 @@ def mb_fetch_artist_data(mbid: str) -> dict:
         if 'wikipedia.org/wiki/' in url:
             out['wikipedia_url'] = url
             break
+
+    members = []
+    for rel in data.get('relations') or []:
+        if rel.get('target-type') != 'artist' or rel.get('type') != 'member of band':
+            continue
+        # Direction 'backward' means this artist page's relation target is a
+        # member OF this artist (i.e. this artist is the group) — the other
+        # direction means this artist is itself a member of the target group.
+        if rel.get('direction') != 'backward':
+            continue
+        member = rel.get('artist') or {}
+        if not member.get('id'):
+            continue
+        members.append({
+            'mbid':  member['id'],
+            'name':  member.get('name', ''),
+            'ended': bool(rel.get('ended')),
+        })
+    if members:
+        out['members'] = members
+
     return out
 
 
@@ -1108,6 +1155,72 @@ _ITUNES_ID_RE = re.compile(
     re.IGNORECASE,
 )
 _ITUNES_BARE_RE = re.compile(r'^\d{7,12}$')
+
+
+_AM_WEB_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+              '(KHTML, like Gecko) Chrome/124.0 Safari/537.36')
+_AM_WEB_INTERVAL = 2.0
+_am_web_lim = RateLimiter(_AM_WEB_INTERVAL)
+_AM_DESC_RE = re.compile(
+    r'data-testid="description"\s*>.*?<p data-testid="truncate-text"[^>]*>(.*?)</p>',
+    re.DOTALL,
+)
+_AM_TAG_RE = re.compile(r'<!--\s*HTML_TAG_(?:START|END)\s*-->')
+
+
+def apple_music_fetch_editorial_note(apple_music_id: str, country: str = 'us',
+                                      timeout: int = 10) -> 'str | None':
+    """Scrape the "About this Album" editorial blurb from an Apple Music
+    album page. Apple's public catalog API (and the iTunes Lookup API) don't
+    expose this text at all — it only exists in the server-rendered web
+    player HTML. The `-` placeholder slug redirects to the real one, so we
+    never need to know it. Returns None if the album has no editorial note
+    (most don't) or the page can't be fetched."""
+    url = f'https://music.apple.com/{country}/album/-/{apple_music_id}'
+    try:
+        raw = _http_get(url, headers={'User-Agent': _AM_WEB_UA}, lim=_am_web_lim, timeout=timeout)
+    except urllib.error.HTTPError:
+        return None
+    html = raw.decode('utf-8', errors='replace')
+    m = _AM_DESC_RE.search(html)
+    if not m:
+        return None
+    text = _AM_TAG_RE.sub('', m.group(1))
+    text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', text)   # paragraph breaks
+    text = re.sub(r'<[^>]+>', '', text)                 # strip remaining tags (b/i/etc.)
+    text = html_lib.unescape(text).strip()
+    return text or None
+
+
+def itunes_lookup_by_upc(upc: str, timeout: int = 8) -> 'str | None':
+    """Look up an Apple Music/iTunes collection ID by UPC/EAN barcode.
+    Unlike Deezer, iTunes accepts the barcode zero-padded or not. Returns
+    the collection ID as a string, or None if no album matches."""
+    url = f'{ITUNES_LOOKUP}?upc={upc}&entity=album&country=US'
+    raw = _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=timeout)
+    results = raw.get('results') or []
+    album = next((r for r in results if r.get('wrapperType') == 'collection'), None)
+    if not album:
+        return None
+    cid = album.get('collectionId')
+    return str(cid) if cid else None
+
+
+def itunes_fetch_artwork_url(itunes_id: str, timeout: int = 8) -> 'str | None':
+    """Fetch just the 3000x3000 cover art URL for an iTunes/Apple Music
+    collection ID — a plain `entity=album` lookup, not the full
+    `ItunesRelease` (which also pulls the entire tracklist and is overkill
+    when only art is needed)."""
+    url = f'{ITUNES_LOOKUP}?id={itunes_id}&entity=album&country=US'
+    raw = _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=timeout)
+    results = raw.get('results') or []
+    album = next((r for r in results if r.get('wrapperType') == 'collection'), None)
+    if not album:
+        return None
+    art = (album.get('artworkUrl100') or '').strip()
+    if not art:
+        return None
+    return re.sub(r'\b\d+x\d+bb\b', '3000x3000bb', art)
 
 
 class ItunesRelease:
@@ -1569,7 +1682,7 @@ class GeniusClient:
             headers={'Content-Type': 'application/x-www-form-urlencoded',
                      'User-Agent': 'mdb/1.0'},
         )
-        resp = json.loads(urllib.request.urlopen(req).read())
+        resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
         if 'access_token' not in resp:
             raise RuntimeError(f'Genius auth failed: {resp}')
         return cls(resp['access_token'])

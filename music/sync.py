@@ -13,6 +13,8 @@ Usage:
   sync status
 """
 
+from __future__ import annotations
+
 import argparse
 import base64
 import concurrent.futures
@@ -45,7 +47,7 @@ from mdb_strings import (
     extract_mbid as _extract_mbid,
     extract_spotify_id as _extract_spotify_id,
 )
-from mdb_apis import SpotifyRelease
+from mdb_apis import SpotifyRelease, _bare_track_title
 from mdb_cli  import render_diff
 from mdb_ops  import (
     bulk_rematch, bulk_rematch_by_name, bulk_rematch_by_aliases, bulk_rematch_by_title, db_search_releases as _db_search_releases,
@@ -464,13 +466,71 @@ def _sp_search_album(token: str, artist: str, album: str) -> list:
     )
     try:
         data = _sp_request(req)
-        return [
+        results = [
             SpotifyRelease.from_search_item(item)
             for item in data.get('albums', {}).get('items', [])
         ]
+        return _dedupe_explicit_variants(results)
     except Exception as e:
         console.print(f'  [dim yellow]Spotify search failed: {e}[/dim yellow]')
         return []
+
+
+def _tracks_identical_except_explicit(a: 'SpotifyRelease', b: 'SpotifyRelease') -> bool:
+    """True if a and b have the same track titles and durations in the same
+    order — the only thing allowed to differ is explicit-ness. Triggers a
+    full track fetch on both (network) if not already cached."""
+    try:
+        at = [(_bare_track_title(t['name']).lower(), t.get('duration_ms') or 0) for t in a.tracks]
+        bt = [(_bare_track_title(t['name']).lower(), t.get('duration_ms') or 0) for t in b.tracks]
+    except Exception:
+        return False
+    if len(at) != len(bt):
+        return False
+    for (a_title, a_dur), (b_title, b_dur) in zip(at, bt):
+        if a_title != b_title or abs(a_dur - b_dur) > 2000:
+            return False
+    return True
+
+
+def _dedupe_explicit_variants(sp_results: list) -> list:
+    """Collapse Spotify search results that are identical except for the
+    explicit flag/count into a single entry (the more-explicit one, per
+    SpotifyRelease.canonical_score()'s existing tie-break).
+
+    Spotify sometimes indexes "clean" and "explicit" editions of the same
+    album as separate IDs with otherwise-identical tracklists — diffing
+    these to tell them apart is pure noise, not a real decision to make.
+
+    Cheap-field pre-filter first (name/artist/year/total_tracks — no network)
+    so genuinely distinct candidates never trigger a track fetch.
+    """
+    if len(sp_results) < 2:
+        return sp_results
+
+    groups: list = []
+    for r in sp_results:
+        placed = False
+        for g in groups:
+            same_cheap = (
+                g[0].name == r.name and g[0].artist == r.artist
+                and g[0].year == r.year
+                and g[0].total_tracks_hint == r.total_tracks_hint
+            )
+            if same_cheap and _tracks_identical_except_explicit(g[0], r):
+                g.append(r)
+                placed = True
+                break
+        if not placed:
+            groups.append([r])
+
+    # Tracks already confirmed identical within a group — the only real
+    # difference is explicit-ness, so prefer that directly. Don't reuse
+    # canonical_score() here: its date/precision comparison is meant for
+    # picking among genuinely different candidate releases and can rank a
+    # same-content duplicate with a slightly different (often bogus,
+    # off-by-a-day) release date ahead of the more-explicit one.
+    return [max(g, key=lambda r: r.explicit_count) for g in groups]
 
 
 def _print_db_result(i: int, row: dict) -> None:
@@ -1179,6 +1239,12 @@ def cmd_match(args):
                 if sp_results:
                     console.print()
 
+            # Maps each Spotify ID back to the display number the user saw
+            # above, so a later [d]iff table's columns are identifiable —
+            # otherwise "sp 2." / "sp 3." above and a truncated-ID column
+            # header below have no visible connection to each other.
+            sp_labels = {r.id: str(i) for i, r in enumerate(sp_results, sp_offset + 1)}
+
             total_results = len(db_results) + len(sp_results)
 
             # While the user reads results and thinks, kick off background work:
@@ -1269,7 +1335,7 @@ def cmd_match(args):
                     break
 
                 elif choice == 'd' and len(sp_results) >= 2:
-                    render_diff(*sp_results, compact=True)
+                    render_diff(*sp_results, compact=True, id_labels=sp_labels)
                     console.print(hint, end='')
 
                 elif raw.lower().startswith('db:') or re.match(r'^[0-9A-Z]{26}$', raw):
@@ -1313,7 +1379,7 @@ def cmd_match(args):
                         if len(to_import) > 1:
                             sp_only = [x for x in to_import if isinstance(x, SpotifyRelease)]
                             if len(sp_only) >= 2:
-                                render_diff(*sp_only, compact=True)
+                                render_diff(*sp_only, compact=True, id_labels=sp_labels)
                             console.print(
                                 f'  [dim]Import all {len(to_import)}? '
                                 f'\\[Y/n]:[/dim] ',
