@@ -23,7 +23,7 @@ const ViewTop = (() => {
     // entirely; its layout is derived purely from topsterCount via
     // _computeTopsterTiers().
     let collageTheme = 'quilt';   // 'quilt' | 'captioned' | 'topster'
-    let topsterCount = 30;
+    let topsterCount = 36;
 
     // Tracks-only virtualized-list state (List mode keeps its existing
     // dedicated UI rather than createWideCard(), per spec §1).
@@ -317,24 +317,25 @@ const ViewTop = (() => {
         { key: 'captioned', label: 'Captioned', icon: 'type' },
         { key: 'topster',   label: 'Topster',   icon: 'list' },
     ];
-    const _TOPSTER_COUNTS = [20, 30, 42, 50];
+    const _TOPSTER_COUNTS = [10, 22, 36, 43, 50];
 
-    // Reproduces the Last.fm-community "Topster" step-pyramid: tier 1 is a
-    // 5-col × 2-row block (10 cells, largest tiles), tier 2 is 6×2 (12
-    // cells, smaller), tier 3 is 7 cols × as many rows as needed to absorb
-    // whatever's left (smallest tiles) — verified against several real
-    // Topster exports, which all split e.g. 42 total into exactly 10/12/20.
+    // Reproduces the Last.fm-community "Topster" step-pyramid: exactly 3
+    // tiers, cols fixed at 5/6/7. Tiers 1-2 cap at 2 rows each (10, then 12
+    // cells); tier 3 absorbs whatever's left at 7 cols, growing rows as
+    // needed. Verified against the 5 supported counts: 10→[10], 22→[10,12],
+    // 36→[10,12,14] (tier 3 @ 2 rows), 43→[10,12,21] (tier 3 @ 3 rows),
+    // 50→[10,12,28] (tier 3 @ 4 rows).
     function _computeTopsterTiers(n) {
         const tiers = [];
         let remaining = n;
-        let cols = 5;
-        while (remaining > 0) {
-            const isLast = remaining <= cols * 3 || cols >= 9;
-            const rows = isLast ? Math.ceil(remaining / cols) : 2;
-            const count = isLast ? remaining : cols * rows;
-            tiers.push({ count, cols, rows });
+        for (const cols of [5, 6]) {
+            if (remaining <= 0) break;
+            const count = Math.min(remaining, cols * 2);
+            tiers.push({ count, cols, rows: Math.ceil(count / cols) });
             remaining -= count;
-            cols += 1;
+        }
+        if (remaining > 0) {
+            tiers.push({ count: remaining, cols: 7, rows: Math.ceil(remaining / 7) });
         }
         return tiers;
     }
