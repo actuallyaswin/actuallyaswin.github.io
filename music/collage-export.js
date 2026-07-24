@@ -66,7 +66,37 @@ const CollageExport = (() => {
         ctx.fillText('♪', x + size / 2, y + size / 2 + size * 0.03);
     }
 
+    // Small bottom-right attribution watermark, drawn last so it sits above
+    // the art/labels — matches the site's heading font (Raleway) and green
+    // accent (var(--primary) / #87ae73), rendered at a fixed logical size
+    // regardless of overall canvas size so it never overwhelms a small export.
+    // `dimBackdrop` skips the semi-transparent black pill behind the text —
+    // pointless on Topster's already-black background, needed on Quilt/
+    // Captioned where the watermark otherwise sits directly on album art.
+    function _drawWatermark(ctx, canvasWidth, canvasHeight, dimBackdrop = true) {
+        const text = 'actuallyaswin.github.io/music';
+        const fontSize = 13;
+        const padding = 10;
+        ctx.font = `600 ${fontSize}px Raleway, sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        const textWidth = ctx.measureText(text).width;
+
+        if (dimBackdrop) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+            ctx.fillRect(
+                canvasWidth - textWidth - padding * 2.5,
+                canvasHeight - fontSize - padding * 1.6,
+                textWidth + padding * 2.5,
+                fontSize + padding * 1.6
+            );
+        }
+        ctx.fillStyle = '#87ae73';
+        ctx.fillText(text, canvasWidth - padding, canvasHeight - padding * 0.8);
+    }
+
     async function exportCollage({ rows, cols, cells, showLabels, theme, tiers, filenamePrefix }) {
+        await document.fonts.ready;  // ensure Raleway (watermark) is loaded before canvas text draws
         if (theme === 'topster') return _exportTopster({ cells, tiers, filenamePrefix });
 
         const canvas = document.createElement('canvas');
@@ -86,6 +116,7 @@ const CollageExport = (() => {
             if (showLabels) _drawLabel(ctx, x, y, cells[i].label);
         }
 
+        _drawWatermark(ctx, cols * CELL_PX, rows * CELL_PX);
         _download(canvas, `${filenamePrefix}-${cols}x${rows}`);
     }
 
@@ -156,6 +187,7 @@ const CollageExport = (() => {
             listY += tier.count * LINE_H + BLOCK_GAP;
         }
 
+        _drawWatermark(ctx, canvasWidth, canvasHeight, false);
         _download(canvas, `${filenamePrefix}-topster`);
     }
 
