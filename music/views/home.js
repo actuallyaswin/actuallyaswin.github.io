@@ -4,13 +4,11 @@ const ViewHome = (() => {
 
     function mount(container, db, params) {
         _db = db;
-        document.title = 'aswin.db/music';
+        document.title = 'Music | Aswin Sivaraman';
 
         container.innerHTML = `
             <header>
-                <div class="site-logo">
-                    <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-                </div>
+                <h1>Music</h1>
                 <p class="subtitle">
                     Explore data through the years:
                     <a href="?view=year" class="year-link" id="yearRange">Loading...</a>
@@ -43,11 +41,17 @@ const ViewHome = (() => {
                     <div id="weeklyReleasesCollage"></div>
                 </section>
                 <section id="homeRecentPlaysSection" hidden>
-                    <h2>Recent Plays</h2>
+                    <div class="section-header">
+                        <h2>Recent Plays</h2>
+                        <a href="?view=history" class="home-see-all">See all →</a>
+                    </div>
                     <div class="recent-plays-list" id="homeRecentPlaysList"></div>
                 </section>
                 <section class="nerds-section">
-                    <h2>Stats for Nerds</h2>
+                    <div class="section-header">
+                        <h2>Stats for Nerds</h2>
+                        <a href="?view=stats" class="home-see-all">See all →</a>
+                    </div>
                     <dl class="nerds-list">
                         <div class="nerds-row">
                             <dt>Days of Scrobbling</dt>
@@ -159,121 +163,39 @@ const ViewHome = (() => {
     }
 
 
+    // All values here come from `mdb.py stats refresh`'s `nerd` cache entry —
+    // see views/stats.js's `_cache()`/`_nerdSection()` for the same source.
     function loadNerdsStats() {
-        const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const res = _db.exec('SELECT value_json FROM stats_cache WHERE key = ?', ['nerd'])[0];
+        if (!res) return;
+        const n = JSON.parse(res.values[0][0]);
 
-        // Days of Scrobbling + Avg Listens/Day
-        const daysResult = _db.exec(`
-            SELECT
-                COUNT(DISTINCT date(l.timestamp, 'unixepoch')) as active_days,
-                CAST(julianday(date(MAX(l.timestamp), 'unixepoch'))
-                     - julianday(date(MIN(l.timestamp), 'unixepoch')) + 1 AS INTEGER) as total_days,
-                COUNT(l.id) as total_listens
-            FROM listens l
-            JOIN tracks t ON l.track_id = t.id WHERE t.hidden = 0
-        `)[0];
-        if (daysResult) {
-            const [active, total, totalListens] = daysResult.values[0];
-            const pct = total > 0 ? ((active / total) * 100).toFixed(1) : '0';
-            const el = document.getElementById('nerdDays');
-            if (el) el.textContent = `${formatNumber(active)} (${pct}%)`;
-            const avgEl = document.getElementById('nerdAvgDay');
-            if (avgEl && active > 0) avgEl.textContent = (totalListens / active).toFixed(1);
-        }
+        const daysEl = document.getElementById('nerdDays');
+        if (daysEl) daysEl.textContent = `${formatNumber(n.active_days)} (${n.active_pct}%)`;
+        const avgEl = document.getElementById('nerdAvgDay');
+        if (avgEl) avgEl.textContent = n.avg_per_day;
 
-        // Total Listening Time
-        const timeResult = _db.exec(`
-            SELECT SUM(COALESCE(l.ms_played, t.duration_ms)) as total_ms
-            FROM listens l
-            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
-        `)[0];
-        if (timeResult) {
-            const totalMs = timeResult.values[0][0] || 0;
-            const totalHrs = Math.floor(totalMs / 3600000);
-            const days = Math.floor(totalHrs / 24);
-            const remHrs = totalHrs % 24;
-            const el = document.getElementById('nerdTotalTime');
-            if (el) el.textContent = days > 0 ? `${formatNumber(days)} days, ${remHrs} hrs` : `${formatNumber(totalHrs)} hrs`;
-        }
+        const totalHrs = n.total_hours;
+        const days = Math.floor(totalHrs / 24);
+        const remHrs = totalHrs % 24;
+        const timeEl = document.getElementById('nerdTotalTime');
+        if (timeEl) timeEl.textContent = days > 0 ? `${formatNumber(days)} days, ${remHrs} hrs` : `${formatNumber(totalHrs)} hrs`;
 
-        // Most Active Month
-        const peakResult = _db.exec(`
-            SELECT strftime('%Y-%m', datetime(l.timestamp, 'unixepoch')) as ym,
-                   COUNT(l.id) as cnt
-            FROM listens l
-            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
-            GROUP BY ym
-            ORDER BY cnt DESC
-            LIMIT 1
-        `)[0];
-        if (peakResult) {
-            const [ym, cnt] = peakResult.values[0];
-            const [year, month] = ym.split('-');
-            const label = `${MONTH_NAMES[parseInt(month) - 1]} ${year}`;
-            const el = document.getElementById('nerdPeakMonth');
-            if (el) el.textContent = `${label} · ${formatNumber(cnt)}`;
-        }
+        const peakEl = document.getElementById('nerdPeakMonth');
+        if (peakEl) peakEl.textContent = n.peak_month ? `${n.peak_month} · ${formatNumber(n.peak_month_count)}` : '—';
 
-        // One hit wonders
-        const ohwResult = _db.exec(`
-            WITH artist_counts AS (
-                SELECT ta.artist_id, COUNT(l.id) as play_count
-                FROM listens l
-                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
-                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-                JOIN artists a ON ta.artist_id = a.id AND a.hidden = 0
-                GROUP BY ta.artist_id
-            )
-            SELECT
-                SUM(CASE WHEN play_count = 1 THEN 1 ELSE 0 END) as ohw,
-                COUNT(*) as total
-            FROM artist_counts
-        `)[0];
-        if (ohwResult) {
-            const [ohw, total] = ohwResult.values[0];
-            const pct = total > 0 ? ((ohw / total) * 100).toFixed(1) : '0';
-            const el = document.getElementById('nerdOneHit');
-            if (el) el.textContent = `${formatNumber(ohw)} (${pct}%)`;
-        }
+        const ohwPct = n.one_hit_wonders_total ? ((n.one_hit_wonders / n.one_hit_wonders_total) * 100).toFixed(1) : '0';
+        const ohwEl = document.getElementById('nerdOneHit');
+        if (ohwEl) ohwEl.textContent = `${formatNumber(n.one_hit_wonders)} (${ohwPct}%)`;
 
-        // Every year artists
-        const eyResult = _db.exec(`
-            WITH artist_years AS (
-                SELECT ta.artist_id,
-                       strftime('%Y', datetime(l.timestamp, 'unixepoch')) AS yr
-                FROM listens l
-                JOIN tracks t ON l.track_id = t.id
-                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-                WHERE t.hidden = 0
-                GROUP BY ta.artist_id, yr
-            ),
-            total_years AS (
-                SELECT COUNT(DISTINCT strftime('%Y', datetime(l.timestamp, 'unixepoch'))) AS n
-                FROM listens l
-                JOIN tracks t ON l.track_id = t.id
-                WHERE t.hidden = 0
-            ),
-            every_year AS (
-                SELECT artist_id, COUNT(DISTINCT yr) AS yrs
-                FROM artist_years
-                GROUP BY artist_id
-                HAVING yrs = (SELECT n FROM total_years)
-            )
-            SELECT a.id, a.name, (SELECT n FROM total_years) AS total_yrs
-            FROM every_year ey
-            JOIN artists a ON a.id = ey.artist_id
-            WHERE a.hidden = 0
-            ORDER BY a.name
-        `)[0];
-        if (eyResult && eyResult.values.length > 0) {
-            const totalYrs = eyResult.values[0][2];
-            const artists = eyResult.values.map(([id, name]) => ({ id, name }));
+        const artists = n.every_year_artists;
+        if (artists.length > 0) {
             const ddEl = document.getElementById('nerdEveryYear');
             const panel = document.getElementById('nerdEveryYearPanel');
             const list  = document.getElementById('nerdEveryYearList');
             if (ddEl) {
                 ddEl.innerHTML = `${artists.length}
-                    <button class="nerds-accordion-btn" id="nerdEveryYearToggle" title="Show artists (${totalYrs} years)">
+                    <button class="nerds-accordion-btn" id="nerdEveryYearToggle" title="Show artists (${n.every_year_total_years} years)">
                         <i data-lucide="square-menu"></i>
                     </button>`;
                 lucide.createIcons({ nodes: [ddEl] });
@@ -290,51 +212,10 @@ const ViewHome = (() => {
             }
         }
 
-        // Eddington number (tracks)
-        const eddResult = _db.exec(`
-            WITH track_counts AS (
-                SELECT l.track_id, COUNT(l.id) as play_count
-                FROM listens l
-                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
-                GROUP BY l.track_id
-            ),
-            ranked AS (
-                SELECT play_count,
-                       ROW_NUMBER() OVER (ORDER BY play_count DESC) as rank
-                FROM track_counts
-            )
-            SELECT MAX(rank) as eddington
-            FROM ranked
-            WHERE play_count >= rank
-        `)[0];
-        if (eddResult) {
-            const el = document.getElementById('nerdEddington');
-            if (el) el.textContent = formatNumber(eddResult.values[0][0]);
-        }
-
-        // Artist cut over point
-        const cutResult = _db.exec(`
-            WITH artist_counts AS (
-                SELECT ta.artist_id, COUNT(l.id) as play_count
-                FROM listens l
-                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
-                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-                JOIN artists a ON ta.artist_id = a.id AND a.hidden = 0
-                GROUP BY ta.artist_id
-            ),
-            ranked AS (
-                SELECT play_count,
-                       ROW_NUMBER() OVER (ORDER BY play_count DESC) as rank
-                FROM artist_counts
-            )
-            SELECT MAX(rank) as cutover
-            FROM ranked
-            WHERE play_count >= rank
-        `)[0];
-        if (cutResult) {
-            const el = document.getElementById('nerdArtistCutover');
-            if (el) el.textContent = formatNumber(cutResult.values[0][0]);
-        }
+        const eddEl = document.getElementById('nerdEddington');
+        if (eddEl) eddEl.textContent = formatNumber(n.eddington);
+        const cutEl = document.getElementById('nerdArtistCutover');
+        if (cutEl) cutEl.textContent = formatNumber(n.artist_cutover);
 
         lucide.createIcons();
     }
