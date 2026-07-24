@@ -31,7 +31,7 @@ const ViewYear = (() => {
         if (currentYear < MIN_YEAR) currentYear = MIN_YEAR;
         if (currentYear > MAX_YEAR) currentYear = MAX_YEAR;
 
-        document.title = `aswin.db/music - ${currentYear}`;
+        document.title = `${currentYear}`;
 
         container.innerHTML = buildTemplate();
 
