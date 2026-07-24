@@ -10,6 +10,13 @@
 // used elsewhere on the site, and the export continues rather than aborting.
 const CollageExport = (() => {
     const CELL_PX = 300;
+    // Canvas pixel density multiplier — all layout math below stays in
+    // logical pixels; ctx.scale() maps them to actual output pixels. Without
+    // this, text (drawn crisp at whatever raw pixel size the canvas is) came
+    // out visibly aliased/pixelated once viewed at normal zoom, since a
+    // 15px canvas font has no supersampling headroom the way an HTML <span>
+    // would via the browser's own subpixel rendering.
+    const SCALE = 2;
 
     async function _loadCellImage(url) {
         try {
@@ -63,9 +70,10 @@ const CollageExport = (() => {
         if (theme === 'topster') return _exportTopster({ cells, tiers, filenamePrefix });
 
         const canvas = document.createElement('canvas');
-        canvas.width = cols * CELL_PX;
-        canvas.height = rows * CELL_PX;
+        canvas.width = cols * CELL_PX * SCALE;
+        canvas.height = rows * CELL_PX * SCALE;
         const ctx = canvas.getContext('2d');
+        ctx.scale(SCALE, SCALE);
 
         for (let i = 0; i < cells.length; i++) {
             const row = Math.floor(i / cols);
@@ -110,9 +118,10 @@ const CollageExport = (() => {
         const canvasWidth = PADDING * 2 + gridWidth + GAP + sidebarWidth;
 
         const canvas = document.createElement('canvas');
-        canvas.width = canvasWidth;
-        canvas.height = canvasHeight;
+        canvas.width = canvasWidth * SCALE;
+        canvas.height = canvasHeight * SCALE;
         const ctx = canvas.getContext('2d');
+        ctx.scale(SCALE, SCALE);
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
