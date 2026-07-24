@@ -62,5 +62,5 @@ Output lands in `_site/`, which is gitignored and never committed — GitHub Act
 | `_layouts/post.html` | Single-post page template |
 | `_layouts/blog-index.html` | `/blog/` index template |
 | `_includes/figure.html` | Captioned-figure include used above |
-| `css/code.css` | Code block colors (dark/light) |
+| `css/blog.css` | Post/product-card layout, code block + Mermaid colors (dark/light) |
 | `css/katex/` | Vendored KaTeX CSS/fonts (no CDN dependency for math) |

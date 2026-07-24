@@ -22,10 +22,21 @@ kramdown:
 
 # Exclude these paths from being built/served on GitHub Pages
 # music_editor/ is a private local-only tool and should not be publicly accessible
-# docs/ holds Claude Code planning artifacts (specs/plans) — not meant to be published
+# music/*.py, *.md, *.csv, *.json, *.ipynb, *.sh are the Python CLI toolchain,
+# working notes, and scratch data behind music/ — not part of the public SPA
 exclude:
   - music_editor/
   - README.md
   - blog/README.md
   - .gitignore
-  - docs/
+  - music/*.py
+  - music/*.md
+  - music/*.csv
+  - music/*.json
+  - music/*.ipynb
+  - music/*.sh
+  - music/*.txt
+  - music/tmp.html
+  - music/genius_api.html
+  - music/listening_history.sqlite
+  - music/listening_history_overrides.sqlite

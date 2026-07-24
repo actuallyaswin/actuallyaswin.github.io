@@ -2,7 +2,10 @@
 layout: default
 ---
 <div class="blog-index">
-  <h1>{{ page.title | default: "Blog" }}</h1>
+  <div class="blog-index-header">
+    <h1>{{ page.title | default: "Blog" }}</h1>
+    <a class="rss-badge" href="{{ '/blog/feed.xml' | relative_url }}" title="Subscribe via RSS">Subscribe via RSS</a>
+  </div>
   <section>
     {% if page.description %}<p class="blog-index-description">{{ page.description }}</p>{% endif %}
     {% if content and content != "" %}{{ content }}{% endif %}
