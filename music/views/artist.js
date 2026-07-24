@@ -30,8 +30,8 @@ const ViewArtist = (() => {
                 <div class="artist-photo-container">
                     <div class="artist-photo" id="artistPhoto">
                         <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                            <circle cx="50" cy="50" r="50" fill="#1e293b"/>
-                            <text x="50" y="60" text-anchor="middle" font-size="40" fill="#475569">♪</text>
+                            <circle cx="50" cy="50" r="50" fill="#20232c"/>
+                            <text x="50" y="60" text-anchor="middle" font-size="40" fill="#767c85">♪</text>
                         </svg>
                     </div>
                     <div class="artist-badges" id="artistBadges"></div>
@@ -161,7 +161,7 @@ const ViewArtist = (() => {
         // Past names go into the stats table (plain text row), not prominent display
         // akaEl left hidden intentionally
 
-        document.title = `aswin.db/music - ${name}`;
+        document.title = name;
 
         // First/last listen
         const timeResult = _db.exec(`
@@ -532,55 +532,27 @@ const ViewArtist = (() => {
         section.removeAttribute('hidden');
     }
 
+    // Cert tier comes from `artists.cert`, kept up to date by `mdb.py certs
+    // refresh`, rather than recomputed here from a live play count. Peak
+    // years come from `artist_year_medals`, precomputed once (for every
+    // artist × year) by `mdb.py stats refresh` — this used to be a
+    // dataset-wide RANK() OVER (PARTITION BY year) scan on every page load.
     function loadArtistBadges() {
         const safeId = _artistId.replace(/'/g, "''");
         const badgesEl = document.getElementById('artistBadges');
         if (!badgesEl) return;
 
-        const playsResult = _db.exec(`
-            SELECT COUNT(*) FROM listens l
-            JOIN tracks t ON l.track_id = t.id
-            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
-        `)[0];
-        const totalPlays = playsResult ? playsResult.values[0][0] : 0;
-
-        let certTier = null;
-        if (totalPlays >= 1000)     certTier = 'diamond';
-        else if (totalPlays >= 500) certTier = 'platinum';
-        else if (totalPlays >= 250) certTier = 'gold';
+        const certResult = _db.exec(`SELECT cert FROM artists WHERE id = '${safeId}'`)[0];
+        const certTier = certResult ? certResult.values[0][0] : null;
 
         const certLabels = { gold: 'Gold — 250+ plays', platinum: 'Platinum — 500+ plays', diamond: 'Diamond — 1,000+ plays' };
         if (certTier) badgesEl.innerHTML = `<span class="badge-cert badge-cert-${certTier}" title="${certLabels[certTier]}">${certTier}</span>`;
 
         // Peak years → compact stats row instead of badge tower.
-        // Two-step ranking: first find which years this artist has plays,
-        // then rank only across those years — avoids a full cross-artist scan.
         const medalResult = _db.exec(`
-            WITH artist_years AS (
-                SELECT l.year
-                FROM listens l
-                JOIN tracks t ON l.track_id = t.id
-                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-                WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
-                GROUP BY l.year
-            ),
-            year_plays AS (
-                SELECT ta.artist_id, l.year, COUNT(*) as plays
-                FROM listens l
-                JOIN tracks t ON l.track_id = t.id
-                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-                WHERE t.hidden = 0 AND l.year IN (SELECT year FROM artist_years)
-                GROUP BY ta.artist_id, l.year
-            ),
-            ranked AS (
-                SELECT artist_id, year,
-                    RANK() OVER (PARTITION BY year ORDER BY plays DESC) as rnk
-                FROM year_plays
-            )
-            SELECT year, rnk FROM ranked
-            WHERE artist_id = '${safeId}' AND rnk <= 3
-            ORDER BY rnk, year ASC
+            SELECT year, rank FROM artist_year_medals
+            WHERE artist_id = '${safeId}'
+            ORDER BY rank, year ASC
         `)[0];
 
         if (medalResult?.values.length) {

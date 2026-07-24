@@ -23,7 +23,7 @@ const ViewHistory = (() => {
 
     function mount(container, db, params) {
         _db = db;
-        document.title = 'aswin.db/music – History';
+        document.title = 'History | Aswin Sivaraman';
 
         container.innerHTML = `
             <header><h1>History</h1></header>
@@ -204,10 +204,16 @@ const ViewHistory = (() => {
         const sp      = _rows.filter(r => r[2] === 'spotify').length;
         const matchPct = total ? Math.round((matched / total) * 100) : 0;
 
-        // Peak hour from timestamps
+        // Peak hour from timestamps — fixed EST offset (UTC-5, no DST), so
+        // this reads the same regardless of the visitor's own timezone.
         const hourBucket = new Array(24).fill(0);
-        _rows.forEach(r => { hourBucket[new Date(r[1] * 1000).getHours()]++; });
+        _rows.forEach(r => { hourBucket[(new Date(r[1] * 1000).getUTCHours() + 19) % 24]++; });
         const peakHour = hourBucket.indexOf(Math.max(...hourBucket));
+        const peakHourLabel = (() => {
+            const period = peakHour < 12 ? 'AM' : 'PM';
+            const h12 = peakHour % 12 === 0 ? 12 : peakHour % 12;
+            return `${h12}${period} EST`;
+        })();
 
         // Top releases (by listens count in current view)
         const relCount = {}, relName = {};
@@ -225,7 +231,7 @@ const ViewHistory = (() => {
             ['Matched',    `${matchPct}%`],
             ['Last.fm',    fmt(lfm)],
             ['Spotify',    fmt(sp)],
-            ['Peak hour',  `${peakHour}:00`],
+            ['Peak hour',  peakHourLabel],
         ];
 
         el.innerHTML = `
@@ -233,7 +239,7 @@ const ViewHistory = (() => {
                 <p class="sidebar-heading">Summary</p>
                 <dl class="nerds-list" style="border:none;border-radius:0">
                     ${summaryRows.map(([k,v]) =>
-                        `<div class="nerds-row"><dt>${k}</dt><dd>${v}</dd></div>`
+                        `<div class="nerds-row"><dt${k === 'Peak hour' ? ' title="Clock times on this site are shown in US Eastern Time (EST), regardless of your own timezone."' : ''}>${k}</dt><dd>${v}</dd></div>`
                     ).join('')}
                 </dl>
             </div>

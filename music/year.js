@@ -1,4 +1,5 @@
 let db = null;
+let _db = null; // alias search.js expects
 let currentYear = null;
 let MIN_YEAR = 2011;
 let MAX_YEAR = 2025;
@@ -17,6 +18,7 @@ async function init() {
 
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
+        _db = db;
         await loadOverridesDatabase(SQL, db);
 
         const yearRange = db.exec(`
@@ -45,7 +47,7 @@ async function init() {
         setupYearNavigation();
         setupControls();
 
-        document.title = `aswin.db/music - ${currentYear}`;
+        document.title = `${currentYear}`;
         lucide.createIcons();
     } catch (error) {
         console.error('Error loading database:', error);
@@ -448,7 +450,7 @@ function navigateToYear(year) {
 
 function switchYear() {
     document.getElementById('yearSelect').value = currentYear;
-    document.title = `aswin.db/music - ${currentYear}`;
+    document.title = `${currentYear}`;
     updateNavigationButtons();
     loadYearStats();
     loadReleases();

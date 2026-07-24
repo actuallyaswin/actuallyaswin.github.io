@@ -1,45 +1,42 @@
+---
+layout: none
+permalink: /music/index.html
+---
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>aswin.db/music</title>
+    <title>Music | Aswin Sivaraman</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
     <!-- OpenGraph -->
     <meta property="og:url" content="https://actuallyaswin.github.io/music/">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="aswin.db/music">
+    <meta property="og:title" content="Music | Aswin Sivaraman">
     <meta property="og:description" content="A browsable archive of Aswin's music listening history — top albums, artists, tracks, and genre trends since 2011.">
     <meta property="og:image" content="https://actuallyaswin.github.io/music/images/og-preview.png">
     <!-- Twitter/X -->
     <meta name="twitter:card" content="summary_large_image">
     <meta property="twitter:domain" content="actuallyaswin.github.io">
     <meta property="twitter:url" content="https://actuallyaswin.github.io/music/">
-    <meta name="twitter:title" content="aswin.db/music">
+    <meta name="twitter:title" content="Music | Aswin Sivaraman">
     <meta name="twitter:description" content="A browsable archive of Aswin's music listening history — top albums, artists, tracks, and genre trends since 2011.">
     <meta name="twitter:image" content="https://actuallyaswin.github.io/music/images/og-preview.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,400;0,700;1,400&family=Raleway:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flag-icons@7.2.3/css/flag-icons.min.css">
+    <link rel="stylesheet" href="{{ '/css/global.css' | relative_url }}">
     <link rel="stylesheet" href="styles.css">
     <!-- Preload the WASM binary so it fetches in parallel with sql-wasm.js parsing -->
     <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm" as="fetch" crossorigin>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="theme.js"></script>
+    <script src="{{ '/js/lucide.js' | relative_url }}"></script>
 </head>
 <body>
-    <!-- Persistent sticky header — present across all views -->
-    <div id="siteHeader" class="site-header-sticky">
-        <div class="site-header-sticky-inner">
-            <a href="?" class="site-logo-small">
-                <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-            </a>
-            <button id="searchBtn" class="search-open-btn" aria-label="Search (⌘K)">
-                <i data-lucide="search"></i>
-            </button>
-        </div>
-    </div>
+    {% include masthead.html show_search=true %}
+    <script src="{{ '/js/get-css-color.js' | relative_url }}"></script>
+    <script src="{{ '/js/theme.js' | relative_url }}"></script>
 
     <!-- Search modal -->
     <div id="searchOverlay" class="search-overlay" hidden aria-modal="true" role="dialog" aria-label="Search">
@@ -59,9 +56,6 @@
         <div id="view-container">
             <div class="loading">Loading database...</div>
         </div>
-        <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
-            <i data-lucide="sun"></i>
-        </button>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
@@ -69,6 +63,7 @@
     <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
     <script src="config.js"></script>
     <script src="constants.js"></script>
+    <script src="genre-tree.js"></script>
     <script src="utils.js"></script>
     <script src="views/home.js"></script>
     <script src="views/year.js"></script>
@@ -82,5 +77,6 @@
     <script src="views/history.js"></script>
     <script src="views/stats.js"></script>
     <script src="app.js"></script>
+    <script src="search.js"></script>
 </body>
 </html>

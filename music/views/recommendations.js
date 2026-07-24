@@ -347,8 +347,8 @@ const ViewRecommendations = (() => {
         const moreResult = _moreFromThisArtist(now);
         const moreRows   = picked(moreResult.rows, SHELF_DESKTOP, 9);
         const moreDesc   = moreResult.name
-            ? `Other albums by ${moreResult.name}, your most-played artist this fortnight.`
-            : 'Other albums by your most-played artist this fortnight.';
+            ? `Other albums by ${moreResult.name}, Aswin's most-played artist this fortnight.`
+            : "Other albums by Aswin's most-played artist this fortnight.";
 
         const anniv      = picked(_anniversary(cm, now), SHELF_DESKTOP, 10);
         const soundtrack = picked(_soundtrackSpotlight(now), SHELF_DESKTOP, 11);
@@ -358,7 +358,7 @@ const ViewRecommendations = (() => {
             // ── Decreasing urgency: current → timely → retrospective → exploratory ──
             ['Favorites This Year',        'Top albums by play count in the past 90 days.',                             favYear],
             ['Rising',                     'Albums with more plays in the last 30 days than the 30 before.',           rising],
-            ['This Month, Past Years',     'Albums you played most during this calendar month in prior years.',         thisMonth],
+            ['This Month, Past Years',     'Albums Aswin played most during this calendar month in prior years.',       thisMonth],
             ['Favorites From Last 5 Years','Most-played album from each of the past five calendar years.',              perYear],
             ['Fading Favorites',           'Top 50 all-time albums with no plays in over a year.',                     fading],
             ['Throwbacks',                 'All-time top albums released more than five years ago.',                    throwback],
@@ -367,7 +367,7 @@ const ViewRecommendations = (() => {
             ['Deep Cut Needed',            'Albums where one track accounts for more than 5× the per-track average.', deepCut],
             ['Only Heard Once',            'Albums with five or fewer total plays, first listened to over a year ago.', heardOnce],
             ['More From This Artist',      moreDesc,                                                                    moreRows],
-            ['Soundtrack Spotlight',       'Soundtracks in your top 20 not played in the past 90 days.',               soundtrack],
+            ['Soundtrack Spotlight',       "Soundtracks in Aswin's top 20 not played in the past 90 days.",           soundtrack],
             ['Short-Form Favourites',      'Most-played EPs and singles.',                                              shortForm],
         ];
 
@@ -379,7 +379,7 @@ const ViewRecommendations = (() => {
     function mount(container, db) {
         _db   = db;
         _seed = _db.exec('SELECT COUNT(*) FROM listens')[0].values[0][0];
-        document.title = 'aswin.db/music – Recommendations';
+        document.title = 'Recommendations | Aswin Sivaraman';
 
         container.innerHTML = `
             <header class="rec-header">

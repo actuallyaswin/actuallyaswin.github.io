@@ -113,8 +113,8 @@ function escapeHtml(text) {
 function getFallbackImageUrl() {
     return 'data:image/svg+xml,' + encodeURIComponent(`
         <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-            <rect width="200" height="200" fill="#1e293b"/>
-            <text x="100" y="115" text-anchor="middle" font-size="80" fill="#475569">♪</text>
+            <rect width="200" height="200" fill="#20232c"/>
+            <text x="100" y="115" text-anchor="middle" font-size="80" fill="#767c85">♪</text>
         </svg>
     `);
 }
@@ -184,7 +184,7 @@ function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes
         `<span class="${i === 0 ? 'release-year' : 'release-type-label'}">${p}</span>`
     ).join('');
 
-    const certLabels = { gold: '50+ plays', platinum: '100+ plays', diamond: '250+ plays' };
+    const certLabels = { gold: '250+ plays', platinum: '500+ plays', diamond: '1,000+ plays' };
     const certDot = cert
         ? `<span class="release-cert-dot release-cert-dot-${cert}" title="${certLabels[cert]}"></span>`
         : '';

@@ -533,7 +533,12 @@ const ViewAdmin = (() => {
             for (const [releaseId, rp] of _releasePending) {
                 // Release fields
                 _flushFields('releases', releaseId, rp.fields,
-                    ['title','release_date','type','type_secondary','label','hidden','notes','album_art_url','album_art_thumb_url','spotify_id','mbid','apple_music_id','aoty_id']);
+                    ['title','release_date','type','type_secondary','label','hidden','notes','album_art_url','album_art_thumb_url','spotify_id','mbid','apple_music_id','aoty_url']);
+                // Auto-extract aoty_id from aoty_url if it changed
+                if ('aoty_url' in rp.fields) {
+                    const m = (rp.fields.aoty_url || '').match(/\/album\/(\d+)-/);
+                    _db.run('UPDATE releases SET aoty_id=? WHERE id=?', [m ? parseInt(m[1]) : null, releaseId]);
+                }
                 // Soundtrack meta (separate table)
                 if (rp.soundtrackMeta && Object.keys(rp.soundtrackMeta).length) {
                     // Read current row to merge (INSERT OR REPLACE overwrites all columns)
@@ -731,10 +736,6 @@ function _flushFields(table, id, fields, allowedCols) {
 
     function _wireToolbar(container) {
         _injectHeaderSlot((_params && _params.content) || 'listens');
-        requestAnimationFrame(() => {
-            const h = document.querySelector('.site-header-sticky')?.offsetHeight;
-            if (h) document.documentElement.style.setProperty('--header-height', `${h}px`);
-        });
         _onAdminKey = function(e) {
             if (e.key === 'Escape') _closeActive();
         };
@@ -744,7 +745,7 @@ function _flushFields(table, id, fields, allowedCols) {
     // -- Table mount --
 
     function _mountTable(container, params) {
-        document.title = 'aswin.db/music – Admin';
+        document.title = 'Admin | Aswin Sivaraman';
 
         _allRows = _loadRows();
         _trackOpts = _loadTrackOpts();
@@ -860,7 +861,7 @@ function _flushFields(table, id, fields, allowedCols) {
     // -- Artist panel mount --
 
     function _mountArtistPanel(container, params) {
-        document.title = 'aswin.db/music – Admin · Artists';
+        document.title = 'Admin · Artists | Aswin Sivaraman';
         _loadSearchOpts();
 
         container.innerHTML = `
@@ -1163,7 +1164,7 @@ function _flushFields(table, id, fields, allowedCols) {
     // -- Release panel mount --
 
     function _mountReleasePanel(container, params) {
-        document.title = 'aswin.db/music – Admin · Releases';
+        document.title = 'Admin · Releases | Aswin Sivaraman';
         _loadSearchOpts();
 
         container.innerHTML = `
@@ -1196,7 +1197,7 @@ function _flushFields(table, id, fields, allowedCols) {
         const releaseRes = _db.exec(
             `SELECT id, title, release_date, type, type_secondary, label, hidden, notes,
                     album_art_url, album_art_thumb_url, album_art_source,
-                    spotify_id, mbid, apple_music_id, aoty_id
+                    spotify_id, mbid, apple_music_id, aoty_url, aoty_id
              FROM releases WHERE id = ?`, [releaseId]
         );
         if (!releaseRes.length || !releaseRes[0].values.length) {
@@ -1359,8 +1360,8 @@ function _flushFields(table, id, fields, allowedCols) {
                                 <input class="admin-link-input" data-rel-field="apple_music_id" value="${escapeHtml(release.apple_music_id || '')}" placeholder="not linked">
                             </div>
                             <div class="admin-link-row">
-                                <span class="admin-link-label"><span class="admin-link-dot dot-aoty"></span>AOTY ID</span>
-                                <input class="admin-link-input" data-rel-field="aoty_id" value="${escapeHtml(release.aoty_id ? String(release.aoty_id) : '')}" placeholder="not linked">
+                                <span class="admin-link-label"><span class="admin-link-dot dot-aoty"></span>AOTY</span>
+                                <input class="admin-link-input" data-rel-field="aoty_url" value="${escapeHtml(release.aoty_url || '')}" placeholder="https://www.albumoftheyear.org/album/…">
                             </div>
                         </div>
                     </div>
@@ -1921,7 +1922,7 @@ function _flushFields(table, id, fields, allowedCols) {
     // -- Auth mount --
 
     function _mountAuth(container) {
-        document.title = 'aswin.db/music – Admin';
+        document.title = 'Admin | Aswin Sivaraman';
         const noPinSet = !_getStoredPin();
 
         container.innerHTML = `

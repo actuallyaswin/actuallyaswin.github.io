@@ -47,8 +47,8 @@ const ViewRelease = (() => {
                 <div class="artist-photo-container">
                     <div class="artist-photo" id="albumArt">
                         <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                            <rect width="100" height="100" fill="#1e293b"/>
-                            <text x="50" y="60" text-anchor="middle" font-size="40" fill="#475569">♪</text>
+                            <rect width="100" height="100" fill="#20232c"/>
+                            <text x="50" y="60" text-anchor="middle" font-size="40" fill="#767c85">♪</text>
                         </svg>
                     </div>
                 </div>
@@ -227,7 +227,7 @@ const ViewRelease = (() => {
         } else {
             nameEl.innerHTML = escapeHtml(baseTitle || 'Unknown Release') + (etiPart ? ` <span class="tracklist-eti">${escapeHtml(etiPart)}</span>` : '');
         }
-        document.title = `aswin.db/music - ${baseTitle || title || 'Release'}`;
+        document.title = baseTitle || title || 'Release';
 
         const metaParts = [];
         if (releaseDate) metaParts.push(_formatReleaseDate(releaseDate));

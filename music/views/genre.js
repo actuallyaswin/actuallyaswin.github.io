@@ -15,6 +15,7 @@ const ViewGenre = (() => {
                 <nav class="genre-breadcrumb" id="genreBreadcrumb"></nav>
                 <h1 id="genreName">Loading...</h1>
                 <p class="subtitle" id="genreSubtitle"></p>
+                <div class="genre-list" id="genreChildren"></div>
             </header>
 
             <section>
@@ -34,33 +35,68 @@ const ViewGenre = (() => {
 
     function unmount() {}
 
+    // Ancestors of `id`, grouped into levels (root-most first, immediate
+    // parents last) via BFS over the static GENRE_TREE. Each ancestor
+    // appears once, at the shallowest depth it's reachable from `id` —
+    // GENRE_TREE is a DAG (a genre can have multiple parents), and the
+    // `visited` set also guards against a cycle if the data ever had one.
+    function _ancestorLevels(id) {
+        const levels = [];
+        let frontier = [id];
+        const visited = new Set([id]);
+
+        while (true) {
+            const next = new Set();
+            for (const nid of frontier) {
+                const node = GENRE_TREE[nid];
+                if (!node) continue;
+                for (const pid of node.parents) {
+                    if (!visited.has(pid)) {
+                        visited.add(pid);
+                        next.add(pid);
+                    }
+                }
+            }
+            if (next.size === 0) break;
+            levels.unshift([...next].map(nid => ({ id: nid, name: GENRE_TREE[nid]?.name || 'Unknown' })));
+            frontier = [...next];
+        }
+        return levels;
+    }
+
     function loadGenreBreadcrumb(genreName, safeId) {
         const el = document.getElementById('genreBreadcrumb');
         if (!el) return;
-
-        const result = _db.exec(`
-            SELECT p.aoty_id, p.name
-            FROM genre_relations gr
-            JOIN genres p ON p.aoty_id = gr.parent_aoty_id
-            WHERE gr.child_aoty_id = ${safeId}
-            ORDER BY p.name
-        `)[0];
 
         const home = `<a href="?" class="bc-home"><i data-lucide="home"></i></a>`;
         const sep  = `<i data-lucide="chevron-right" class="bc-sep"></i>`;
         const cur  = `<span class="bc-current">${escapeHtml(genreName)}</span>`;
 
-        if (!result || result.values.length === 0) {
+        const levels = _ancestorLevels(safeId);
+        if (!levels.length) {
             // Top-level genre: home > Current
             el.innerHTML = `${home}${sep}${cur}`;
         } else {
-            const parentLinks = result.values
-                .map(([id, name]) =>
-                    `<a href="?view=genre&id=${id}" class="bc-link">${escapeHtml(name)}</a>`)
-                .join(`<span class="bc-dot">·</span>`);
-            el.innerHTML = `${home}${sep}${parentLinks}${sep}${cur}`;
+            const levelHtml = levels
+                .map(level => level
+                    .map(g => `<a href="?view=genre&id=${g.id}" class="bc-link">${escapeHtml(g.name)}</a>`)
+                    .join(`<span class="bc-dot">·</span>`))
+                .join(sep);
+            el.innerHTML = `${home}${sep}${levelHtml}${sep}${cur}`;
         }
+    }
 
+    function loadChildGenres(safeId) {
+        const el = document.getElementById('genreChildren');
+        if (!el) return;
+
+        const children = GENRE_TREE[safeId]?.children || [];
+        if (!children.length) { el.innerHTML = ''; return; }
+
+        const links = children
+            .map(cid => `<a href="?view=genre&id=${cid}" class="genre-tag">${escapeHtml(GENRE_TREE[cid]?.name || 'Unknown')}</a>`)
+            .join(', ');
+        el.innerHTML = `<strong>Sub-genres:</strong> ${links}`;
     }
 
     function loadGenreInfo() {
@@ -90,8 +126,9 @@ const ViewGenre = (() => {
         document.getElementById('genreName').textContent = name || 'Unknown Genre';
         document.getElementById('genreSubtitle').textContent =
             `${formatNumber(releaseCount)} releases · ${formatNumber(totalPlays)} plays`;
-        document.title = `aswin.db/music - ${name}`;
+        document.title = `${name} | Aswin Sivaraman`;
         loadGenreBreadcrumb(name || 'Unknown Genre', safeId);
+        loadChildGenres(safeId);
     }
 
     function loadGenreReleases() {

@@ -1,4 +1,5 @@
 let db = null;
+let _db = null; // alias search.js expects
 let releaseId = null;
 let currentChart = null;
 let chartData = {
@@ -26,6 +27,7 @@ async function init() {
 
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
+        _db = db;
 
         await loadOverridesDatabase(SQL, db);
 
@@ -96,10 +98,10 @@ function loadReleaseInfo() {
         artistLink.style.color = getCSSColor('--primary');
         artistLink.style.textDecoration = 'none';
         document.getElementById('releaseArtist').appendChild(artistLink);
-        document.title = `aswin.db/music - ${name || 'Release'}`;
+        document.title = name || 'Release';
     } else {
         document.getElementById('releaseArtist').textContent = 'Unknown Artist';
-        document.title = `aswin.db/music - ${name || 'Release'}`;
+        document.title = name || 'Release';
     }
 
     document.getElementById('totalPlays').textContent = formatNumber(totalPlays || 0);

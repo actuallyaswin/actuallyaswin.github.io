@@ -1,19 +1,38 @@
+---
+layout: none
+permalink: /music/year.html
+---
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>aswin.db/music</title>
+    <title>Music | Aswin Sivaraman</title>
+    <link rel="stylesheet" href="{{ '/css/global.css' | relative_url }}">
     <link rel="stylesheet" href="styles.css">
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="theme.js"></script>
+    <script src="{{ '/js/lucide.js' | relative_url }}"></script>
 </head>
 <body>
+    {% include masthead.html show_search=true %}
+    <script src="{{ '/js/get-css-color.js' | relative_url }}"></script>
+    <script src="{{ '/js/theme.js' | relative_url }}"></script>
+
+    <!-- Search modal -->
+    <div id="searchOverlay" class="search-overlay" hidden aria-modal="true" role="dialog" aria-label="Search">
+        <div class="search-backdrop"></div>
+        <div class="search-modal">
+            <div class="search-input-row">
+                <i data-lucide="search" class="search-modal-icon"></i>
+                <input id="searchInput" class="search-modal-input" type="text"
+                       placeholder="Search releases, artists, tracks…" autocomplete="off" spellcheck="false">
+                <kbd class="search-esc-hint">Esc</kbd>
+            </div>
+            <div id="searchResults" class="search-modal-results"></div>
+        </div>
+    </div>
+
     <div class="container">
         <div class="site-header">
-            <a href="index.html" class="site-logo-small">
-                <span class="logo-main">aswin.db</span><span class="logo-slash">/</span><span class="logo-accent">music</span>
-            </a>
             <a href="index.html" class="back-button">← Home</a>
         </div>
 
@@ -82,14 +101,12 @@
             <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
         </footer>
 
-        <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
-            <i data-lucide="sun"></i>
-        </button>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
     <script src="config.js"></script>
     <script src="utils.js"></script>
     <script src="year.js"></script>
+    <script src="search.js"></script>
 </body>
 </html>

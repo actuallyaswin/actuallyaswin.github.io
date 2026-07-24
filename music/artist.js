@@ -1,4 +1,5 @@
 let db = null;
+let _db = null; // alias search.js expects
 let artistId = null;
 let currentChart = null;
 let chartData = {
@@ -30,6 +31,7 @@ async function init() {
 
         const buffer = await DB_CONFIG.fetchDatabase();
         db = new SQL.Database(new Uint8Array(buffer));
+        _db = db;
 
         await loadOverridesDatabase(SQL, db);
 
@@ -77,7 +79,7 @@ function loadArtistInfo() {
     document.getElementById('totalPlays').textContent = formatNumber(totalPlays);
     document.getElementById('uniqueTracks').textContent = formatNumber(uniqueTracks);
     document.getElementById('totalReleases').textContent = formatNumber(totalReleases);
-    document.title = `aswin.db/music - ${name}`;
+    document.title = name;
 
     // Update artist photo
     const photoContainer = document.getElementById('artistPhoto');
