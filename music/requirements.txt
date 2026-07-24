@@ -1,0 +1,16 @@
+# Third-party dependencies for the music/ CLI toolchain (mdb.py, sync.py, and
+# the mdb_*.py modules they import). Not used by the Jekyll blog/CV — that
+# side has no Python dependencies at all.
+#
+# Requires Python 3 (see README.md). Install with:
+#   python -m pip install -r music/requirements.txt
+
+rich>=13.9
+pandas>=3.0
+requests>=2.34
+beautifulsoup4>=4.14
+pyyaml>=6.0
+rapidfuzz>=3.14
+lingua-language-detector>=2.1
+lyricsgenius>=3.0
+google-genai>=1.72
