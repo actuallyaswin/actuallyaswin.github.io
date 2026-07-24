@@ -16,6 +16,15 @@ const ViewTop = (() => {
     let releaseYear = 'all';       // albums/tracks only (existing Released filter)
     let cachedResults = [];
 
+    // Collage-mode theme: 'quilt' (plain grid), 'captioned' (grid + bottom-
+    // bar label per cell), 'topster' (black bg, tiered grid shrinking per
+    // tier, monospace "Artist - Title" sidebar list — Last.fm-community
+    // "Topster" chart style). Topster ignores gridShape/aspect controls
+    // entirely; its layout is derived purely from topsterCount via
+    // _computeTopsterTiers().
+    let collageTheme = 'quilt';   // 'quilt' | 'captioned' | 'topster'
+    let topsterCount = 30;
+
     // Tracks-only virtualized-list state (List mode keeps its existing
     // dedicated UI rather than createWideCard(), per spec §1).
     let _scrollEl = null;
@@ -205,6 +214,9 @@ const ViewTop = (() => {
             const [rows, cols] = params.grid.split('x').map(Number);
             if (rows >= 1 && rows <= 10 && cols >= 1 && cols <= 10) gridShape = { rows, cols };
         }
+        if (params.theme && ['quilt','captioned','topster'].includes(params.theme)) collageTheme = params.theme;
+        else collageTheme = 'quilt';
+        if (params.topsterCount && _TOPSTER_COUNTS.includes(+params.topsterCount)) topsterCount = +params.topsterCount;
 
         container.innerHTML = _renderShell();
         _setupControls();
@@ -233,7 +245,7 @@ const ViewTop = (() => {
         return `
             <header><h1>${ENTITY_CONFIG[entityType]?.title || 'Top'}</h1></header>
             <div class="page-controls">${primaryControls}</div>
-            ${viewMode === 'collage' ? `<div class="page-controls">${_collageControlsHtml()}</div>` : ''}
+            ${viewMode === 'collage' ? `<div class="page-controls" id="collageControlsRow">${_collageControlsHtml()}</div>` : ''}
             <div id="topContainer" class="image-grid">
                 <div class="loading">Loading...</div>
             </div>
@@ -300,10 +312,62 @@ const ViewTop = (() => {
         { key: 'portrait',label: 'Portrait', icon: 'rectangle-vertical', ratio: 4 / 5 },
         { key: 'story',   label: 'Story',    icon: 'smartphone', ratio: 9 / 16 },
     ];
+    const _COLLAGE_THEMES = [
+        { key: 'quilt',     label: 'Quilt',     icon: 'grid-3x3' },
+        { key: 'captioned', label: 'Captioned', icon: 'type' },
+        { key: 'topster',   label: 'Topster',   icon: 'list' },
+    ];
+    const _TOPSTER_COUNTS = [20, 30, 42, 50];
+
+    // Reproduces the Last.fm-community "Topster" step-pyramid: tier 1 is a
+    // 5-col × 2-row block (10 cells, largest tiles), tier 2 is 6×2 (12
+    // cells, smaller), tier 3 is 7 cols × as many rows as needed to absorb
+    // whatever's left (smallest tiles) — verified against several real
+    // Topster exports, which all split e.g. 42 total into exactly 10/12/20.
+    function _computeTopsterTiers(n) {
+        const tiers = [];
+        let remaining = n;
+        let cols = 5;
+        while (remaining > 0) {
+            const isLast = remaining <= cols * 3 || cols >= 9;
+            const rows = isLast ? Math.ceil(remaining / cols) : 2;
+            const count = isLast ? remaining : cols * rows;
+            tiers.push({ count, cols, rows });
+            remaining -= count;
+            cols += 1;
+        }
+        return tiers;
+    }
 
     function _collageControlsHtml() {
         const isFixedActive = n => gridShape.rows === n && gridShape.cols === n;
+        const themeHtml = `
+            <div class="control-block">
+                <span class="control-block-label">Theme</span>
+                <div class="sort-controls">
+                    ${_COLLAGE_THEMES.map(t => `<button class="sort-btn${collageTheme === t.key ? ' active' : ''}" data-collage-theme="${t.key}" title="${t.label}"><i data-lucide="${t.icon}"></i></button>`).join('')}
+                </div>
+            </div>`;
+
+        if (collageTheme === 'topster') {
+            return `
+            ${themeHtml}
+            <div class="control-block">
+                <span class="control-block-label">Count</span>
+                <div class="sort-controls">
+                    ${_TOPSTER_COUNTS.map(n => `<button class="sort-btn${topsterCount === n ? ' active' : ''}" data-topster-count="${n}">${n}</button>`).join('')}
+                </div>
+            </div>
+            <div class="control-block">
+                <span class="control-block-label">Export</span>
+                <div class="sort-controls" style="gap:0.5rem;align-items:center">
+                    <button class="sort-btn" id="collageDownloadBtn" title="Download Image"><i data-lucide="download"></i></button>
+                </div>
+            </div>`;
+        }
+
         return `
+            ${themeHtml}
             <div class="control-block">
                 <span class="control-block-label">Grid</span>
                 <div class="sort-controls">
@@ -327,9 +391,6 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Export</span>
                 <div class="sort-controls" style="gap:0.5rem;align-items:center">
-                    <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.8rem;cursor:pointer">
-                        <input type="checkbox" id="collageShowLabels"> Show labels
-                    </label>
                     <button class="sort-btn" id="collageDownloadBtn" title="Download Image"><i data-lucide="download"></i></button>
                 </div>
             </div>`;
@@ -363,7 +424,11 @@ const ViewTop = (() => {
         const p = new URLSearchParams({ view: 'top', type: entityType, sort: sortBy, count: countLimit, display: viewMode });
         if (ENTITY_CONFIG[entityType]?.hasRange) p.set('range', range);
         if (ENTITY_CONFIG[entityType]?.hasYearFilter) p.set('year', releaseYear);
-        if (viewMode === 'collage') p.set('grid', `${gridShape.rows}x${gridShape.cols}`);
+        if (viewMode === 'collage') {
+            p.set('theme', collageTheme);
+            if (collageTheme === 'topster') p.set('topsterCount', topsterCount);
+            else p.set('grid', `${gridShape.rows}x${gridShape.cols}`);
+        }
         history.replaceState(Object.fromEntries(p), '', '?' + p.toString());
     }
 
@@ -384,6 +449,21 @@ const ViewTop = (() => {
         const yearSel = document.getElementById('yearFilter');
         if (yearSel) yearSel.addEventListener('change', () => { releaseYear = yearSel.value; _syncUrl(); _load(); });
 
+        document.querySelectorAll('[data-collage-theme]').forEach(btn => btn.addEventListener('click', () => {
+            collageTheme = btn.dataset.collageTheme;
+            _syncUrl();
+            // Theme switch changes which controls are shown (Grid/Shape vs.
+            // Count) — re-render the whole shell via the same safe path
+            // used for Display-mode switches, rather than patching just
+            // #collageControlsRow (which would leave stale listeners on
+            // the untouched Type/Sort/Display buttons if _setupControls()
+            // were called again without first destroying all old nodes).
+            _rerenderForModeChange();
+        }));
+        document.querySelectorAll('[data-topster-count]').forEach(btn => btn.addEventListener('click', () => {
+            topsterCount = parseInt(btn.dataset.topsterCount);
+            _syncUrl(); _renderCollage(); _updateGridButtonStates();
+        }));
         document.querySelectorAll('[data-grid-fixed]').forEach(btn => btn.addEventListener('click', () => {
             const n = parseInt(btn.dataset.gridFixed);
             gridShape = { rows: n, cols: n };
@@ -413,17 +493,32 @@ const ViewTop = (() => {
 
         document.getElementById('collageDownloadBtn')?.addEventListener('click', async e => {
             const btn = e.currentTarget;
-            const showLabels = document.getElementById('collageShowLabels')?.checked || false;
-            const cells = cachedResults.slice(0, gridShape.rows * gridShape.cols).map(f => ({
-                imageUrl: f.imageUrl || getFallbackImageUrl(),
-                label: f.label || f.name || f.title || '',
-            }));
+            const showLabels = collageTheme === 'captioned';
+            const cfg = ENTITY_CONFIG[entityType];
+            let cells, rows, cols;
+            if (collageTheme === 'topster') {
+                const tiers = _computeTopsterTiers(Math.min(topsterCount, cachedResults.length));
+                cols = Math.max(...tiers.map(t => t.cols));
+                rows = tiers.reduce((s, t) => s + t.rows, 0);
+                cells = cachedResults.slice(0, topsterCount).map(f => ({
+                    imageUrl: f.imageUrl || getFallbackImageUrl(),
+                    label: f.artistName ? `${f.artistName} - ${f.label || f.name || f.title || ''}` : (f.label || f.name || f.title || ''),
+                }));
+            } else {
+                cells = cachedResults.slice(0, gridShape.rows * gridShape.cols).map(f => ({
+                    imageUrl: f.imageUrl || getFallbackImageUrl(),
+                    label: f.label || f.name || f.title || '',
+                }));
+                rows = gridShape.rows; cols = gridShape.cols;
+            }
             btn.disabled = true;
             btn.innerHTML = '<i data-lucide="loader-2" class="spin"></i>';
             lucide.createIcons({ root: btn });
             try {
                 await CollageExport.exportCollage({
-                    rows: gridShape.rows, cols: gridShape.cols, cells, showLabels,
+                    rows, cols, cells, showLabels,
+                    theme: collageTheme,
+                    tiers: collageTheme === 'topster' ? _computeTopsterTiers(Math.min(topsterCount, cachedResults.length)) : null,
                     filenamePrefix: `top-${entityType}`,
                 });
             } finally {
@@ -442,6 +537,9 @@ const ViewTop = (() => {
         document.querySelectorAll('[data-grid-fixed]').forEach(btn => {
             const n = parseInt(btn.dataset.gridFixed);
             btn.classList.toggle('active', gridShape.rows === n && gridShape.cols === n);
+        });
+        document.querySelectorAll('[data-topster-count]').forEach(btn => {
+            btn.classList.toggle('active', parseInt(btn.dataset.topsterCount) === topsterCount);
         });
     }
 
@@ -554,8 +652,10 @@ const ViewTop = (() => {
     function _renderCollage() {
         const container = document.getElementById('topContainer');
         if (!container) return;
+        if (collageTheme === 'topster') return _renderTopster(container);
+
         container.innerHTML = '';
-        container.className = 'collage-grid';
+        container.className = `collage-grid${collageTheme === 'captioned' ? ' collage-grid-captioned' : ''}`;
         container.style.gridTemplateColumns = `repeat(${gridShape.cols}, 1fr)`;
 
         const show = gridShape.rows * gridShape.cols;
@@ -564,10 +664,61 @@ const ViewTop = (() => {
             const card = document.createElement('a');
             card.className = 'image-card';
             card.href = cfg.cardHref(f);
-            card.innerHTML = `<div class="image-card-img" style="background-image: url('${f.imageUrl || getFallbackImageUrl()}')"></div>`;
+            const label = collageTheme === 'captioned'
+                ? `<div class="image-card-collage-label">${escapeHtml(f.label || f.name || f.title || '')}</div>`
+                : '';
+            card.innerHTML = `<div class="image-card-img" style="background-image: url('${f.imageUrl || getFallbackImageUrl()}')"></div>${label}`;
             if (i >= show) card.style.display = 'none';
             container.appendChild(card);
         });
+    }
+
+    // Renders the "Topster" theme: black background, step-pyramid tiers
+    // (largest tiles first) on the left, monospace "Artist - Title" list
+    // grouped by the same tier boundaries on the right — mirrors the
+    // Last.fm-community chart format referenced in this feature's design.
+    function _renderTopster(container) {
+        container.innerHTML = '';
+        container.className = 'topster-layout';
+        container.style.gridTemplateColumns = '';
+
+        const cfg = ENTITY_CONFIG[entityType];
+        const items = cachedResults.slice(0, Math.min(topsterCount, cachedResults.length));
+        const tiers = _computeTopsterTiers(items.length);
+
+        const gridEl = document.createElement('div');
+        gridEl.className = 'topster-grid';
+        const maxCols = Math.max(...tiers.map(t => t.cols));
+        gridEl.style.width = `${maxCols * 130}px`;  // fixed total width so narrower-column tiers get bigger cells, wider-column tiers get smaller ones — the shrinking-tile hierarchy from the reference format
+        const listEl = document.createElement('div');
+        listEl.className = 'topster-list';
+
+        let idx = 0;
+        tiers.forEach(tier => {
+            const tierEl = document.createElement('div');
+            tierEl.className = 'topster-tier';
+            tierEl.style.gridTemplateColumns = `repeat(${tier.cols}, 1fr)`;
+            const listBlock = document.createElement('div');
+            listBlock.className = 'topster-list-block';
+            for (let i = 0; i < tier.count && idx < items.length; i++, idx++) {
+                const f = items[idx];
+                const card = document.createElement('a');
+                card.className = 'image-card topster-cell';
+                card.href = cfg.cardHref(f);
+                card.innerHTML = `<div class="image-card-img" style="background-image: url('${f.imageUrl || getFallbackImageUrl()}')"></div>`;
+                tierEl.appendChild(card);
+
+                const line = document.createElement('div');
+                line.className = 'topster-list-line';
+                line.textContent = f.artistName ? `${f.artistName} - ${f.label || f.name || f.title || ''}` : (f.label || f.name || f.title || '');
+                listBlock.appendChild(line);
+            }
+            gridEl.appendChild(tierEl);
+            listEl.appendChild(listBlock);
+        });
+
+        container.appendChild(gridEl);
+        container.appendChild(listEl);
     }
 
     function _applyCount() {
