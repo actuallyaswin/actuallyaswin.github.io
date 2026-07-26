@@ -564,6 +564,34 @@ def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title
             # Release title is non-ASCII (e.g. CJK) — skip name matching to
             # avoid matching every unmatched listen via empty-string collision.
             return
+
+        # This pass runs with no human confirming the artist, so raw_artist_name
+        # must be checked against the release's OWN credited artists here —
+        # bulk_rematch_by_name() itself will also fold any raw_artist it's given
+        # into its "valid artist" set (by design, for its interactive callers in
+        # sync.py where a human already picked the release), so passing an
+        # unverified raw_artist through would silently bypass that safety net
+        # and let a same-named track from an unrelated artist match this release.
+        release_artist_keys = {
+            _norm(r[0])
+            for r in conn.execute('''
+                SELECT DISTINCT a.name FROM artists a
+                JOIN track_artists ta ON ta.artist_id = a.id
+                JOIN tracks t ON t.id = ta.track_id
+                WHERE t.release_id = ?
+                UNION
+                SELECT DISTINCT a.name FROM artists a
+                JOIN release_artists ra ON ra.artist_id = a.id
+                WHERE ra.release_id = ?
+                UNION
+                SELECT a.name FROM artists a
+                JOIN releases r ON r.primary_artist_id = a.id
+                WHERE r.id = ?
+            ''', [release_id, release_id, release_id]).fetchall()
+            if r[0]
+        }
+        release_artist_keys.add(_norm(artist_name))
+
         groups = conn.execute('''
             SELECT DISTINCT raw_artist_name, raw_album_name
             FROM   listens
@@ -571,6 +599,10 @@ def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title
               AND  raw_artist_name IS NOT NULL
               AND  raw_album_name  IS NOT NULL
         ''').fetchall()
+        groups = [
+            (raw_artist, raw_album) for raw_artist, raw_album in groups
+            if _norm(raw_artist) in release_artist_keys
+        ]
 
         name_n = 0
         already_matched_groups = set()
@@ -587,6 +619,9 @@ def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title
         #   2. Feat:   raw_album="BUZZCUT (feat. Danny Brown)" → track "BUZZCUT"
         #      The remainder after the track title must look like a feat credit,
         #      NOT a sequel ("SATURATION II") or subtitle ("DEAR LORD, PT. 2").
+        # (raw_artist is already verified above to be one of this release's own
+        # credited artists, so a title collision with an unrelated artist's
+        # same-named track can no longer slip through here.)
         _FEAT_PREFIX_RE = re.compile(
             r'^[ (]+(feat(?:uring)?|ft|with|x)\b', re.IGNORECASE
         )

@@ -53,22 +53,26 @@ verify-build:
     tmp_worktree=$(mktemp -d)
     trap 'git worktree remove "$tmp_worktree" --force 2>/dev/null; rm -rf "$tmp_worktree"' EXIT
     git worktree add "$tmp_worktree" HEAD
-    (cd "$tmp_worktree" && git lfs pull && bundle exec jekyll build --destination /tmp/_site_verify)
+    (cd "$tmp_worktree" && bundle exec jekyll build --destination /tmp/_site_verify)
     echo "Build OK — output at /tmp/_site_verify"
 
-# Checkpoint the music DB's WAL and regenerate the .gz files the SPA fetches
-# (master_prod.sqlite.gz, a stripped copy with import-only columns/indexes
-# removed) and the CLI matching tools may use (master.sqlite.gz).
-# Run this after any music/master.sqlite write before the change is visible
-# on the frontend (dev server or deployed site).
+# Checkpoint the music DB: push master.sqlite to Turso (the durable off-repo
+# copy — replaces git LFS, which kept hitting storage quota from repeated
+# large-binary commits), then regenerate master_prod.sqlite.gz (the stripped
+# copy the SPA fetches) and rebuild _site/ so the served copy never goes
+# stale relative to it — a stale/truncated _site/ copy produces a cryptic
+# sql.js "Extra bytes past the end" error in the browser with no other
+# symptom. Run this after any music/master.sqlite write before the change is
+# visible on the frontend (dev server or deployed site).
 db-checkpoint:
     cd music && {{mdb_python}} mdb.py certs refresh
     cd music && {{mdb_python}} mdb.py stats refresh
     cd music && sqlite3 master.sqlite "PRAGMA wal_checkpoint(TRUNCATE);"
-    cd music && gzip -k -f -9 master.sqlite
+    cd music && {{mdb_python}} turso_push.py
     cd music && {{mdb_python}} make_prod_db.py
     cd music && gzip -k -f -9 master_prod.sqlite
-    @echo "Checkpointed and regenerated music/master.sqlite.gz + music/master_prod.sqlite.gz"
+    bundle exec jekyll build --destination _site
+    @echo "Checkpointed to Turso, regenerated music/master_prod.sqlite.gz, and rebuilt _site/"
 
 # Open an interactive sqlite3 shell on the music DB.
 db-shell:
@@ -77,13 +81,13 @@ db-shell:
 mdb_python := `which python3`
 
 # Fetch new Last.fm scrobbles. Always checkpoints the DB afterward (even on
-# quit/Ctrl-C) so master.sqlite.gz never goes stale relative to the SPA.
+# quit/Ctrl-C) so master_prod.sqlite.gz never goes stale relative to the SPA.
 music-fetch *ARGS:
     -cd music && {{mdb_python}} sync.py fetch {{ARGS}}
     @just db-checkpoint
 
 # Interactively match unresolved scrobbles to tracks. Always checkpoints the
-# DB afterward (even on quit/Ctrl-C) so master.sqlite.gz never goes stale
+# DB afterward (even on quit/Ctrl-C) so master_prod.sqlite.gz never goes stale
 # relative to the SPA.
 music-match *ARGS:
     -cd music && {{mdb_python}} sync.py match {{ARGS}}

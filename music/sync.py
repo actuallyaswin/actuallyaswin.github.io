@@ -954,6 +954,12 @@ def cmd_match(args):
     artist_norm      = artist_norms  # kept for boolean checks throughout
     # Artist sweep uses a high limit so all albums for all artists fit in one pass
     eff_limit        = 9999 if artist_norms else limit
+    # SQLite's built-in lower() is ASCII-only and doesn't match normalize_text's
+    # accent-stripping — register a Python-backed function so the artist filter
+    # below can run in SQL rather than after a LIMIT, which would otherwise
+    # silently drop low-listen-count albums (e.g. a single-scrobble artist
+    # sorted near the bottom of a 47,000-row unresolved-listens query).
+    conn.create_function('_norm_artist', 1, lambda s: _norm(s) if s else '')
 
     if not token:
         console.print('[yellow]No Spotify credentials — auto-search disabled.[/yellow]')
@@ -993,6 +999,16 @@ def cmd_match(args):
     while True:
         # Top unresolved albums, excluding permanently-hidden (and deferred unless --skipped)
         method_filter = "('hide')" if include_deferred else "('hide', 'skip')"
+        # When artist-filtered, push the filter into SQL (via the _norm_artist
+        # function) instead of applying it after LIMIT — a LIMIT-then-filter
+        # approach silently drops low-listen-count albums that don't make the
+        # cutoff among tens of thousands of unresolved rows.
+        artist_clause = ''
+        artist_params: list = []
+        if artist_norms:
+            placeholders = ','.join('?' * len(artist_norms))
+            artist_clause = f'AND _norm_artist(raw_artist_name) IN ({placeholders})'
+            artist_params = list(artist_norms)
 
         if sort_recent:
             # Walk the listen timeline and surface contiguous runs of the same album,
@@ -1015,6 +1031,7 @@ def cmd_match(args):
                                    THEN 1 ELSE 0 END AS boundary
                         FROM   listens
                         WHERE  track_id IS NULL
+                          {artist_clause}
                           AND  NOT EXISTS (
                                    SELECT 1 FROM legacy_track_map ltm
                                    WHERE  ltm.lastfm_id = 'album|||'
@@ -1028,7 +1045,7 @@ def cmd_match(args):
                 GROUP BY run_id, raw_artist_name, raw_album_name
                 ORDER BY last_listened DESC
                 LIMIT    ?
-            ''', [eff_limit]).fetchall()
+            ''', [*artist_params, eff_limit]).fetchall()
         else:
             rows = conn.execute(f'''
                 SELECT   l.raw_album_name,
@@ -1038,6 +1055,7 @@ def cmd_match(args):
                          MAX(l.timestamp)              AS last_listened
                 FROM     listens l
                 WHERE    l.track_id IS NULL
+                  {artist_clause}
                   AND    NOT EXISTS (
                              SELECT 1 FROM legacy_track_map ltm
                              WHERE  ltm.lastfm_id = 'album|||'
@@ -1049,10 +1067,7 @@ def cmd_match(args):
                 GROUP BY l.raw_album_name, l.raw_artist_name
                 ORDER BY listen_count DESC
                 LIMIT    ?
-            ''', [eff_limit]).fetchall()
-
-        if artist_norms:
-            rows = [r for r in rows if _norm(r['raw_artist_name']) in artist_norms]
+            ''', [*artist_params, eff_limit]).fetchall()
 
         if not rows:
             console.print('[green]All listens resolved (or skipped)![/green]')
@@ -1089,11 +1104,17 @@ def cmd_match(args):
             db_results = _db_search_releases(conn, artist, album)
 
             # ── Auto-match check ─────────────────────────────────────────────
-            # Conditions: exactly 1 DB result, exact ascii_key title match, ≥90%
-            # of scrobbled track names found in that release's tracklist.
+            # Conditions: exactly 1 DB result, exact ascii_key title match (or
+            # the scrobbled album name is a known release_aliases entry, e.g.
+            # "Cross" for a release titled "✝"), ≥90% of scrobbled track names
+            # found in that release's tracklist.
+            album_is_alias_hit = bool(db_results) and conn.execute(
+                'SELECT 1 FROM release_aliases WHERE release_id = ? AND lower(alias) = lower(?)',
+                [db_results[0]['id'], album]
+            ).fetchone() is not None
             if (
                 len(db_results) == 1
-                and _ascii_key(db_results[0]['title']) == _ascii_key(album)
+                and (_ascii_key(db_results[0]['title']) == _ascii_key(album) or album_is_alias_hit)
             ):
                 release = db_results[0]
                 rate, unmatched_names = _check_track_match_rate(conn, release['id'], artist, album)

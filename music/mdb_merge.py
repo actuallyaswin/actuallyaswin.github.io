@@ -43,6 +43,7 @@ from typing import Any
 
 from mdb_strings import (
     normalize_text,
+    resolve_title,
     _date_prec,
     _should_update_date,
     beatport_is_catalog_addition,
@@ -644,6 +645,10 @@ class ReleaseMerge:
             # Title: always store the full displayable title (base + ETI in parens).
             # mix_name is populated from Beatport as an advisory annotation for
             # styled rendering — it is never load-bearing; title is always complete.
+            # Spotify's raw name embeds "(feat. X)" in the title string itself
+            # (unlike MB/Beatport, which keep that as separate artist credits) —
+            # resolve_title() strips it via parse_track_title() since featured
+            # artists are tracked in track_artists, not the title text.
             if bp_t:
                 mix_name = bp_t.get('_mix_name') or None
                 # full_name from Beatport already contains "(mix_name)" when present
@@ -652,7 +657,7 @@ class ReleaseMerge:
                 title = mb_t.get('name', '')
                 mix_name = None
             elif sp_t:
-                title = (sp_t or {}).get('name', '')
+                title = resolve_title((sp_t or {}).get('name', ''))
                 mix_name = None
             else:
                 title = ''

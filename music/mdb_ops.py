@@ -1671,14 +1671,19 @@ def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
 def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
     """Match unresolved listens via track_aliases + artist_aliases + release_aliases.
 
-    Three-way join on alias_norm: raw_artist → artist_aliases, raw_album →
-    release_aliases, raw_track → track_aliases. All three must agree to avoid
-    false positives on common titles like 'Party'.
+    Two lookup passes, both requiring artist + release to agree via alias_norm:
+      Phase 1: track_aliases.alias_norm (handles retitled/alternate track names).
+      Phase 2: plain tracks.title (normalize_text'd) — covers releases with a
+        release_aliases entry (e.g. "Cross" for a release titled "✝") but no
+        per-track aliases, which is the common case.
     Returns count of newly matched listens.
     """
     from mdb_strings import normalize_text
 
     # Build lookup: (artist_norm, release_norm, track_norm) -> track_id
+    lookup: dict[tuple, str] = {}
+
+    # Phase 1: track_aliases
     rows = conn.execute('''
         SELECT
             COALESCE(aa.alias_norm, lower(a.name))  AS artist_norm,
@@ -1693,11 +1698,29 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
         JOIN   artists         a  ON a.id           = rex.artist_id
         LEFT JOIN artist_aliases aa ON aa.artist_id = a.id
     ''').fetchall()
-
-    lookup: dict[tuple, str] = {}
     for artist_norm, release_norm, track_norm, track_id in rows:
         if artist_norm and release_norm and track_norm:
             lookup[(artist_norm, release_norm, track_norm)] = track_id
+
+    # Phase 2: plain track titles, for releases that only have a release_aliases
+    # entry (no per-track aliases needed — the track's own title normalizes fine).
+    rows = conn.execute('''
+        SELECT
+            COALESCE(aa.alias_norm, lower(a.name))  AS artist_norm,
+            ra.alias_norm                            AS release_norm,
+            t.title                                  AS track_title,
+            t.id                                     AS track_id
+        FROM   tracks         t
+        JOIN   releases       r   ON r.id          = t.release_id
+        JOIN   release_aliases ra ON ra.release_id  = r.id
+        JOIN   release_artists rex ON rex.release_id = r.id
+        JOIN   artists         a  ON a.id           = rex.artist_id
+        LEFT JOIN artist_aliases aa ON aa.artist_id = a.id
+    ''').fetchall()
+    for artist_norm, release_norm, track_title, track_id in rows:
+        if artist_norm and release_norm and track_title:
+            key = (artist_norm, release_norm, normalize_text(track_title))
+            lookup.setdefault(key, track_id)
 
     if not lookup:
         return 0
@@ -1732,6 +1755,9 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
     variants, apostrophe differences, and accent variations don't block a hit.
     Falls back to normalize_text for non-Latin titles where ascii_key returns
     an empty string (which would otherwise match every row).
+    Also checks release_aliases (e.g. a release titled "✝" with a "Cross"
+    alias) so scrobbles using a variant/spelled-out album name still match —
+    a release_aliases hit is treated the same as an exact title match.
     Returns a list of row dicts.
     """
     from mdb_strings import normalize_text
@@ -1753,12 +1779,20 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
         GROUP  BY r.id
     ''').fetchall()
 
+    # Preload alias rows keyed by release_id — cheap since release_aliases is small.
+    aliases_by_release: dict[str, list[str]] = {}
+    for release_id, alias, alias_norm in conn.execute(
+        'SELECT release_id, alias, alias_norm FROM release_aliases'
+    ).fetchall():
+        aliases_by_release.setdefault(release_id, []).append(alias_norm or normalize_text(alias))
+
     results = []
     for row in rows:
         row = dict(row)
+        release_aliases = aliases_by_release.get(row['id'], [])
         if use_norm:
-            # Non-Latin album: require exact normalize_text match on title
-            if normalize_text(row['title']) != norm_album:
+            # Non-Latin album: require exact normalize_text match on title or alias
+            if normalize_text(row['title']) != norm_album and norm_album not in release_aliases:
                 continue
             # Artist: try normalize_text on name and aliases
             artist_names = [normalize_text(row['artist_name'] or '')]
@@ -1771,7 +1805,7 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
                 continue
         else:
             row_key = ascii_key(row['title'])
-            if row_key == key_album:
+            if row_key == key_album or norm_album in release_aliases:
                 results.append(row)
                 continue
             elif key_album in row_key or row_key in key_album:

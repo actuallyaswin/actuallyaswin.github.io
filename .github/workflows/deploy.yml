@@ -25,18 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          lfs: true
           fetch-depth: 0
-
-      - name: Checkout LFS objects
-        run: git lfs pull
-
-      - name: Verify LFS files
-        run: |
-          echo "Checking LFS file sizes..."
-          ls -lh music/master.sqlite
-          echo "Checking if file is binary (not a pointer)..."
-          file music/master.sqlite
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1

@@ -40,3 +40,7 @@ exclude:
   - music/genius_api.html
   - music/listening_history.sqlite
   - music/listening_history_overrides.sqlite
+  - music/master.sqlite
+  - music/master.sqlite.gz
+  - music/master.sqlite-wal
+  - music/master.sqlite-shm
