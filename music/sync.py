@@ -52,6 +52,7 @@ from mdb_cli  import render_diff
 from mdb_ops  import (
     bulk_rematch, bulk_rematch_by_name, bulk_rematch_by_aliases, bulk_rematch_by_title, db_search_releases as _db_search_releases,
     DB_PATH, init_schema, open_db as _mdb_open_db,
+    merge_variant_tracks as _merge_variant_tracks,
 )
 
 console = Console(width=80, highlight=False)
@@ -160,25 +161,6 @@ def _prompt_choice(label, options, current=None, allow_hide=False):
     if 0 <= idx < len(options):
         return options[idx], False, False
     return default, False, False
-
-
-def _merge_variant_tracks(conn, canonical_id, variant_id):
-    """Move listens from shared variant tracks → canonical tracks (ISRC, then title fallback),
-    then hide those shared tracks on the variant."""
-    canon_rows = conn.execute(
-        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [canonical_id]
-    ).fetchall()
-    by_isrc  = {r[1]: r[0] for r in canon_rows if r[1]}
-    by_title = {_ascii_key(r[2]): r[0] for r in canon_rows}
-
-    for vid, visrc, vtitle in conn.execute(
-        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [variant_id]
-    ).fetchall():
-        canon_tid = (by_isrc.get(visrc) if visrc else None) or by_title.get(_ascii_key(vtitle))
-        if not canon_tid:
-            continue
-        conn.execute('UPDATE listens SET track_id=? WHERE track_id=?', [canon_tid, vid])
-        conn.execute('UPDATE tracks SET hidden=1 WHERE id=?', [vid])
 
 
 def _write_variant_links(conn, canonical, type_updates, edition_links, hide_ids):

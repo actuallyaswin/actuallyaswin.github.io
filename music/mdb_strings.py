@@ -38,7 +38,7 @@ _WORD_STRIP_RE = re.compile(r'^([^A-Za-z0-9]*)(.*?)([^A-Za-z0-9]*)$', re.DOTALL)
 # Apostrophe compound: o'clock, n'sync, rock'n'roll ...
 _APOS_RE = re.compile(r"^([A-Za-z]+)(['''])([A-Za-z].*)$")
 # Contraction suffixes that should stay lowercase after an apostrophe
-# (e.g. "she's", "you've", "I'm", "we'll", "don't", "I'd")
+# (e.g. "she's")
 _CONTRACTION_SUFFIXES: frozenset[str] = frozenset({
     's', 't', 'm', 'd', 've', 're', 'll', 'nt',
 })
@@ -58,7 +58,7 @@ def _tc_word(word: str, force_cap: bool, is_last: bool) -> str:
 
     # Apostrophe compounds: O'Clock/O'Brien rule — capitalise both parts.
     # Exception: common contraction suffixes (s, t, m, d, ve, re, ll, nt)
-    # stay lowercase, e.g. "she's" → "She's", "you've" → "You've".
+    # stay lowercase, e.g. "she's" → "She's".
     apos = _APOS_RE.match(core)
     if apos:
         p1, apos_char, p2 = apos.group(1), apos.group(2), apos.group(3)
@@ -126,7 +126,7 @@ def mb_guess_case_english(title: str) -> str:
       for the immediately following token.
 
     Known limitation: prepositions used as adverbs or verb particles
-    (e.g. "Plug In Baby", "Shine On You") are lowercased by this function,
+    (e.g. "Plug In Baby") are lowercased by this function,
     which differs from the MB guideline. Manual correction is required.
     """
     if not title:
@@ -189,11 +189,9 @@ def _normalize_eti_content(content: str) -> str:
     """
     Lowercase trailing ETI descriptor words; preserve the name prefix as-is.
 
-    Examples:
-      "Ed Case / Sweetie Irie Refix"  →  "Ed Case / Sweetie Irie refix"
-      "Soulchild Remix"               →  "Soulchild remix"
-      "Watch Out for Stella club mix" →  "Watch Out for Stella club mix"
-      "Radio Edit"                    →  "Radio Edit"   (both are descriptors → all lower)
+    Example: "Soulchild Remix" → "Soulchild remix". If every word is a
+    descriptor (e.g. "Radio Edit"), there's no name prefix, so it stays
+    as originally cased.
     """
     tokens = content.split()
     if not tokens:
@@ -222,11 +220,7 @@ def format_eti(content: str) -> str:
     - Lowercases trailing descriptor words (remix, refix, mix, edit, version…).
     - Name prefix before the descriptors is preserved as-is.
 
-    Examples:
-      format_eti("Soulchild Remix")               →  "(Soulchild remix)"
-      format_eti("Ed Case / Sweetie Irie Refix")  →  "(Ed Case / Sweetie Irie refix)"
-      format_eti("Radio Edit")                     →  "(Radio Edit)"
-      format_eti("(club mix)")                     →  "(club mix)"
+    Example: format_eti("Soulchild Remix") → "(Soulchild remix)"
     """
     s = content.strip()
     if s.startswith('(') and s.endswith(')'):
@@ -316,10 +310,7 @@ def _split_feat_group(group: str) -> List[str]:
     Split a featured-artists string into individual artist names.
 
     Splits on ' and ', ' & ', ' / ' (conjunction/slash delimiters) first,
-    then on commas.  This correctly handles:
-      "Mos Def and Bobby Womack"          →  ["Mos Def", "Bobby Womack"]
-      "Giggs, Professor Green, Tinie"     →  ["Giggs", "Professor Green", "Tinie"]
-      "Artist A / Artist B"               →  ["Artist A", "Artist B"]
+    then on commas, e.g. "Mos Def and Bobby Womack" → ["Mos Def", "Bobby Womack"].
     """
     # Split on word-level conjunction/slash separators before commas
     parts = re.split(r'\s+and\s+|\s*&\s*|\s*/\s*', group, flags=re.IGNORECASE)
@@ -359,17 +350,10 @@ def parse_track_title(title: str) -> TrackParseResult:
     """
     Parse a Spotify-style track title into clean title, featured artists and ETI.
 
-    Handles:
-      "Stylo (feat. Mos Def and Bobby Womack)"
-          → clean="Stylo",  feat=["Mos Def", "Bobby Womack"]
-      "19-2000 - Soulchild Remix"
-          → clean="19-2000", eti="(Soulchild remix)"
-      "Clint Eastwood - Ed Case / Sweetie Irie Refix"
-          → clean="Clint Eastwood", eti="(Ed Case / Sweetie Irie refix)"
-      "Song (feat. Artist) (Radio Edit)"
-          → clean="Song", feat=["Artist"], eti="(Radio Edit)"
-      "Never Ending Story (power club vocal mix)"
-          → clean="Never Ending Story", eti="(power club vocal mix)"
+    Example: "Stylo (feat. Mos Def and Bobby Womack)" →
+    clean="Stylo", feat=["Mos Def", "Bobby Womack"]. Dash-suffix descriptors
+    like "19-2000 - Soulchild Remix" are converted to ETI parens before
+    classification, giving clean="19-2000", eti="(Soulchild remix)".
 
     IMPORTANT: Remixers are *not* extracted to feat_artists — they remain in
     the ETI string to avoid a bare-title collision with the original recording.
@@ -448,21 +432,15 @@ def resolve_title(incoming_raw: str, existing_db: Optional[str] = None) -> str:
 
     Algorithm:
     1. Sanitize *incoming_raw* via :func:`parse_track_title` to get a canonical title
-       (clean title + ETI if present, e.g. "In My Mind (Axwell mix)").
+       (clean title + ETI if present).
     2. If *existing_db* is set and differs from the sanitized title *only in
        capitalisation* (case-insensitive equal), the existing DB value is returned
        unchanged — it represents a deliberate human correction (e.g. "Plug In Baby"
        vs the auto-sanitized "Plug in Baby").
     3. Otherwise the sanitized title is returned (new track, or a genuine title change).
 
-    Examples:
-      resolve_title("plug in baby", "Plug In Baby")              →  "Plug In Baby"      (defer to DB)
-      resolve_title("plug in baby", None)                        →  "Plug in Baby"      (fresh insert)
-      resolve_title("Stylo (feat. Mos Def)", "Stylo")            →  "Stylo"             (sanitized, no change)
-      resolve_title("old name", "Old Name")                      →  "Old Name"          (only-case diff → keep DB)
-      resolve_title("different title", "Old Name")               →  "Different Title"   (genuine change → sanitize)
-      resolve_title("In My Mind (Axwell Mix)", None)             →  "In My Mind (Axwell mix)"
-      resolve_title("In My Mind (Axwell Radio Edit)", None)      →  "In My Mind (Axwell radio edit)"
+    Example: resolve_title("plug in baby", "Plug In Baby") → "Plug In Baby" (defer to DB),
+    but resolve_title("different title", "Old Name") → "Different Title" (genuine change).
     """
     parsed    = parse_track_title(incoming_raw)
     sanitized = parsed.clean_title
@@ -618,11 +596,7 @@ def detect_variant_label(title: str) -> str:
     Returns the content of the first non-remix parenthetical/bracketed suffix,
     or the trailing diff from _base_title. Falls back to the full title.
 
-    Examples:
-        "Hold Your Colour (Deluxe)"           → "Deluxe"
-        "In Silico (Special Edition)"         → "Special Edition"
-        "In Silico (Bonus Tracks Version)"    → "Bonus Tracks Version"
-        "Hold Your Colour - 2007 Reissue"     → "2007 Reissue"
+    Example: "Hold Your Colour (Deluxe)" → "Deluxe"
     """
     m = re.search(r'[\(\[]((?!.*\bremix\b)[^\)\]]+)[\)\]]', title, re.I)
     if m:

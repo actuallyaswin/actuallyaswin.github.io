@@ -251,9 +251,9 @@ def render_diff(*releases: 'SpotifyRelease', compact: bool = False,
         Used by `sync match` inline [d]iff.
 
     id_labels: optional {spotify_id: display_number} map — when the caller
-        already showed these releases as a numbered list (e.g. "sp  2."),
-        pass it so the table's column headers carry the same number instead
-        of just a truncated ID with no visible link back to that list.
+        already showed these releases as a numbered list, pass it so the
+        table's column headers carry the same number instead of just a
+        truncated ID with no visible link back to that list.
 
     Display mode is driven by Jaccard similarity over track title sets:
       similarity == 0   → unrelated albums: table + warning only
@@ -669,7 +669,7 @@ def _gemini_soundtrack_meta(title: str, artist: str) -> 'tuple[str|None, str|Non
     """Ask Gemini to classify a soundtrack release into (source_type, industry_region, original_language).
 
     Requires GEMINI_API_KEY env var and the google-genai package.
-    Returns (src, reg, lng, raw_json_str) — all None on any failure.
+    Returns (src, reg, lng, raw_json_str) — all None on failure.
     """
     import os, json
     api_key = os.environ.get('GEMINI_API_KEY')
@@ -715,13 +715,13 @@ def _gemini_soundtrack_meta(title: str, artist: str) -> 'tuple[str|None, str|Non
             src = data.get('source_type')
             reg = data.get('industry_region')
             lng = data.get('original_language')
-            # Validate against known enums; pass through unknown ISO codes (they may be valid)
+            # Validate against known enums; pass through unknown ISO codes
             if src not in _SOURCE_TYPES:
                 src = None
             return src, reg, lng, response.text
         except Exception as exc:
             msg = str(exc)
-            # Parse retryDelay from the error message (e.g. "retryDelay: '10s'")
+            # Parse retryDelay from the error message
             m = _re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", msg)
             wait = float(m.group(1)) + 1 if m else 2 ** (attempt + 1)
             if attempt < _MAX_RETRIES - 1 and ('429' in msg or '503' in msg):
@@ -815,7 +815,7 @@ def cmd_enrich_soundtracks(conn, skip: int = 0, limit: 'int|None' = None,
                 break
             reg = display_to_code.get(reg_display) if reg_display else None
             if reg == 'other':
-                console.print('  [dim]Enter ISO 3166-1 alpha-2 code (e.g. NG, PK, BD):[/dim] ', end='')
+                console.print('  [dim]Enter ISO 3166-1 alpha-2 code (e.g. NG):[/dim] ', end='')
                 raw = input().strip().upper() or None
                 reg = raw
 
@@ -835,7 +835,7 @@ def cmd_enrich_soundtracks(conn, skip: int = 0, limit: 'int|None' = None,
                 break
             lng = display_to_lang.get(lng_display) if lng_display else None
             if lng == 'other':
-                console.print('  [dim]Enter ISO 639-1 code (e.g. ur, bn, ml):[/dim] ', end='')
+                console.print('  [dim]Enter ISO 639-1 code (e.g. ur):[/dim] ', end='')
                 raw = input().strip().lower() or None
                 lng = raw
 

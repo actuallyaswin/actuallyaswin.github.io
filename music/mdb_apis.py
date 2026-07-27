@@ -297,7 +297,7 @@ def caa_fetch_front_image_url(release_mbid: str) -> 'str | None':
 def caa_fetch_front_image_urls(release_mbid: str) -> list:
     """Fetch every Front-tagged cover art URL from Cover Art Archive for a
     release MBID — a release can carry more than one (e.g. a reissue with
-    both an original and a redesigned cover attached to the same release).
+    a redesigned cover added alongside the original).
     Uses the 'large' thumbnail when available. Returns [] on 404 or if no
     Front image is found."""
     try:
@@ -552,7 +552,7 @@ class BeatportRelease:
             key_obj       = t.get('key')        or {}
             label_obj     = t.get('label')      or {}
 
-            # Camelot Wheel key notation (e.g. "8A" for A minor, "9B" for F major)
+            # Camelot Wheel key notation (e.g. "8A")
             camelot_num = key_obj.get('camelot_number', '')
             camelot_let = key_obj.get('camelot_letter', '')
             camelot_key = f'{camelot_num}{camelot_let}' if camelot_num and camelot_let else None
@@ -728,6 +728,7 @@ class SpotifyRelease:
         full = self._client().get_album(self.id)
         self._data = {**(self._data or {}), **full}
 
+
     # -- cheap properties (available from search seed) --
 
     @property
@@ -744,8 +745,7 @@ class SpotifyRelease:
     @property
     def total_tracks_hint(self) -> 'int | None':
         """Track count from the search-result seed, if available — cheap,
-        no network fetch. None if constructed some other way (e.g. by ID
-        directly) rather than via from_search_item."""
+        no network fetch. None if not constructed via from_search_item."""
         return (self._data or {}).get('total_tracks')
 
     @property
@@ -808,7 +808,7 @@ def compare_releases(*releases: MetadataRelease) -> dict:
         for r in releases
     ]
     # Normalise titles for set operations: strip feat. credits so that
-    # "(feat. Lloyd)" and "- feat. Lloyd" variants of the same track are treated
+    # differently-formatted feat. variants of the same track are treated
     # as identical.  Raw names are kept in track_lists for display/dur_diffs.
     norm_lists = [
         [(_bare_track_title(t).lower(), d) for t, d in tl]
@@ -1172,10 +1172,10 @@ def apple_music_fetch_editorial_note(apple_music_id: str, country: str = 'us',
                                       timeout: int = 10) -> 'str | None':
     """Scrape the "About this Album" editorial blurb from an Apple Music
     album page. Apple's public catalog API (and the iTunes Lookup API) don't
-    expose this text at all — it only exists in the server-rendered web
-    player HTML. The `-` placeholder slug redirects to the real one, so we
-    never need to know it. Returns None if the album has no editorial note
-    (most don't) or the page can't be fetched."""
+    expose this text — it only exists in the server-rendered web player HTML.
+    The `-` placeholder slug redirects to the real one, so we never need to
+    know it. Returns None if the album has no editorial note or the page
+    can't be fetched."""
     url = f'https://music.apple.com/{country}/album/-/{apple_music_id}'
     try:
         raw = _http_get(url, headers={'User-Agent': _AM_WEB_UA}, lim=_am_web_lim, timeout=timeout)
@@ -1187,7 +1187,7 @@ def apple_music_fetch_editorial_note(apple_music_id: str, country: str = 'us',
         return None
     text = _AM_TAG_RE.sub('', m.group(1))
     text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', text)   # paragraph breaks
-    text = re.sub(r'<[^>]+>', '', text)                 # strip remaining tags (b/i/etc.)
+    text = re.sub(r'<[^>]+>', '', text)                 # strip remaining tags
     text = html_lib.unescape(text).strip()
     return text or None
 
@@ -1299,7 +1299,7 @@ class ItunesRelease:
     def date(self) -> str:
         self._ensure_full()
         raw = (self._data.get('releaseDate') or '').strip()
-        return raw[:10] if raw else ''  # YYYY-MM-DDTHH:MM:SS → YYYY-MM-DD
+        return raw[:10] if raw else ''  # trim to date-only
 
     @property
     def tracks(self) -> list:
@@ -1336,7 +1336,6 @@ class ItunesRelease:
         art = (self._data.get('artworkUrl100') or '').strip()
         if not art:
             return None
-        # Replace standard size suffix with 3000×3000
         art = re.sub(r'\b\d+x\d+bb\b', '3000x3000bb', art)
         art = re.sub(r'\b100x100\b', '3000x3000', art)
         return art
@@ -1419,11 +1418,9 @@ class BandcampRelease:
                 '_disc_number':  1,
             })
 
-        # Release date: try 'current.release_date' (e.g. "30 Apr 2025 00:00:00 GMT")
         release_date = _parse_bc_date(current.get('release_date') or
                                       tralbum.get('album_release_date') or '')
 
-        # Cover art URL: https://f4.bcbits.com/img/a{art_id}_0.jpg
         art_id  = tralbum.get('art_id') or current.get('art_id')
         art_url = f'https://f4.bcbits.com/img/a{art_id}_0.jpg' if art_id else None
 
@@ -1503,10 +1500,8 @@ class BandcampRelease:
 def _parse_bc_date(raw: str) -> str:
     """Parse a Bandcamp release date string to YYYY-MM-DD.
 
-    Handles formats like:
-      "30 Apr 2025 00:00:00 GMT"  → "2025-04-30"
-      "2025-04-30"                → "2025-04-30"
-      "April 30, 2025"            → "2025-04-30"
+    Handles formats like "30 Apr 2025 00:00:00 GMT" as well as ISO and
+    "Month D, YYYY" forms.
     """
     if not raw:
         return ''
@@ -1575,7 +1570,7 @@ class DeezerRelease:
             dur_s = t.get('duration') or 0
             track_list.append({
                 'name':             t.get('title', ''),
-                'duration_ms':      dur_s * 1000 if dur_s else None,  # seconds → ms
+                'duration_ms':      dur_s * 1000 if dur_s else None,
                 '_isrcs':           [t['isrc']] if t.get('isrc') else [],
                 '_disc_number':     t.get('disk_number', 1),
                 '_track_number':    t.get('track_position', i + 1),
@@ -1839,7 +1834,7 @@ class GeniusTrack:
             return None
         try:
             lg     = self._get_lg()
-            # Use song_id directly — avoids unreliable text search for unusual titles
+            # song_id avoids the unreliable text-search fallback
             result = lg.search_song(song_id=self.song_id)
             self._lyrics = result.lyrics.strip() if result and result.lyrics else ''
         except (TimeoutError, OSError, AttributeError, ValueError, json.JSONDecodeError) as e:

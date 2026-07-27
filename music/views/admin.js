@@ -1881,7 +1881,7 @@ function _flushFields(table, id, fields, allowedCols) {
             tp2.aliasInserts.push({ alias, alias_type, language });
             tp2.aliasDeletes = tp2.aliasDeletes.filter(a => a !== alias);
             _markDirty();
-            // Simpler: just append a new row
+            // Append a new row directly rather than re-rendering the list
             const rowsEl = modal.querySelector('#aliasModalRows');
             const noYet = rowsEl.querySelector('p');
             if (noYet) noYet.remove();
@@ -1911,7 +1911,7 @@ function _flushFields(table, id, fields, allowedCols) {
         const btn = document.querySelector(`.admin-aliases-btn[data-track-id="${trackId}"]`);
         if (!btn) return;
         // Count = db aliases minus deletes + inserts (approximate from pending)
-        // For simplicity just reload count from DB
+        // Reload count from DB instead of tracking pending state here
         const res = _db.exec('SELECT COUNT(*) FROM track_aliases WHERE track_id=?', [trackId]);
         const dbCount = res.length ? (res[0].values[0][0] || 0) : 0;
         // TODO: adjust for pending, for now show db count

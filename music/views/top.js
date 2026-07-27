@@ -125,7 +125,7 @@ const ViewTop = (() => {
                         COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as tracks_listened,
                         COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
                         CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
-                        r.avg_listen_ts as avg_ts
+                        r.stat_avg_listen_ts as avg_ts
                     FROM releases r
                     LEFT JOIN artists a ON a.id = r.primary_artist_id
                     LEFT JOIN tracks t ON t.release_id = r.id
@@ -172,7 +172,7 @@ const ViewTop = (() => {
                            r.id,
                            COUNT(l.id) total_listens,
                            CAST(SUM(COALESCE(t.duration_ms,0))/60000.0 AS INTEGER) total_minutes,
-                           t.avg_listen_ts as avg_ts
+                           t.stat_avg_listen_ts as avg_ts
                     FROM tracks t
                     LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
                     LEFT JOIN artists a ON ta.artist_id = a.id

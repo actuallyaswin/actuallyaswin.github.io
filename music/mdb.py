@@ -73,6 +73,7 @@ from mdb_ops import (
     resolve_artist,
     save_aoty_data, save_release_date,
     upsert_artist_alias, upsert_release_alias, upsert_track_alias,
+    merge_variant_tracks,
 )
 from mdb_apis import (
     SpotifyClient, SpotifyRelease,
@@ -4370,32 +4371,6 @@ def cmd_release_variants(args):
     console.print(f'  [dim]Done — {saved} variant link(s) saved.[/dim]')
 
 
-def _merge_variant_tracks(conn, canonical_id, variant_id):
-    """Move listens from shared variant tracks → canonical tracks (by ISRC, title fallback),
-    then hide the shared tracks on the variant.  Returns (listens_moved, tracks_hidden)."""
-    canon_rows = conn.execute(
-        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [canonical_id]
-    ).fetchall()
-    by_isrc  = {r[1]: r[0] for r in canon_rows if r[1]}
-    by_title = {_norm(r[2]): r[0] for r in canon_rows}
-
-    var_rows = conn.execute(
-        'SELECT id, isrc, title FROM tracks WHERE release_id=? AND hidden=0', [variant_id]
-    ).fetchall()
-
-    listens_moved = tracks_hidden = 0
-    for vid, visrc, vtitle in var_rows:
-        canon_tid = (by_isrc.get(visrc) if visrc else None) or by_title.get(_norm(vtitle))
-        if not canon_tid:
-            continue
-        listens_moved += conn.execute(
-            'UPDATE listens SET track_id=? WHERE track_id=?', [canon_tid, vid]
-        ).rowcount
-        conn.execute('UPDATE tracks SET hidden=1 WHERE id=?', [vid])
-        tracks_hidden += 1
-    return listens_moved, tracks_hidden
-
-
 def _write_group(conn, canonical, type_updates, edition_links, hide_ids):
     """Write all accumulated type/variant/hide changes for one group."""
     for rid in hide_ids:
@@ -4418,7 +4393,7 @@ def _write_group(conn, canonical, type_updates, edition_links, hide_ids):
         )
         # Always hide variant and merge shared-track listens to canonical
         conn.execute('UPDATE releases SET hidden=1 WHERE id=?', [variant_id])
-        _merge_variant_tracks(conn, canonical['id'], variant_id)
+        merge_variant_tracks(conn, canonical['id'], variant_id)
 
     conn.commit()
 
@@ -4796,7 +4771,7 @@ def cmd_stats_refresh(args):
             SELECT (r.release_year / 10) * 10 as decade, COUNT(l.id) n
             FROM listens l JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON r.id = t.release_id
-            WHERE r.release_year IS NOT NULL
+            WHERE r.release_year IS NOT NULL AND r.hidden = 0
             GROUP BY decade ORDER BY decade
         ''').fetchall()
         cache['era'] = _breakdown_section(
@@ -4825,7 +4800,7 @@ def cmd_stats_refresh(args):
             SELECT r.type, COUNT(l.id) n
             FROM listens l JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON r.id = t.release_id
-            WHERE r.type IS NOT NULL AND r.type != ''
+            WHERE r.type IS NOT NULL AND r.type != '' AND r.hidden = 0
             GROUP BY r.type ORDER BY n DESC
         ''').fetchall()
         cache['releaseType'] = _breakdown_section(
@@ -4847,7 +4822,7 @@ def cmd_stats_refresh(args):
             SELECT (l.year - r.release_year) as gap, COUNT(l.id) n
             FROM listens l JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON r.id = t.release_id
-            WHERE r.release_year IS NOT NULL
+            WHERE r.release_year IS NOT NULL AND r.hidden = 0
             GROUP BY gap
         ''').fetchall()
         bucket_totals = {label: 0 for label, _, _ in recency_buckets}
@@ -4906,7 +4881,7 @@ def cmd_stats_refresh(args):
             SELECT r.label, COUNT(l.id) n
             FROM listens l JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON r.id = t.release_id
-            WHERE r.label IS NOT NULL AND r.label != ''
+            WHERE r.label IS NOT NULL AND r.label != '' AND r.hidden = 0
             GROUP BY r.label ORDER BY n DESC LIMIT 12
         ''').fetchall()
         cache['labels'] = [{'label': r['label'], 'n': r['n']} for r in label_rows]
@@ -4948,22 +4923,30 @@ def cmd_stats_refresh(args):
         ]
         _vlog('completion', cache['completion'], t0)
 
-        # ── Most Relistened Tracks ────────────────────────────────────────
+        # ── Most Relistened Tracks (one per release, so a single album
+        # doesn't crowd out the rest of the list) ─────────────────────────
         t0 = time.perf_counter()
         relistened_rows = conn.execute('''
-            SELECT t.id, t.title, a.name,
-                   COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
-                   r.id as release_id, COUNT(l.id) as total_listens
-            FROM tracks t
-            LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-            LEFT JOIN artists a ON ta.artist_id = a.id
-            LEFT JOIN releases r ON t.release_id = r.id
-            JOIN listens l ON t.id = l.track_id
-            WHERE t.hidden = 0
-            GROUP BY t.id ORDER BY total_listens DESC LIMIT 8
+            SELECT id, title, artist_name, art_url, release_id, total_listens FROM (
+                SELECT t.id, t.title, a.name as artist_name,
+                       COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
+                       r.id as release_id, COUNT(l.id) as total_listens,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY t.release_id ORDER BY COUNT(l.id) DESC
+                       ) as release_rank
+                FROM tracks t
+                LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                LEFT JOIN artists a ON ta.artist_id = a.id
+                LEFT JOIN releases r ON t.release_id = r.id
+                JOIN listens l ON t.id = l.track_id
+                WHERE t.hidden = 0 AND (r.id IS NULL OR r.hidden = 0)
+                GROUP BY t.id
+            )
+            WHERE release_rank = 1
+            ORDER BY total_listens DESC LIMIT 8
         ''').fetchall()
         cache['relistened'] = [
-            {'id': r['id'], 'title': r['title'], 'artist': r['name'], 'art_url': r['art_url'],
+            {'id': r['id'], 'title': r['title'], 'artist': r['artist_name'], 'art_url': r['art_url'],
              'release_id': r['release_id'], 'n': r['total_listens']}
             for r in relistened_rows
         ]
@@ -5098,36 +5081,155 @@ def cmd_stats_refresh(args):
             [(key, json.dumps(value), now) for key, value in cache.items()]
         )
 
-        # ── avg_listen_ts (tracks) ──────────────────────────────────────
+        # ── Track stats (stat_avg_listen_ts, stat_total_plays, stat_first/last_listen_ts, stat_drift_days) ─
         t0 = time.perf_counter()
-        conn.execute('UPDATE tracks SET avg_listen_ts = NULL WHERE avg_listen_ts IS NOT NULL')
-        track_avg_rows = conn.execute('''
-            SELECT l.track_id, CAST(AVG(l.timestamp) AS INTEGER) as avg_ts
+        conn.execute('''
+            UPDATE tracks SET stat_avg_listen_ts = NULL, stat_total_plays = NULL,
+                stat_first_listen_ts = NULL, stat_last_listen_ts = NULL, stat_drift_days = NULL
+        ''')
+        track_stat_rows = conn.execute('''
+            SELECT l.track_id,
+                   CAST(AVG(l.timestamp) AS INTEGER) as avg_ts,
+                   COUNT(*) as total_plays,
+                   MIN(l.timestamp) as first_ts,
+                   MAX(l.timestamp) as last_ts
             FROM listens l
             JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
             GROUP BY l.track_id
         ''').fetchall()
         conn.executemany(
-            'UPDATE tracks SET avg_listen_ts = ? WHERE id = ?',
-            [(r['avg_ts'], r['track_id']) for r in track_avg_rows]
+            'UPDATE tracks SET stat_avg_listen_ts = ?, stat_total_plays = ?,'
+            ' stat_first_listen_ts = ?, stat_last_listen_ts = ? WHERE id = ?',
+            [(r['avg_ts'], r['total_plays'], r['first_ts'], r['last_ts'], r['track_id'])
+             for r in track_stat_rows]
         )
-        _vlog('track_avg_ts', track_avg_rows, t0)
+        track_drift_rows = conn.execute('''
+            SELECT track_id, AVG((ts - prev_ts) / 86400.0) as drift_days FROM (
+                SELECT l.track_id, l.timestamp as ts,
+                       LAG(l.timestamp) OVER (PARTITION BY l.track_id ORDER BY l.timestamp) as prev_ts
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            )
+            WHERE prev_ts IS NOT NULL
+            GROUP BY track_id
+            HAVING COUNT(*) >= 2
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE tracks SET stat_drift_days = ? WHERE id = ?',
+            [(r['drift_days'], r['track_id']) for r in track_drift_rows]
+        )
+        _vlog('track_stats', track_stat_rows, t0)
 
-        # ── avg_listen_ts (releases) ────────────────────────────────────
+        # ── Release stats (stat_avg_listen_ts, stat_tracks_heard, stat_total_plays,
+        # stat_album_total_ms, stat_first/last_listen_ts, stat_drift_days) ────────
         t0 = time.perf_counter()
-        conn.execute('UPDATE releases SET avg_listen_ts = NULL WHERE avg_listen_ts IS NOT NULL')
-        release_avg_rows = conn.execute('''
-            SELECT t.release_id, CAST(AVG(l.timestamp) AS INTEGER) as avg_ts
+        conn.execute('''
+            UPDATE releases SET stat_avg_listen_ts = NULL, stat_tracks_heard = NULL,
+                stat_total_plays = NULL, stat_album_total_ms = NULL,
+                stat_first_listen_ts = NULL, stat_last_listen_ts = NULL, stat_drift_days = NULL
+        ''')
+        release_stat_rows = conn.execute('''
+            SELECT t.release_id,
+                   CAST(AVG(l.timestamp) AS INTEGER) as avg_ts,
+                   COUNT(DISTINCT t.id) as tracks_heard,
+                   COUNT(*) as total_plays,
+                   MIN(l.timestamp) as first_ts,
+                   MAX(l.timestamp) as last_ts
             FROM listens l
             JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
             JOIN releases r ON r.id = t.release_id AND r.hidden = 0
             GROUP BY t.release_id
         ''').fetchall()
         conn.executemany(
-            'UPDATE releases SET avg_listen_ts = ? WHERE id = ?',
-            [(r['avg_ts'], r['release_id']) for r in release_avg_rows]
+            'UPDATE releases SET stat_avg_listen_ts = ?, stat_tracks_heard = ?, stat_total_plays = ?,'
+            ' stat_first_listen_ts = ?, stat_last_listen_ts = ? WHERE id = ?',
+            [(r['avg_ts'], r['tracks_heard'], r['total_plays'], r['first_ts'], r['last_ts'], r['release_id'])
+             for r in release_stat_rows]
         )
-        _vlog('release_avg_ts', release_avg_rows, t0)
+        album_ms_rows = conn.execute('''
+            SELECT release_id, CAST(SUM(COALESCE(duration_ms, 0)) AS INTEGER) as total_ms
+            FROM tracks WHERE hidden = 0 AND variant_section IS NULL
+            GROUP BY release_id
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE releases SET stat_album_total_ms = ? WHERE id = ?',
+            [(r['total_ms'], r['release_id']) for r in album_ms_rows]
+        )
+        release_drift_rows = conn.execute('''
+            SELECT release_id, AVG((ts - prev_ts) / 86400.0) as drift_days FROM (
+                SELECT t.release_id, l.timestamp as ts,
+                       LAG(l.timestamp) OVER (PARTITION BY t.release_id ORDER BY l.timestamp) as prev_ts
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                JOIN releases r ON r.id = t.release_id AND r.hidden = 0
+            )
+            WHERE prev_ts IS NOT NULL
+            GROUP BY release_id
+            HAVING COUNT(*) >= 2
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE releases SET stat_drift_days = ? WHERE id = ?',
+            [(r['drift_days'], r['release_id']) for r in release_drift_rows]
+        )
+        _vlog('release_stats', release_stat_rows, t0)
+
+        # ── Artist stats (stat_avg_listen_ts, stat_unique_tracks, stat_total_plays,
+        # stat_total_releases, stat_first/last_listen_ts, stat_drift_days) ───────
+        t0 = time.perf_counter()
+        conn.execute('''
+            UPDATE artists SET stat_avg_listen_ts = NULL, stat_unique_tracks = NULL,
+                stat_total_plays = NULL, stat_total_releases = NULL,
+                stat_first_listen_ts = NULL, stat_last_listen_ts = NULL, stat_drift_days = NULL
+        ''')
+        artist_stat_rows = conn.execute('''
+            SELECT ta.artist_id,
+                   CAST(AVG(l.timestamp) AS INTEGER) as avg_ts,
+                   COUNT(*) as total_plays,
+                   MIN(l.timestamp) as first_ts,
+                   MAX(l.timestamp) as last_ts
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            GROUP BY ta.artist_id
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE artists SET stat_avg_listen_ts = ?, stat_total_plays = ?,'
+            ' stat_first_listen_ts = ?, stat_last_listen_ts = ? WHERE id = ?',
+            [(r['avg_ts'], r['total_plays'], r['first_ts'], r['last_ts'], r['artist_id'])
+             for r in artist_stat_rows]
+        )
+        # Catalog size (unique_tracks/total_releases) is independent of whether a
+        # track has ever been listened to — matches views/artist.js's original
+        # LEFT JOIN semantics (a track by this artist counts even with 0 plays).
+        artist_catalog_rows = conn.execute('''
+            SELECT ta.artist_id,
+                   COUNT(DISTINCT t.id) as unique_tracks,
+                   COUNT(DISTINCT t.release_id) as total_releases
+            FROM track_artists ta
+            JOIN tracks t ON t.id = ta.track_id AND t.hidden = 0 AND ta.role = 'main'
+            GROUP BY ta.artist_id
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE artists SET stat_unique_tracks = ?, stat_total_releases = ? WHERE id = ?',
+            [(r['unique_tracks'], r['total_releases'], r['artist_id']) for r in artist_catalog_rows]
+        )
+        artist_drift_rows = conn.execute('''
+            SELECT artist_id, AVG((ts - prev_ts) / 86400.0) as drift_days FROM (
+                SELECT ta.artist_id, l.timestamp as ts,
+                       LAG(l.timestamp) OVER (PARTITION BY ta.artist_id ORDER BY l.timestamp) as prev_ts
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            )
+            WHERE prev_ts IS NOT NULL
+            GROUP BY artist_id
+            HAVING COUNT(*) >= 2
+        ''').fetchall()
+        conn.executemany(
+            'UPDATE artists SET stat_drift_days = ? WHERE id = ?',
+            [(r['drift_days'], r['artist_id']) for r in artist_drift_rows]
+        )
+        _vlog('artist_stats', artist_stat_rows, t0)
 
         # ── Artist year-medal ranking (replaces artist.js's mislabeled
         # "avoids a full cross-artist scan" CTE, which didn't) ───────────
@@ -6009,6 +6111,107 @@ def cmd_collection_enrich(args):
         console.print('[yellow]Specify --discogs to enrich from Discogs API[/yellow]')
 
 
+_SHOW_TABLES = {
+    'release': ('releases', 'title'),
+    'artist':  ('artists', 'name'),
+    'track':   ('tracks', 'title'),
+}
+
+
+def _show_find_entity(conn: sqlite3.Connection, key: str) -> 'tuple[str, sqlite3.Row] | tuple[None, None]':
+    """Look up key as an ID across releases/artists/tracks. Returns (kind, row) or (None, None)."""
+    for kind, (table, _) in _SHOW_TABLES.items():
+        row = conn.execute(f'SELECT * FROM {table} WHERE id = ?', [key]).fetchone()
+        if row:
+            return kind, row
+    return None, None
+
+
+def _show_to_epoch(value) -> 'int | None':
+    """Coerce created_at/updated_at to a Unix timestamp.
+
+    Most rows store an int, but a few legacy rows store an ISO datetime
+    string instead — normalize both to int so sorting/formatting don't break.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    for fmt in ('%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return int(datetime.strptime(value, fmt).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def cmd_show(args):
+    """Print every column of a release/artist/track row, by ID."""
+    with managed_db(args.db or DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        kind, row = _show_find_entity(conn, args.id)
+        if row is None:
+            console.print(f'[red]No release, artist, or track found with id {args.id!r}[/red]')
+            return
+
+        data = dict(row)
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return
+
+        from rich.table import Table
+        from rich import box as rbox
+        label = data.get('title') or data.get('name') or ''
+        t = Table(box=rbox.SIMPLE_HEAD, show_header=False, pad_edge=False, show_edge=False)
+        t.add_column('field', style='dim', no_wrap=True)
+        t.add_column('value', overflow='fold')
+        for field, value in data.items():
+            if field in ('created_at', 'updated_at'):
+                epoch = _show_to_epoch(value)
+                if epoch:
+                    value = f'{value}  ({datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")})'
+            t.add_row(field, '' if value is None else str(value))
+        console.print(Rule(f'[bold]{kind}[/bold]  [dim]{label}[/dim]', style='bright_blue'))
+        console.print(t)
+
+
+def cmd_show_recent(args):
+    """List the most recently created/edited releases, artists, and tracks."""
+    with managed_db(args.db or DB_PATH) as conn:
+        rows = []
+        for kind, (table, name_col) in _SHOW_TABLES.items():
+            for r in conn.execute(
+                f'SELECT id, {name_col} AS name, created_at, updated_at FROM {table} '
+                f'WHERE updated_at IS NOT NULL ORDER BY updated_at DESC LIMIT ?',
+                [args.limit],
+            ).fetchall():
+                rows.append({
+                    'id': r[0], 'name': r[1], 'type': kind,
+                    'created_at': _show_to_epoch(r[2]), 'updated_at': _show_to_epoch(r[3]),
+                })
+        rows.sort(key=lambda r: r['updated_at'] or 0, reverse=True)
+        rows = rows[:args.limit]
+
+        if args.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+            return
+
+        from rich.table import Table
+        from rich import box as rbox
+        t = Table(box=rbox.SIMPLE_HEAD, show_header=True, pad_edge=False, show_edge=False)
+        t.add_column('id', style='dim', no_wrap=True)
+        t.add_column('name', overflow='fold')
+        t.add_column('type', no_wrap=True)
+        t.add_column('edited', no_wrap=True)
+        for r in rows:
+            is_new = r['created_at'] and r['updated_at'] and abs(r['updated_at'] - r['created_at']) < 5
+            edited_str = datetime.fromtimestamp(r['updated_at']).strftime('%Y-%m-%d %H:%M:%S') if r['updated_at'] else ''
+            tag = '[green]created[/green]' if is_new else '[yellow]edited[/yellow]'
+            t.add_row(r['id'], r['name'] or '', f'{r["type"]}  {tag}', edited_str)
+        console.print(t)
+        console.print(f'[dim]{len(rows)} most recently touched entities[/dim]')
+
+
 def cmd_admin_pin(args):
     db_path = getattr(args, 'db', None) or DB_PATH
     pin = getpass.getpass('New PIN: ')
@@ -6353,7 +6556,17 @@ def main():
     p_adminpin.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
     p_adminpin.set_defaults(func=cmd_admin_pin)
 
+    p_show = sub.add_parser('show', help='Print a release/artist/track row, or --recent for recently touched entities')
+    p_show.add_argument('id', nargs='?', help='Release, artist, or track ID (omit with --recent)')
+    p_show.add_argument('--recent', action='store_true', help='List the most recently created/edited entities')
+    p_show.add_argument('--limit', type=int, default=50, help='With --recent: max rows to show (default: 50)')
+    p_show.add_argument('--json', action='store_true', help='Print as JSON instead of a table')
+    p_show.add_argument('--db', metavar='PATH')
+    p_show.set_defaults(func=lambda a: cmd_show_recent(a) if a.recent else cmd_show(a))
+
     args = parser.parse_args()
+    if getattr(args, 'cmd', None) == 'show' and not args.recent and not args.id:
+        p_show.error('the following arguments are required: id (or pass --recent)')
     try:
         args.func(args)
     except KeyboardInterrupt:

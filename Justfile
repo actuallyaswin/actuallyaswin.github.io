@@ -93,7 +93,7 @@ music-match *ARGS:
     -cd music && {{mdb_python}} sync.py match {{ARGS}}
     @just db-checkpoint
 
-# Run the mdb CLI (import, enrich, artist, release, etc.) — e.g. `just mdb import <url>`.
+# Run the mdb CLI, e.g. `just mdb import <url>`.
 mdb *ARGS:
     cd music && {{mdb_python}} mdb.py {{ARGS}}
 

@@ -102,19 +102,18 @@ const ViewArtist = (() => {
                 COALESCE(a.image_thumb_url, a.image_url) AS image_url,
                 a.image_url AS image_full_url,
                 a.hero_image_url,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.id END) as unique_tracks,
-                COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_plays,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN t.release_id END) as total_releases,
+                a.stat_unique_tracks,
+                a.stat_total_plays,
+                a.stat_total_releases,
                 a.spotify_id,
                 a.mbid,
                 a.aoty_id,
-                a.aoty_url
+                a.aoty_url,
+                a.stat_first_listen_ts,
+                a.stat_last_listen_ts,
+                a.stat_drift_days
             FROM artists a
-            LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
-            LEFT JOIN tracks t ON ta.track_id = t.id
-            LEFT JOIN listens l ON t.id = l.track_id
             WHERE a.id = '${safeId}' AND (a.hidden IS NULL OR a.hidden = 0)
-            GROUP BY a.id
         `)[0];
 
         if (!result || result.values.length === 0) {
@@ -123,8 +122,12 @@ const ViewArtist = (() => {
             return;
         }
 
-        const [name, imageUrl, imageFullUrl, heroImageUrl, uniqueTracks, totalPlays, totalReleases,
-               spotifyId, mbid, aotyId, aotyUrl] = result.values[0];
+        const [name, imageUrl, imageFullUrl, heroImageUrl, uniqueTracksRaw, totalPlaysRaw, totalReleasesRaw,
+               spotifyId, mbid, aotyId, aotyUrl, firstTs, lastTs, driftDays] = result.values[0];
+        const uniqueTracks   = uniqueTracksRaw || 0;
+        const totalPlays     = totalPlaysRaw || 0;
+        const totalReleases  = totalReleasesRaw || 0;
+
 
         const extLinks = new Map();
         try {
@@ -163,16 +166,6 @@ const ViewArtist = (() => {
 
         document.title = name;
 
-        // First/last listen
-        const timeResult = _db.exec(`
-            SELECT MIN(l.timestamp), MAX(l.timestamp)
-            FROM listens l
-            JOIN tracks t ON l.track_id = t.id
-            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
-        `)[0];
-        const [firstTs, lastTs] = timeResult?.values[0] ?? [null, null];
-
         // ── Stats table ───────────────────────────────────────────────────────
         const statsEl = document.getElementById('artistStatsTable');
         if (statsEl) {
@@ -186,6 +179,9 @@ const ViewArtist = (() => {
             if (totalReleases > 0) rows.push(['Releases',    formatNumber(totalReleases)]);
             if (firstTs)           rows.push(['First heard', fmtTs(firstTs)]);
             if (lastTs)            rows.push(['Last played', formatRelativeTime(lastTs)]);
+            if (driftDays !== null && totalPlays >= 3) rows.push(['Drift', driftDays < 1
+                ? 'Same-day repeats'
+                : `${driftDays.toFixed(1)} days between plays`]);
 
             const makeCell = ([lbl, val]) =>
                 `<div class="rst-row"><dt class="rst-label">${lbl}</dt><dd class="rst-value">${val}</dd></div>`;

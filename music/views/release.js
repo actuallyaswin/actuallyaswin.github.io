@@ -136,9 +136,10 @@ const ViewRelease = (() => {
                 r.type,
                 r.type_secondary,
                 r.album_art_url,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000) THEN t.id END)                      as total_tracks_in_db,
-                COUNT(DISTINCT CASE WHEN t.hidden = 0 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000) AND l.id IS NOT NULL THEN t.id END) as tracks_heard,
-                COUNT(CASE WHEN t.hidden = 0 THEN l.id END)                               as total_plays,
+                (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
+                 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks_in_db,
+                r.stat_tracks_heard,
+                r.stat_total_plays,
                 r.spotify_id,
                 r.release_group_mbid,
                 r.mbid,
@@ -150,16 +151,13 @@ const ViewRelease = (() => {
                 r.aoty_ratings_user,
                 r.primary_artist_id,
                 r.label,
-                (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) AS INTEGER)
-                 FROM tracks t2 WHERE t2.release_id = r.id AND t2.hidden = 0 AND t2.variant_section IS NULL) as album_total_ms,
-                MIN(CASE WHEN t.hidden = 0 THEN l.timestamp END) as first_listen_ts,
-                MAX(CASE WHEN t.hidden = 0 THEN l.timestamp END) as last_listen_ts,
+                r.stat_album_total_ms,
+                r.stat_first_listen_ts,
+                r.stat_last_listen_ts,
+                r.stat_drift_days,
                 r.apple_music_id
             FROM releases r
-            LEFT JOIN tracks t ON t.release_id = r.id
-            LEFT JOIN listens l ON l.track_id = t.id
             WHERE r.id = '${safeId}'
-            GROUP BY r.id
         `)[0];
 
         if (!result || result.values.length === 0) {
@@ -169,11 +167,14 @@ const ViewRelease = (() => {
         }
 
         const [title, releaseDate, type, typeSecondary, albumArtUrl,
-               totalTracksInDb, tracksHeard, totalPlays,
+               totalTracksInDb, tracksHeardRaw, totalPlaysRaw,
                spotifyId, releaseGroupMbid, mbid, aotyUrl, aotyId,
                aotyScoreCritic, aotyScoreUser, aotyRatingsCritic, aotyRatingsUser,
-               primaryArtistId, label, albumTotalMs, firstListenTs, lastListenTs,
+               primaryArtistId, label, albumTotalMs, firstListenTs, lastListenTs, driftDays,
                appleMusicIdCol] = result.values[0];
+        const tracksHeard = tracksHeardRaw || 0;
+        const totalPlays  = totalPlaysRaw || 0;
+
 
         const extLinks = new Map();
         try {
@@ -252,6 +253,9 @@ const ViewRelease = (() => {
             if (firstListenTs)    rows.push(['First heard',escapeHtml(_fmtTs(firstListenTs))]);
             if (lastListenTs && lastListenTs !== firstListenTs)
                                   rows.push(['Last played',escapeHtml(formatRelativeTime(lastListenTs))]);
+            if (driftDays !== null && totalPlays >= 3) rows.push(['Drift', escapeHtml(driftDays < 1
+                ? 'Same-day repeats'
+                : `${driftDays.toFixed(1)} days between plays`)]);
             if (rows.length > 0) {
                 let html = '';
                 for (let i = 0; i < rows.length; i += 2) {

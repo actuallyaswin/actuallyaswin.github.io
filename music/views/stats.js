@@ -150,43 +150,47 @@ const ViewStats = (() => {
     const SECTIONS = {
         language: {
             title: 'Language Breakdown',
+            desc: 'Share of plays by track language.',
             kind: 'release',
         },
         gender: {
             title: 'Artist Gender',
-            desc: "Excluding bands and groups.",
+            desc: 'Share of plays by artist gender, excluding bands and groups.',
             kind: 'artist',
         },
         artistType: {
             title: 'Artist Type',
+            desc: 'Share of plays by artist type (solo, group, etc.).',
             kind: 'artist',
         },
         era: {
             title: 'Release Era',
-            desc: 'By decade the album came out.',
+            desc: 'Share of plays by the decade the album came out.',
             kind: 'release',
         },
         country: {
             title: 'Artist Country',
-            desc: 'Showing the top 12.',
+            desc: 'Share of plays by artist country. Showing the top 12.',
             kind: 'artist',
         },
         releaseType: {
             title: 'Release Type',
+            desc: 'Share of plays by release type (album, EP, single, etc.).',
             kind: 'release',
         },
         recency: {
             title: 'Release Recency',
-            desc: 'How old the music you play is, relative to when it came out.',
+            desc: 'Share of plays by how old the music was when you played it.',
             kind: 'release',
         },
         explicit: {
             title: 'Explicit Content',
+            desc: 'Share of plays that are explicit vs. clean.',
             kind: 'artist',
         },
         popularity: {
-            title: 'Mainstream vs. Deep Cuts',
-            desc: "Per Spotify's artist popularity score.",
+            title: 'Mainstream Meter',
+            desc: "Share of plays by artist popularity, per Spotify's score.",
             kind: 'artist',
         },
         labels: {

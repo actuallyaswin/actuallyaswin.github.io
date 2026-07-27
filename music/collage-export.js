@@ -1,21 +1,17 @@
 // Composes the currently-visible Collage-mode cells into an off-screen
 // canvas and downloads it as a PNG. Entity-agnostic: only ever receives
 // {imageUrl, label} pairs plus grid dimensions — no knowledge of
-// artists/albums/tracks. Supports three themes (see views/top.js's
-// collageTheme state): 'quilt' (plain grid), 'captioned' (grid + bottom-bar
-// label), 'topster' (black bg, step-pyramid tiers + monospace sidebar list
-// — see _exportTopster). A cell whose image fails to load (confirmed real
-// case: coverartarchive.org returns 403 to plain fetches, unlike Spotify/
-// Apple Music's permissive CORS) gets the same fallback placeholder tile
-// used elsewhere on the site, and the export continues rather than aborting.
+// artists/albums/tracks. Supports the themes in views/top.js's collageTheme
+// state ('quilt', 'captioned', 'topster' — see _exportTopster). A cell whose
+// image fails to load (coverartarchive.org returns 403 to plain fetches)
+// gets the same fallback placeholder tile used elsewhere on the site, and
+// the export continues rather than aborting.
 const CollageExport = (() => {
     const CELL_PX = 300;
-    // Canvas pixel density multiplier — all layout math below stays in
-    // logical pixels; ctx.scale() maps them to actual output pixels. Without
-    // this, text (drawn crisp at whatever raw pixel size the canvas is) came
-    // out visibly aliased/pixelated once viewed at normal zoom, since a
-    // 15px canvas font has no supersampling headroom the way an HTML <span>
-    // would via the browser's own subpixel rendering.
+    // Canvas pixel density multiplier — layout math below stays in logical
+    // pixels; ctx.scale() maps them to actual output pixels. Without this,
+    // canvas text comes out aliased at normal zoom (no supersampling
+    // headroom the way an HTML element gets via subpixel rendering).
     const SCALE = 2;
 
     async function _loadCellImage(url) {
@@ -47,8 +43,7 @@ const CollageExport = (() => {
     }
 
     // Draws a "cover-fit" bitmap into an arbitrary-sized square cell (used
-    // by both the plain grid themes at CELL_PX and Topster's smaller,
-    // per-tier cell sizes).
+    // by the plain grid themes at CELL_PX and Topster's per-tier sizes).
     function _drawCoverSized(ctx, bitmap, x, y, size) {
         const scale = Math.max(size / bitmap.width, size / bitmap.height);
         const sw = size / scale, sh = size / scale;
@@ -69,10 +64,9 @@ const CollageExport = (() => {
     // Small bottom-right attribution watermark, drawn last so it sits above
     // the art/labels — matches the site's heading font (Raleway) and green
     // accent (var(--primary) / #87ae73), rendered at a fixed logical size
-    // regardless of overall canvas size so it never overwhelms a small export.
-    // `dimBackdrop` skips the semi-transparent black pill behind the text —
-    // pointless on Topster's already-black background, needed on Quilt/
-    // Captioned where the watermark otherwise sits directly on album art.
+    // so it never overwhelms a small export. `dimBackdrop` skips the
+    // semi-transparent black pill behind the text — pointless on Topster's
+    // black background, needed elsewhere where the watermark sits on art.
     function _drawWatermark(ctx, canvasWidth, canvasHeight, dimBackdrop = true) {
         const text = 'actuallyaswin.github.io/music';
         const fontSize = 13;
@@ -122,9 +116,9 @@ const CollageExport = (() => {
 
     // Renders the "Topster" theme: black background, step-pyramid tiers
     // (largest tiles first, per `tiers` — see views/top.js's
-    // _computeTopsterTiers) on the left, monospace "Artist - Title" text
-    // grouped by the same tier boundaries on the right. Mirrors the
-    // Last.fm-community Topster chart format.
+    // _computeTopsterTiers) on the left, monospace title text grouped by
+    // the same tier boundaries on the right. Mirrors the Last.fm-community
+    // Topster chart format.
     async function _exportTopster({ cells, tiers, filenamePrefix }) {
         const PADDING = 30;
         const GAP = 40;
