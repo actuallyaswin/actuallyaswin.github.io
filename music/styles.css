@@ -2474,17 +2474,53 @@ a.stat-card:hover .stat-label::after {
     margin-bottom: 0;
 }
 
-/* About This Album */
+/* Editorial Notes */
 .about-section {
     margin-bottom: 1.5rem;
 }
 .about-note {
     color: var(--text-secondary);
     line-height: 1.6;
-    max-width: 70ch;
 }
 .about-note + .about-note {
     margin-top: 1rem;
+}
+.about-note-clamp {
+    position: relative;
+    display: -webkit-box;
+    -webkit-line-clamp: 8;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.about-note-clamp.expanded {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+}
+.about-note-fade {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3rem;
+    background: linear-gradient(to bottom, transparent, var(--bg) 85%);
+    pointer-events: none;
+}
+.about-note-clamp.expanded .about-note-fade {
+    display: none;
+}
+.about-readmore-btn {
+    margin-top: 0.75rem;
+    background: none;
+    border: none;
+    color: var(--primary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+}
+.about-readmore-btn:hover {
+    text-decoration: underline;
 }
 .pulse-rows {
     display: flex;
@@ -2704,8 +2740,15 @@ a.stat-card:hover .stat-label::after {
 .stats-row > section[hidden] ~ section:not([hidden]):last-child {
     grid-column: 1 / -1;
 }
+/* Sticky since Timeline is much shorter than Tracks and would otherwise
+   strand in empty space while scrolling. */
+.stats-row .pulse-section {
+    position: sticky;
+    top: 4rem;
+}
 @media (max-width: 700px) {
     .stats-row { grid-template-columns: 1fr; }
+    .stats-row .pulse-section { position: static; }
     .commits-grid { --commit-cell-w: 18px; gap: 2px; }
     .nerds-accordion ul { columns: 1; }
 }

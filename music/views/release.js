@@ -64,8 +64,6 @@ const ViewRelease = (() => {
                 <nav id="releaseLinkPills" class="release-link-pills"></nav>
             </header>
 
-            <div id="aboutSection"></div>
-
             ${CHART_ENABLED ? `
             <section class="chart-container">
                 <div class="chart-header">
@@ -86,11 +84,6 @@ const ViewRelease = (() => {
             ` : ''}
 
             <div class="stats-row">
-                <section class="pulse-section" id="pulseSection">
-                    <h2>Timeline</h2>
-                    <div class="pulse-rows" id="pulseRows"></div>
-                </section>
-
                 <section class="tracks-section">
                     <h2>Tracks</h2>
                     <div class="tracklist" id="trackList">
@@ -98,7 +91,15 @@ const ViewRelease = (() => {
                     </div>
                     <div id="variantsSection"></div>
                 </section>
+
+                <section class="pulse-section" id="pulseSection">
+                    <h2>Timeline</h2>
+                    <div class="pulse-rows" id="pulseRows"></div>
+                </section>
             </div>
+
+            <div id="aboutSection"></div>
+
 
             <div id="sourcesSection"></div>
 
@@ -922,10 +923,26 @@ const ViewRelease = (() => {
 
         section.innerHTML = `
             <section class="about-section">
-                <h2>About This Album</h2>
-                ${paragraphs}
+                <h2>Editorial Notes</h2>
+                <div class="about-note-clamp" id="aboutNoteClamp">
+                    ${paragraphs}
+                    <div class="about-note-fade"></div>
+                </div>
+                <button class="about-readmore-btn" id="aboutReadmoreBtn">Read more</button>
             </section>
         `;
+
+        const clampEl = document.getElementById('aboutNoteClamp');
+        const btnEl = document.getElementById('aboutReadmoreBtn');
+        // Hide the toggle when there's nothing to expand.
+        if (clampEl.scrollHeight <= clampEl.clientHeight + 1) {
+            btnEl.style.display = 'none';
+        } else {
+            btnEl.addEventListener('click', () => {
+                const expanded = clampEl.classList.toggle('expanded');
+                btnEl.textContent = expanded ? 'Show less' : 'Read more';
+            });
+        }
     }
 
     // ── Compilation sources ─────────────────────────────────────────────────────
