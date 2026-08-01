@@ -9,7 +9,6 @@ const ViewArtist = (() => {
     let _themeObserver = null;
 
     const CHART_ENABLED = false;
-    const HERO_ENABLED = false;
 
     function mount(container, db, params) {
         _db = db;
@@ -101,7 +100,6 @@ const ViewArtist = (() => {
                 a.name,
                 COALESCE(a.image_thumb_url, a.image_url) AS image_url,
                 a.image_url AS image_full_url,
-                a.hero_image_url,
                 a.stat_unique_tracks,
                 a.stat_total_plays,
                 a.stat_total_releases,
@@ -122,7 +120,7 @@ const ViewArtist = (() => {
             return;
         }
 
-        const [name, imageUrl, imageFullUrl, heroImageUrl, uniqueTracksRaw, totalPlaysRaw, totalReleasesRaw,
+        const [name, imageUrl, imageFullUrl, uniqueTracksRaw, totalPlaysRaw, totalReleasesRaw,
                spotifyId, mbid, aotyId, aotyUrl, firstTs, lastTs, driftDays] = result.values[0];
         const uniqueTracks   = uniqueTracksRaw || 0;
         const totalPlays     = totalPlaysRaw || 0;
@@ -200,15 +198,6 @@ const ViewArtist = (() => {
             photoEl.addEventListener('click', () => _openArtModal(imageFullUrl || imageUrl));
         }
 
-        if (HERO_ENABLED && heroImageUrl) {
-            const heroEl = document.getElementById('artistHero');
-            if (heroEl) {
-                heroEl.removeAttribute('hidden');
-                heroEl.innerHTML = `<img class="artist-hero-img" src="${heroImageUrl}" alt="">`;
-                document.getElementById('artistHeader').classList.add('has-hero');
-            }
-        }
-
         // ── Members / Member Of → stats table rows ────────────────────────────
         const _appendFullRow = (label, html) => {
             const tbl = document.getElementById('artistStatsTable');
@@ -251,6 +240,25 @@ const ViewArtist = (() => {
                 ).join(''));
         }
 
+        // ── Collaborators → stats table (either direction, deduped) ────────────
+        const collabResult = _db.exec(`
+            SELECT DISTINCT a.id, a.name
+            FROM artist_relations ar
+            JOIN artists a ON a.id = (
+                CASE WHEN ar.from_artist_id = '${safeId}' THEN ar.to_artist_id ELSE ar.from_artist_id END
+            )
+            WHERE ar.relation_type = 'collaboration'
+              AND ('${safeId}' IN (ar.from_artist_id, ar.to_artist_id))
+              AND a.hidden = 0
+            ORDER BY a.name
+        `)[0];
+        if (collabResult?.values.length) {
+            _appendFullRow('Collaborators',
+                collabResult.values.map(([cid, cname]) =>
+                    `<a href="?view=artist&id=${encodeURIComponent(cid)}" class="stat-genre-tag is-primary">${escapeHtml(cname)}</a>`
+                ).join(''));
+        }
+
         // ── Genres → stats table ──────────────────────────────────────────────
         const genreResult = _db.exec(`
             SELECT g.aoty_id, g.name, COUNT(DISTINCT rg.release_id) as freq
@@ -261,7 +269,7 @@ const ViewArtist = (() => {
                 FROM track_artists ta
                 JOIN tracks t ON ta.track_id = t.id
                 JOIN releases r ON r.id = t.release_id AND r.hidden = 0
-                WHERE ta.artist_id = '${safeId}' AND ta.role = 'main' AND t.hidden = 0
+                WHERE ta.artist_id = '${safeId}' AND ta.role IN (${PRIMARY_ROLES_SQL}) AND t.hidden = 0
             )
             GROUP BY g.aoty_id
             ORDER BY freq DESC
@@ -485,9 +493,12 @@ const ViewArtist = (() => {
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             LEFT JOIN releases r ON t.release_id = r.id
-            WHERE t.id IN (
-                SELECT DISTINCT track_id FROM track_artists
-                WHERE artist_id = '${safeId}' AND role = 'main'
+            WHERE (
+                t.id IN (
+                    SELECT DISTINCT track_id FROM track_artists
+                    WHERE artist_id = '${safeId}' AND role IN (${PRIMARY_ROLES_SQL})
+                )
+                OR r.primary_artist_id = '${safeId}'
             )
             AND t.hidden = 0
             ORDER BY l.timestamp DESC
@@ -538,11 +549,23 @@ const ViewArtist = (() => {
         const badgesEl = document.getElementById('artistBadges');
         if (!badgesEl) return;
 
-        const certResult = _db.exec(`SELECT cert FROM artists WHERE id = '${safeId}'`)[0];
+        const certResult = _db.exec(`SELECT cert, secondary_type FROM artists WHERE id = '${safeId}'`)[0];
         const certTier = certResult ? certResult.values[0][0] : null;
+        const secondaryType = certResult ? certResult.values[0][1] : null;
 
         const certLabels = { gold: 'Gold — 250+ plays', platinum: 'Platinum — 500+ plays', diamond: 'Diamond — 1,000+ plays' };
-        if (certTier) badgesEl.innerHTML = `<span class="badge-cert badge-cert-${certTier}" title="${certLabels[certTier]}">${certTier}</span>`;
+        const typeLabels = { supergroup: 'Supergroup — members are established artists in their own right', virtual: 'Virtual — an animated, synthetic, or fictional performer' };
+        const typeIcons = {
+            supergroup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+            virtual: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>',
+        };
+
+        let badgesHtml = '';
+        if (secondaryType && typeLabels[secondaryType]) {
+            badgesHtml += `<span class="badge-type badge-type-${secondaryType}" title="${typeLabels[secondaryType]}">${typeIcons[secondaryType]}${secondaryType}</span>`;
+        }
+        if (certTier) badgesHtml += `<span class="badge-cert badge-cert-${certTier}" title="${certLabels[certTier]}">${certTier}</span>`;
+        badgesEl.innerHTML = badgesHtml;
 
         // Peak years → compact stats row instead of badge tower.
         const medalResult = _db.exec(`
@@ -655,7 +678,7 @@ const ViewArtist = (() => {
             SELECT l.year, l.month, COUNT(*) as listen_count
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
-            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role IN (${PRIMARY_ROLES_SQL})
             WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
             GROUP BY l.year, l.month
             ORDER BY l.year, l.month
@@ -665,7 +688,7 @@ const ViewArtist = (() => {
             SELECT l.year, COUNT(*) as listen_count
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
-            JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+            JOIN track_artists ta ON t.id = ta.track_id AND ta.role IN (${PRIMARY_ROLES_SQL})
             WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
             GROUP BY l.year
             ORDER BY l.year

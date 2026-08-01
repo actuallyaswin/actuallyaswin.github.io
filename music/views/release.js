@@ -64,6 +64,8 @@ const ViewRelease = (() => {
                 <nav id="releaseLinkPills" class="release-link-pills"></nav>
             </header>
 
+            <div id="aboutSection"></div>
+
             ${CHART_ENABLED ? `
             <section class="chart-container">
                 <div class="chart-header">
@@ -107,6 +109,7 @@ const ViewRelease = (() => {
 
         loadReleaseInfo();
         loadReleaseAliases();
+        loadAbout();
         loadTracks();
         loadListeningHistory();
         loadVariants();
@@ -217,7 +220,12 @@ const ViewRelease = (() => {
         `)[0];
         const titleAlias = titleAliasResult && titleAliasResult.values[0]?.[0];
 
-        const ETI_RE = /(\s*:\s*|\s+[\-–—]\s*|\s+)(original\s+(?:motion\s+picture\s+)?(?:soundtrack|score)(?:\s+from\s+[^(]+)?|music\s+from\s+(?:the\s+)?(?:original\s+)?(?:motion\s+picture|film|movie)(?:\s+soundtrack)?|soundtrack\s+from\s+(?:the\s+)?[^(]*|(?:original\s+)?(?:game|video\s+game)\s+soundtrack|deluxe(?:\s+edition)?|anniversary\s+edition|remastered|special\s+edition|expanded\s+edition|complete\s+edition|soundtrack)\s*$/i;
+        const ETI_CONTENT = 'original\\s+(?:motion\\s+picture\\s+)?(?:soundtrack|score)(?:\\s+from\\s+[^()\\[\\]]+)?|music\\s+from\\s+(?:the\\s+)?(?:original\\s+)?(?:motion\\s+picture|film|movie)(?:\\s+soundtrack)?|soundtrack\\s+from\\s+(?:the\\s+)?[^()\\[\\]]*|(?:original\\s+)?(?:game|video\\s+game)\\s+soundtrack|deluxe(?:\\s+edition)?|anniversary\\s+edition|remastered|special\\s+edition|expanded\\s+edition|complete\\s+edition|soundtrack';
+        // Handles suffixes both bare (colon/dash-separated) and wrapped in (parens) or [brackets]
+        const ETI_RE = new RegExp(
+            `(?:(\\s*:\\s*|\\s+[\\-–—]\\s*|\\s+)(?:${ETI_CONTENT})|\\s*\\((?:${ETI_CONTENT})\\)|\\s*\\[(?:${ETI_CONTENT})\\])\\s*$`,
+            'i'
+        );
         const etiMatch = (title || '').match(ETI_RE);
         const baseTitle = etiMatch ? title.slice(0, etiMatch.index) : title;
         const etiPart   = etiMatch ? etiMatch[0].trim() : null;
@@ -451,6 +459,8 @@ const ViewRelease = (() => {
             }
             if (extLinks.get(8))
                 html += _buildPill('genius', `https://genius.com/artists/${extLinks.get(8)}`, 'Genius');
+            if (extLinks.get(10))
+                html += _buildPill('discogs', `https://www.discogs.com/release/${extLinks.get(10)}`, 'Discogs');
 
             if (html) {
                 pillsEl.innerHTML = html;
@@ -554,7 +564,7 @@ const ViewRelease = (() => {
     // ── Shared tracklist renderer ───────────────────────────────────────────────
 
     function _renderTracklist(container, tracks, showPlayCounts, opts = {}) {
-        const { showTrackArtists = false, artistsByTrack = new Map(), primaryArtistId = null, artistsWithReleases = new Set(), aliasesByTrack = new Map() } = opts;
+        const { showTrackArtists = false, artistsByTrack = new Map(), primaryArtistId = null, artistsWithReleases = new Set(), aliasesByTrack = new Map(), alsoOnByTrack = new Map() } = opts;
         container.innerHTML = '';
         if (!tracks.length) {
             container.innerHTML = '<div class="tracklist-empty">No tracks found</div>';
@@ -617,7 +627,7 @@ const ViewRelease = (() => {
             let trackArtistsHtml = '';
             if (artistsByTrack.has(t.id)) {
                 const artists = artistsByTrack.get(t.id);
-                const mainArtists = showTrackArtists ? artists.filter(a => a.role === 'main' && a.id !== primaryArtistId) : [];
+                const mainArtists = showTrackArtists ? artists.filter(a => (a.role === 'main' || a.role === 'performer') && a.id !== primaryArtistId) : [];
                 const featArtists = artists.filter(a => a.role === 'featured');
 
                 const parts = [];
@@ -648,7 +658,19 @@ const ViewRelease = (() => {
                 }
             }
 
-            row.className = 'tracklist-row' + (trackArtistsHtml ? ' has-track-artists' : '');
+            let alsoOnHtml = '';
+            if (alsoOnByTrack.has(t.id)) {
+                const others = alsoOnByTrack.get(t.id);
+                const links = others.map(o =>
+                    `<a href="?view=release&id=${encodeURIComponent(o.releaseId)}" class="tracklist-artist-link">${escapeHtml(o.releaseTitle)}</a>`
+                );
+                const linksStr = links.length <= 2
+                    ? links.join(' and ')
+                    : links.slice(0, -1).join(', ') + ', and ' + links[links.length - 1];
+                alsoOnHtml = `<div class="tracklist-also-on">Also on ${linksStr}</div>`;
+            }
+
+            row.className = 'tracklist-row' + (trackArtistsHtml || alsoOnHtml ? ' has-track-artists' : '');
             row.dataset.trackId = t.id;
             row.innerHTML = `
                 <span class="tracklist-num">${displayNum}</span>
@@ -658,6 +680,7 @@ const ViewRelease = (() => {
                         <div class="tracklist-duration">${formatDuration(t.durationMs)}</div>
                     </div>
                     ${trackArtistsHtml}
+                    ${alsoOnHtml}
                     ${afHtml}
                 </div>
                 ${bpmCell}
@@ -665,6 +688,35 @@ const ViewRelease = (() => {
             `;
             container.appendChild(row);
         });
+    }
+
+    // Same recording (by ISRC) appearing on other non-hidden releases — surfaced as "Also on"
+    function _computeAlsoOnByTrack(safeId, tracks) {
+        const alsoOnByTrack = new Map();
+        const isrcs = [...new Set(tracks.map(t => t.isrc).filter(Boolean))];
+        if (isrcs.length === 0) return alsoOnByTrack;
+
+        const safeIsrcs = isrcs.map(i => `'${i.replace(/'/g, "''")}'`).join(',');
+        const alsoOnResult = _db.exec(`
+            SELECT t.isrc, t.id, r.id, r.title
+            FROM tracks t
+            JOIN releases r ON r.id = t.release_id
+            WHERE t.isrc IN (${safeIsrcs})
+              AND t.hidden = 0 AND r.hidden = 0
+              AND t.release_id != '${safeId}'
+            ORDER BY r.release_date, r.title
+        `)[0];
+        if (alsoOnResult) {
+            const byIsrc = new Map();
+            alsoOnResult.values.forEach(([isrc, otherTrackId, otherReleaseId, otherReleaseTitle]) => {
+                if (!byIsrc.has(isrc)) byIsrc.set(isrc, []);
+                byIsrc.get(isrc).push({ trackId: otherTrackId, releaseId: otherReleaseId, releaseTitle: otherReleaseTitle });
+            });
+            tracks.forEach(t => {
+                if (t.isrc && byIsrc.has(t.isrc)) alsoOnByTrack.set(t.id, byIsrc.get(t.isrc));
+            });
+        }
+        return alsoOnByTrack;
     }
 
     // ── Main tracklist ──────────────────────────────────────────────────────────
@@ -702,7 +754,7 @@ const ViewRelease = (() => {
                     SELECT id FROM tracks WHERE release_id = '${safeId}' AND hidden = 0
                 )
                 ORDER BY ta.track_id,
-                         CASE ta.role WHEN 'main' THEN 0 ELSE 1 END,
+                         CASE ta.role WHEN 'main' THEN 0 WHEN 'performer' THEN 1 WHEN 'featured' THEN 2 ELSE 3 END,
                          a.name
             `)[0];
 
@@ -747,7 +799,9 @@ const ViewRelease = (() => {
             }
         }
 
-        _renderTracklist(container, tracks, true, { showTrackArtists, artistsByTrack, primaryArtistId: _primaryArtistId, artistsWithReleases: _artistsWithReleases, aliasesByTrack });
+        const alsoOnByTrack = _computeAlsoOnByTrack(safeId, tracks);
+
+        _renderTracklist(container, tracks, true, { showTrackArtists, artistsByTrack, primaryArtistId: _primaryArtistId, artistsWithReleases: _artistsWithReleases, aliasesByTrack, alsoOnByTrack });
     }
 
     // ── Release variants ────────────────────────────────────────────────────────
@@ -795,7 +849,7 @@ const ViewRelease = (() => {
                   AND t.variant_section = '${safeSection}'
                   AND t.hidden = 0
                 GROUP BY t.id
-                ORDER BY t.track_number, t.title
+                ORDER BY t.disc_number, t.track_number, t.title
             `)[0];
 
             const allTracks = (vtResult ? vtResult.values : []).map(
@@ -841,13 +895,37 @@ const ViewRelease = (() => {
             section.appendChild(wrap);
 
             const trackContainer = document.getElementById(`vt-vs-${encodeURIComponent(variantSection)}`);
+            const alsoOnByTrack = _computeAlsoOnByTrack(safeId, tracksToShow);
             if (HIDE_DUPES) {
-                _renderTracklist(trackContainer, exclusive, true);
+                _renderTracklist(trackContainer, exclusive, true, { alsoOnByTrack });
             } else {
-                const dupeIds = new Set(dupes.map(t => t.id));
-                _renderTracklist(trackContainer, tracksToShow, true, dupeIds);
+                _renderTracklist(trackContainer, tracksToShow, true, { alsoOnByTrack });
             }
         }
+    }
+
+    // ── About this album (Apple Music editorial note) ───────────────────────────
+
+    function loadAbout() {
+        const safeId = _releaseId.replace(/'/g, "''");
+
+        const result = _db.exec(`
+            SELECT editorial_note FROM releases WHERE id = '${safeId}'
+        `)[0];
+
+        const note = result && result.values[0] && result.values[0][0];
+        const section = document.getElementById('aboutSection');
+        if (!note || !section) return;
+
+        const paragraphs = note.split(/\n+/).filter(Boolean)
+            .map(p => `<p class="about-note">${escapeHtml(p)}</p>`).join('');
+
+        section.innerHTML = `
+            <section class="about-section">
+                <h2>About This Album</h2>
+                ${paragraphs}
+            </section>
+        `;
     }
 
     // ── Compilation sources ─────────────────────────────────────────────────────

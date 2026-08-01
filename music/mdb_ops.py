@@ -101,14 +101,10 @@ CREATE TABLE IF NOT EXISTS artists (
     slug           TEXT UNIQUE,
     name           TEXT NOT NULL,
     sort_name      TEXT,
-    aliases        TEXT,
     spotify_id     TEXT UNIQUE,
     mbid           TEXT UNIQUE,
-    lastfm_url     TEXT,
     image_url      TEXT,
     image_source   TEXT,
-    image_position TEXT,
-    hero_image_url TEXT,
     country        TEXT,
     formed_year    INTEGER,
     disbanded_year INTEGER,
@@ -163,7 +159,6 @@ CREATE TABLE IF NOT EXISTS releases (
     wikipedia_url      TEXT,
     album_art_url      TEXT,
     album_art_source   TEXT,
-    album_art_position TEXT,
     total_tracks       INTEGER,
     aoty_score_critic   INTEGER,
     aoty_score_user     REAL,
@@ -420,15 +415,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE releases ADD COLUMN album_art_thumb_url TEXT",
         "ALTER TABLE artists ADD COLUMN image_thumb_url TEXT",
         "ALTER TABLE tracks ADD COLUMN variant_section TEXT",
-        "ALTER TABLE releases ADD COLUMN medium TEXT",
         "ALTER TABLE releases ADD COLUMN language TEXT",
         "ALTER TABLE releases ADD COLUMN country TEXT",
-        "ALTER TABLE releases ADD COLUMN avg_listen_ts INTEGER",
-        "ALTER TABLE tracks ADD COLUMN avg_listen_ts INTEGER",
-        # Precomputed by `mdb.py stats refresh` — all columns it writes are
-        # prefixed stat_ to distinguish them from imported/user-set fields.
-        "ALTER TABLE releases RENAME COLUMN avg_listen_ts TO stat_avg_listen_ts",
-        "ALTER TABLE tracks RENAME COLUMN avg_listen_ts TO stat_avg_listen_ts",
+        # NOTE: avg_listen_ts was renamed to stat_avg_listen_ts long ago. The
+        # ADD+RENAME pair used to live here, but since stat_avg_listen_ts now
+        # always already exists, the ADD half re-created a blank avg_listen_ts
+        # column on every single run (the RENAME silently failed with
+        # "duplicate column name" and was swallowed by the except below) —
+        # a self-perpetuating dead column. Don't reintroduce this pair.
         "ALTER TABLE artists ADD COLUMN stat_avg_listen_ts INTEGER",
         "ALTER TABLE artists ADD COLUMN stat_unique_tracks INTEGER",
         "ALTER TABLE artists ADD COLUMN stat_total_plays INTEGER",
@@ -1103,9 +1097,21 @@ def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
                 'SELECT id, title, release_id FROM tracks WHERE mbid = ?', (rec_id,)
             ).fetchone()
         if not row and isrc:
-            row = cur.execute(
+            # isrc is NOT a unique identity key — labels reuse ISRCs across
+            # genuinely different recordings (instrumental variants, JP/EN dual-
+            # language pressings, remasters). Only trust a cross-release isrc hit
+            # as "same track" when the title also matches; otherwise treat it as
+            # a distinct recording so it gets its own row instead of silently
+            # stealing/absorbing the existing track (previously caused tracks to
+            # vanish from — or move out of — imported tracklists).
+            isrc_row = cur.execute(
                 'SELECT id, title, release_id FROM tracks WHERE isrc = ?', (isrc,)
             ).fetchone()
+            if isrc_row is not None:
+                same_release = isrc_row[2] == release_id
+                same_title   = ascii_key(isrc_row[1]) == ascii_key(title)
+                if same_release or same_title:
+                    row = isrc_row
 
         if row:
             # Skip tracks owned by a different release when reassignment is forbidden

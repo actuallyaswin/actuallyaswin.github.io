@@ -12,7 +12,7 @@ const ViewTop = (() => {
                                     // never `wide`. Since old `?view=top-artists` routes
                                     // aren't preserved (see Overview), this is a clean
                                     // break, not a compatibility concern.
-    let gridShape = { rows: 3, cols: 3 };  // Collage mode only, see later task
+    let gridShape = { rows: 3, cols: 3 };  // Collage mode only
     let releaseYear = 'all';       // albums/tracks only (existing Released filter)
     let cachedResults = [];
 
@@ -26,7 +26,7 @@ const ViewTop = (() => {
     let topsterCount = 36;
 
     // Tracks-only virtualized-list state (List mode keeps its existing
-    // dedicated UI rather than createWideCard(), per spec §1).
+    // dedicated UI rather than createWideCard()).
     let _scrollEl = null;
     let _raf = null;
     const ROW_H = 44;
@@ -47,8 +47,8 @@ const ViewTop = (() => {
         return null;
     }
 
-    // Filled in by later tasks. Each entry: { title, sortOptions, hasRange,
-    // hasYearFilter, query(), cardHref(id), buildCardFields(row) }
+    // Each entry: { title, sortOptions, hasRange, hasYearFilter, query(),
+    // cardHref(id), buildCardFields(row) }
     const ENTITY_CONFIG = {
         artists: {
             title: 'Top Artists',
@@ -82,7 +82,7 @@ const ViewTop = (() => {
                         CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
                         CAST(AVG(CASE WHEN t.hidden = 0 THEN l.timestamp END) AS INTEGER) as avg_ts
                     FROM artists a
-                    LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
+                    LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role IN (${PRIMARY_ROLES_SQL})
                     LEFT JOIN tracks t ON ta.track_id = t.id
                     LEFT JOIN listens l ON t.id = l.track_id ${tsFilter}
                     WHERE a.hidden = 0
@@ -167,15 +167,19 @@ const ViewTop = (() => {
                 const yf = releaseYear !== 'all' && !isNaN(yearInt) ? `AND r.release_year = ${yearInt}` : '';
 
                 return _db.exec(`
-                    SELECT t.id, t.title, a.name, a.id,
+                    SELECT t.id, t.title,
+                           (SELECT a2.name FROM track_artists ta2 JOIN artists a2 ON a2.id = ta2.artist_id
+                            WHERE ta2.track_id = t.id AND ta2.role IN (${PRIMARY_ROLES_SQL})
+                            ORDER BY CASE ta2.role WHEN 'main' THEN 0 ELSE 1 END, a2.name LIMIT 1) as artist_name,
+                           (SELECT a2.id FROM track_artists ta2 JOIN artists a2 ON a2.id = ta2.artist_id
+                            WHERE ta2.track_id = t.id AND ta2.role IN (${PRIMARY_ROLES_SQL})
+                            ORDER BY CASE ta2.role WHEN 'main' THEN 0 ELSE 1 END, a2.name LIMIT 1) as artist_id,
                            COALESCE(r.album_art_thumb_url, r.album_art_url),
                            r.id,
                            COUNT(l.id) total_listens,
                            CAST(SUM(COALESCE(t.duration_ms,0))/60000.0 AS INTEGER) total_minutes,
                            t.stat_avg_listen_ts as avg_ts
                     FROM tracks t
-                    LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-                    LEFT JOIN artists a ON ta.artist_id = a.id
                     LEFT JOIN releases r ON t.release_id = r.id
                     LEFT JOIN listens l ON t.id = l.track_id
                     WHERE t.hidden = 0 ${yf}
@@ -295,7 +299,7 @@ const ViewTop = (() => {
     }
 
     function _countControlsHtml() {
-        if (viewMode === 'collage') return '';  // A later task replaces this in collage mode
+        if (viewMode === 'collage') return '';  // collage mode has its own tier-count control
         const countBtns = [10, 20, 50, 100].map(n =>
             `<button class="sort-btn${countLimit === n ? ' active' : ''}" data-count="${n}">${n}</button>`
         ).join('');
@@ -545,7 +549,7 @@ const ViewTop = (() => {
     }
 
     function _rerenderForModeChange() {
-        // Re-render the whole shell since Count vs. grid-shape controls differ by mode (a later task).
+        // Re-render the whole shell since Count vs. grid-shape controls differ by mode.
         // Tear down tracks' virtualized-scroll listener/RAF first — the shell rebuild below replaces
         // #ttScroll, orphaning the old listener/RAF if left running.
         if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
@@ -578,13 +582,13 @@ const ViewTop = (() => {
     function _load() {
         const result = ENTITY_CONFIG[entityType].query();
         cachedResults = result ? result.values.map(ENTITY_CONFIG[entityType].buildCardFields) : [];
-        if (_scrollEl) _scrollEl.scrollTop = 0;  // no-op until a later task defines _scrollEl for tracks
+        if (_scrollEl) _scrollEl.scrollTop = 0;  // only set for the tracks virtualized list
         _render();
     }
 
     function _render() {
-        if (viewMode === 'collage') return _renderCollage();   // a later task
-        if (entityType === 'tracks' && viewMode === 'list') return _renderTrackList();  // a later task
+        if (viewMode === 'collage') return _renderCollage();
+        if (entityType === 'tracks' && viewMode === 'list') return _renderTrackList();
         return _renderListOrTiles();
     }
 

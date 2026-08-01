@@ -106,12 +106,15 @@ const ViewAdmin = (() => {
                    COALESCE(l.hidden,0) as hidden, l.track_id,
                    t.title as matched_track_name, t.language as matched_track_language,
                    r.id as matched_release_id, r.title as matched_release_name,
-                   a.id as matched_artist_id, a.name as matched_artist_name
+                   (SELECT a2.id FROM track_artists ta2 JOIN artists a2 ON a2.id = ta2.artist_id
+                    WHERE ta2.track_id = t.id AND ta2.role IN (${PRIMARY_ROLES_SQL})
+                    ORDER BY CASE ta2.role WHEN 'main' THEN 0 ELSE 1 END, a2.name LIMIT 1) as matched_artist_id,
+                   (SELECT a2.name FROM track_artists ta2 JOIN artists a2 ON a2.id = ta2.artist_id
+                    WHERE ta2.track_id = t.id AND ta2.role IN (${PRIMARY_ROLES_SQL})
+                    ORDER BY CASE ta2.role WHEN 'main' THEN 0 ELSE 1 END, a2.name LIMIT 1) as matched_artist_name
             FROM listens l
             LEFT JOIN tracks t ON l.track_id = t.id
             LEFT JOIN releases r ON t.release_id = r.id
-            LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-            LEFT JOIN artists a ON ta.artist_id = a.id
             ORDER BY l.timestamp DESC
         `);
         if (!res.length) return [];
@@ -122,13 +125,16 @@ const ViewAdmin = (() => {
     function _loadTrackOpts() {
         const res = _db.exec(`
             SELECT t.id, t.title, r.id as release_id, r.title as release_title,
-                   a.id as artist_id, a.name as artist_name
+                   (SELECT a2.id FROM track_artists ta2 JOIN artists a2 ON a2.id = ta2.artist_id
+                    WHERE ta2.track_id = t.id AND ta2.role IN (${PRIMARY_ROLES_SQL})
+                    ORDER BY CASE ta2.role WHEN 'main' THEN 0 ELSE 1 END, a2.name LIMIT 1) as artist_id,
+                   (SELECT a2.name FROM track_artists ta2 JOIN artists a2 ON a2.id = ta2.artist_id
+                    WHERE ta2.track_id = t.id AND ta2.role IN (${PRIMARY_ROLES_SQL})
+                    ORDER BY CASE ta2.role WHEN 'main' THEN 0 ELSE 1 END, a2.name LIMIT 1) as artist_name
             FROM tracks t
             LEFT JOIN releases r ON t.release_id = r.id
-            LEFT JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
-            LEFT JOIN artists a ON ta.artist_id = a.id
             WHERE t.hidden = 0 AND (r.hidden IS NULL OR r.hidden = 0)
-            ORDER BY a.name, r.title, t.disc_number, t.track_number
+            ORDER BY artist_name, r.title, t.disc_number, t.track_number
         `);
         if (!res.length) return [];
         return res[0].values.map(([id, title, releaseId, releaseTitle, artistId, artistName]) => ({
@@ -1237,7 +1243,7 @@ function _flushFields(table, id, fields, allowedCols) {
              FROM track_artists ta
              JOIN artists a ON a.id = ta.artist_id
              WHERE ta.track_id IN (SELECT id FROM tracks WHERE release_id = ?)
-             ORDER BY ta.track_id, ta.role, a.name`, [releaseId]
+             ORDER BY ta.track_id, CASE ta.role WHEN 'main' THEN 0 WHEN 'performer' THEN 1 WHEN 'featured' THEN 2 ELSE 3 END, a.name`, [releaseId]
         );
         const trackArtistMap = new Map();
         if (taRes.length) {
@@ -1657,6 +1663,7 @@ function _flushFields(table, id, fields, allowedCols) {
 
         // Group artists by role
         const mainArtists  = artists.filter(a => a.role === 'main');
+        const perfArtists  = artists.filter(a => a.role === 'performer');
         const featArtists  = artists.filter(a => a.role === 'featured');
         const remixArtists = artists.filter(a => a.role === 'remixer');
 
@@ -1664,8 +1671,9 @@ function _flushFields(table, id, fields, allowedCols) {
             const chips = list.map(a =>
                 `<span class="admin-chip ${chipClass}">${escapeHtml(a.name)}<span class="admin-chip-remove" data-remove-track-artist="${trackId}:${a.artistId}:${a.role}">×</span></span>`
             ).join('');
+            const label = role === 'featured' ? 'Feat.' : role === 'remixer' ? 'Remix' : role === 'performer' ? 'Perf.' : 'Main';
             return `<div class="admin-track-role-row">
-                <span class="admin-role-label role-${role}">${role === 'featured' ? 'Feat.' : role === 'remixer' ? 'Remix' : 'Main'}</span>
+                <span class="admin-role-label role-${role}">${label}</span>
                 ${chips}
                 <button class="admin-add-btn admin-add-artist-btn" data-track-id="${trackId}" data-role="${role}">+</button>
             </div>`;
@@ -1691,9 +1699,10 @@ function _flushFields(table, id, fields, allowedCols) {
                 <input class="admin-track-bpm-input" data-track-field="tempo_bpm" value="${t.tempo_bpm || ''}" placeholder="BPM">
                 <select class="admin-track-lang-select" data-track-field="language">${langOpts}</select>
                 <div class="admin-track-artists-grid">
-                    ${artistChips(mainArtists,  'main',     'chip-main')}
-                    ${artistChips(featArtists,  'featured', 'chip-feat')}
-                    ${artistChips(remixArtists, 'remixer',  'chip-remix')}
+                    ${artistChips(mainArtists,  'main',      'chip-main')}
+                    ${artistChips(perfArtists,  'performer', 'chip-perf')}
+                    ${artistChips(featArtists,  'featured',  'chip-feat')}
+                    ${artistChips(remixArtists, 'remixer',   'chip-remix')}
                 </div>
                 <div style="display:flex;align-items:flex-start;justify-content:center;padding-top:0.28rem">
                     <button class="admin-aliases-btn${aliasCount ? ' has-aliases' : ''}" data-track-id="${trackId}">${aliasCount || '—'}</button>
@@ -1720,6 +1729,7 @@ function _flushFields(table, id, fields, allowedCols) {
                     <label style="font-size:0.78rem;color:var(--text-secondary)">Role</label>
                     <select id="trackArtistRole" class="admin-field-input" style="width:120px;margin-left:0.5rem">
                         <option value="main">main</option>
+                        <option value="performer">performer</option>
                         <option value="featured">featured</option>
                         <option value="remixer">remixer</option>
                     </select>
@@ -1769,7 +1779,7 @@ function _flushFields(table, id, fields, allowedCols) {
                 // Add chip to DOM
                 const row = document.querySelector(`.admin-track-row-grid[data-track-id="${trackId}"] .admin-track-artists-grid`);
                 if (row) {
-                    const chipClass = role === 'featured' ? 'chip-feat' : role === 'remixer' ? 'chip-remix' : 'chip-main';
+                    const chipClass = role === 'featured' ? 'chip-feat' : role === 'remixer' ? 'chip-remix' : role === 'performer' ? 'chip-perf' : 'chip-main';
                     const chip = document.createElement('span');
                     chip.className = `admin-chip ${chipClass}`;
                     chip.innerHTML = `${escapeHtml(artistName)}<span class="admin-chip-remove" data-remove-track-artist="${trackId}:${artistId}:${role}">×</span>`;

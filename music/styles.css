@@ -158,7 +158,7 @@ a.site-logo-small:hover {
     margin-bottom: 2rem;
 }
 
-/* ── Persistent sticky header ─────────────────────────────────────── */
+/* Persistent sticky header */
 .site-header-sticky {
     position: sticky;
     top: 0;
@@ -192,13 +192,13 @@ a.site-logo-small:hover {
 .search-open-btn:hover { color: var(--accent-dark); }
 .search-open-btn i[data-lucide] { width: 18px; height: 18px; }
 
-/* ── View transition ──────────────────────────────────────────────── */
+/* View transition */
 @keyframes viewFadeIn {
     from { opacity: 0; transform: translateY(4px); }
     to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── Search modal ─────────────────────────────────────────────────── */
+/* Search modal */
 .search-overlay {
     position: fixed;
     inset: 0;
@@ -489,7 +489,7 @@ header h1 {
 }
 }
 
-/* ── Release stats — nerds-list style ────────────────────────────── */
+/* Release stats — nerds-list style */
 .release-stats-table {
     margin: 0.5rem 0 0;
     padding: 0;
@@ -578,7 +578,7 @@ header h1 {
    Uses !important to beat the higher-specificity #releaseHeader .genre-list rule. */
 .release-header-grid #releaseGenres { display: none !important; }
 
-/* ── External link pill stack ─────────────────────────────────────── */
+/* External link pill stack */
 .release-link-pills {
     display: flex;
     flex-direction: column;
@@ -598,6 +598,7 @@ header h1 {
 .pill-wikipedia   { --svc: #94a3b8; }
 .pill-aoty        { --svc: #f97316; }
 .pill-genius      { --svc: #FFFF64; }
+.pill-discogs     { --svc: #333333; }
 
 :root[data-theme="light"] .pill-beatport { --svc: #007a4a; }
 :root[data-theme="light"] .pill-genius   { --svc: #7a6e00; }
@@ -663,6 +664,7 @@ header h1 {
 .pill-musicbrainz .pill-mask { -webkit-mask-image: url('images/links/musicbrainz.svg');mask-image: url('images/links/musicbrainz.svg'); }
 .pill-wikipedia   .pill-mask { -webkit-mask-image: url('images/links/wikipedia.svg');   mask-image: url('images/links/wikipedia.svg'); }
 .pill-genius      .pill-mask { -webkit-mask-image: url('images/links/genius.svg');      mask-image: url('images/links/genius.svg'); }
+.pill-discogs     .pill-mask { -webkit-mask-image: url('images/links/discogs.svg');     mask-image: url('images/links/discogs.svg'); }
 .pill-aoty-img    { width: 16px; height: 16px; object-fit: contain; border-radius: 2px; position: relative; z-index: 1; }
 
 .pill-text {
@@ -720,7 +722,7 @@ header h1 {
     margin-left: auto; position: relative; z-index: 1;
 }
 
-/* ── Variant section: slim header ──────────────────────────────────── */
+/* Variant section: slim header */
 .variant-section-header {
     display: flex; align-items: center; gap: 0.6rem;
     padding: 0.55rem 1.5rem 0.55rem 0;
@@ -1623,7 +1625,7 @@ a.stat-card:hover .stat-label::after {
     margin-top: 2rem;
 }
 
-/* ── Recommendations view ─────────────────────────────────────────── */
+/* Recommendations view */
 .rec-header { margin-bottom: 2rem; }
 .rec-shelves { display: flex; flex-direction: column; }
 .rec-shelf { padding: 2rem 0; border-top: 1px solid var(--border); }
@@ -1644,7 +1646,7 @@ a.stat-card:hover .stat-label::after {
 }
 .home-see-all:hover { text-decoration: underline; }
 
-/* ── Recommendations card streaming link (Option B, SHOW_STREAMING_LINKS) ── */
+/* Recommendations card streaming link (Option B, SHOW_STREAMING_LINKS) */
 .disc-card-streaming {
     display: flex;
     align-items: center;
@@ -1672,7 +1674,7 @@ a.stat-card:hover .stat-label::after {
     mask-position: center;
 }
 
-/* ── Recommendations shelf counts ─────────────────────────────────────────── */
+/* Recommendations shelf counts */
 /* SHELF_MOBILE = 6 — hide cards beyond the 6th on small screens */
 @media (max-width: 768px) {
     .disc-card-streaming { display: none; }
@@ -2139,6 +2141,15 @@ a.stat-card:hover .stat-label::after {
     font-style: italic;
 }
 
+.tracklist-also-on {
+    font-size: 0.75rem;
+    color: var(--text-tertiary, var(--text-secondary));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 0.1rem;
+}
+
 .tracklist-row.has-track-artists {
     align-items: flex-start;
 }
@@ -2324,7 +2335,7 @@ a.stat-card:hover .stat-label::after {
     margin-top: 0.25rem;
 }
 
-/* === Badge System === */
+/* Badge System */
 .badge-cert,
 .badge-medal,
 .badge-type {
@@ -2388,6 +2399,7 @@ a.stat-card:hover .stat-label::after {
 .badge-type-solo       { border-color: var(--text-secondary); color: var(--text-secondary); }
 .badge-type-band       { border-color: var(--text-secondary); color: var(--text-secondary); }
 .badge-type-supergroup { border-color: var(--primary);        color: var(--primary); }
+.badge-type-virtual    { border-color: #a78bfa;                color: #a78bfa; }
 
 /* Medal — solid fill, two-line (#rank / year) */
 .badge-medal {
@@ -2454,12 +2466,25 @@ a.stat-card:hover .stat-label::after {
 .release-cert-dot-platinum { background: #aab4be; }
 .release-cert-dot-diamond  { background: #67a1fd; }
 
-/* === Pulse Section === */
+/* Pulse Section */
 .pulse-section h2 {
     margin-bottom: 0.75rem;
 }
 .tracks-section h2 {
     margin-bottom: 0;
+}
+
+/* About This Album */
+.about-section {
+    margin-bottom: 1.5rem;
+}
+.about-note {
+    color: var(--text-secondary);
+    line-height: 1.6;
+    max-width: 70ch;
+}
+.about-note + .about-note {
+    margin-top: 1rem;
 }
 .pulse-rows {
     display: flex;
@@ -2534,7 +2559,7 @@ a.stat-card:hover .stat-label::after {
     min-width: 1px;
 }
 
-/* === Genre Commit Graph === */
+/* Genre Commit Graph */
 #genreCommitsSection {
     margin-bottom: 2.5rem;
 }
@@ -2661,7 +2686,7 @@ a.stat-card:hover .stat-label::after {
     font-variant-numeric: tabular-nums;
 }
 
-/* === Stats Row (Pulse + Recent Plays side-by-side) === */
+/* Stats Row (Pulse + Recent Plays side-by-side) */
 .stats-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -2703,8 +2728,8 @@ a.stat-card:hover .stat-label::after {
     .insights-grid--thirds { grid-template-columns: 1fr; }
 }
 
-/* === Recent Plays === */
-/* ── Shared virtual-scroll container ──────────────────────────────────────── */
+/* Recent Plays */
+/* Shared virtual-scroll container */
 .list-with-sidebar {
     display: grid;
     grid-template-columns: 1fr 260px;
@@ -2767,7 +2792,7 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
 .list-scroll::-webkit-scrollbar-track { background: var(--bg); }
 .list-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* ── Track rank (top-tracks) ──────────────────────────────────────────────── */
+/* Track rank (top-tracks) */
 .track-rank {
     font-size: 0.72rem;
     color: var(--text-tertiary);
@@ -2777,7 +2802,7 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     font-variant-numeric: tabular-nums;
 }
 
-/* ── History rows ─────────────────────────────────────────────────────────── */
+/* History rows */
 .history-unmatched .recent-play-name,
 .history-unmatched .recent-play-album { color: var(--text-tertiary); }
 .history-thumb-empty {
@@ -2792,7 +2817,7 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
 .history-source-lastfm  { background: rgba(210,0,80,0.15); color: #d20050; }
 .history-source-spotify { background: rgba(30,215,96,0.15); color: #1db954; }
 
-/* ── Stats view ───────────────────────────────────────────────────────────── */
+/* Stats view */
 .stat-section { margin-bottom: 3rem; }
 .stat-section h3 { font-size: 1.15rem; margin-bottom: 0.2rem; }
 
@@ -3058,7 +3083,7 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     border-color: var(--primary);
 }
 
-/* === Release Variants === */
+/* Release Variants */
 .variant-section {
     margin-top: 2rem;
     padding-top: 2rem;
@@ -3382,7 +3407,7 @@ footer a:hover {
     }
 }
 
-/* ── Admin view ───────────────────────────────────────────────── */
+/* Admin view */
 
 .admin-wrap {
     display: flex;
@@ -4103,7 +4128,7 @@ footer a:hover {
 .admin-variant-group { margin-top: 0.75rem; }
 .admin-variant-group summary { font-size: 0.72rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; padding: 0.35rem 0; user-select: none; }
 
-/* ── Underline input style ── */
+/* Underline input style */
 .admin-uline {
     background: transparent;
     border: none;
@@ -4129,7 +4154,7 @@ select.admin-uline {
 select.admin-uline option { background: var(--bg-secondary); }
 .admin-uline-textarea { min-height: 52px; resize: vertical; }
 
-/* ── Art & Links grid ── */
+/* Art & Links grid */
 .admin-art-links-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 0; }
 .admin-art-block { display: flex; gap: 1rem; align-items: flex-start; }
 .admin-art-preview {
@@ -4172,7 +4197,7 @@ select.admin-uline option { background: var(--bg-secondary); }
 .admin-link-input:focus { outline: none; border-bottom-style: solid; border-bottom-color: var(--primary); color: var(--text); }
 .admin-link-input::placeholder { font-size: 0.7rem; color: var(--text-tertiary); opacity: 0.4; }
 
-/* ── Track table grid ── */
+/* Track table grid */
 /* 8 columns: # | Title+ETI | Dur | BPM | Lang | Artists | Aliases | Eye */
 .admin-track-col-headers {
     display: grid;
@@ -4241,9 +4266,11 @@ select.admin-uline option { background: var(--bg-secondary); }
 .admin-track-role-row { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; min-height: 19px; }
 .admin-role-label { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; width: 34px; flex-shrink: 0; text-align: right; }
 .admin-role-label.role-main  { color: var(--text-secondary); }
+.admin-role-label.role-performer { color: #4ade80; }
 .admin-role-label.role-feat  { color: #a78bfa; }
 .admin-role-label.role-remix { color: #38bdf8; }
 .admin-chip.chip-main  { background: rgba(255,255,255,0.06); color: var(--text); }
+.admin-chip.chip-perf  { background: rgba(74,222,128,0.12);  color: #86efac; }
 .admin-chip.chip-feat  { background: rgba(167,139,250,0.12); color: #c4b5fd; }
 .admin-chip.chip-remix { background: rgba(56,189,248,0.1);   color: #7dd3fc; }
 

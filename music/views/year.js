@@ -137,7 +137,7 @@ const ViewYear = (() => {
                 (SELECT COUNT(DISTINCT ta.artist_id)
                  FROM listens l2
                  JOIN tracks t2 ON l2.track_id = t2.id
-                 JOIN track_artists ta ON t2.id = ta.track_id AND ta.role = 'main'
+                 JOIN track_artists ta ON t2.id = ta.track_id AND ta.role IN (${PRIMARY_ROLES_SQL})
                  JOIN artists a2 ON ta.artist_id = a2.id
                  WHERE l2.year = ${currentYear} AND t2.hidden = 0 AND a2.hidden = 0) as artist_count,
                 (SELECT COUNT(DISTINCT t2.release_id)
@@ -244,7 +244,7 @@ const ViewYear = (() => {
                     CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
                 FROM listens l
                 JOIN tracks t ON l.track_id = t.id
-                JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+                JOIN track_artists ta ON t.id = ta.track_id AND ta.role IN (${PRIMARY_ROLES_SQL})
                 JOIN artists a ON ta.artist_id = a.id
                 WHERE l.year = ${currentYear} AND t.hidden = 0 AND a.hidden = 0
                 GROUP BY a.id

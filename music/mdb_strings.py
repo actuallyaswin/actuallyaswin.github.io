@@ -21,9 +21,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
-# ---------------------------------------------------------------------------
-# MB English title case
-# ---------------------------------------------------------------------------
+# -- MB English title case -----------------------------------------------------
 
 _ARTICLES:    frozenset[str] = frozenset({'a', 'an', 'the'})
 _COORD_CONJ:  frozenset[str] = frozenset({'and', 'but', 'or', 'nor'})
@@ -154,9 +152,7 @@ def mb_guess_case_english(title: str) -> str:
     return ' '.join(result)
 
 
-# ---------------------------------------------------------------------------
-# ETI (Extra Title Information) normalization
-# ---------------------------------------------------------------------------
+# -- ETI (Extra Title Information) normalization -------------------------------
 
 # Descriptor words that should be lowercased when they appear as trailing
 # words in ETI content.  Name prefixes before these are preserved as-is.
@@ -228,9 +224,7 @@ def format_eti(content: str) -> str:
     return f'({_normalize_eti_content(s)})'
 
 
-# ---------------------------------------------------------------------------
-# Featured-artist splitting
-# ---------------------------------------------------------------------------
+# -- Featured-artist splitting --------------------------------------------------
 
 _FEAT_PREFIX_RE = re.compile(
     r'^(?:feat(?:uring)?\.?|ft\.?)\s+',
@@ -323,9 +317,7 @@ def _split_feat_group(group: str) -> List[str]:
     return artists
 
 
-# ---------------------------------------------------------------------------
-# Dash-suffix ETI detection
-# ---------------------------------------------------------------------------
+# -- Dash-suffix ETI detection --------------------------------------------------
 
 # "Title - ETI Content"  (space-dash-space separator)
 _DASH_SEP_RE = re.compile(r'^(.*?)\s+-\s+(.+)$')
@@ -334,9 +326,7 @@ _DASH_SEP_RE = re.compile(r'^(.*?)\s+-\s+(.+)$')
 _TRAILING_PAREN_RE = re.compile(r'\s*\(([^)]*)\)\s*$')
 
 
-# ---------------------------------------------------------------------------
-# Main parser
-# ---------------------------------------------------------------------------
+# -- Main parser -----------------------------------------------------------------
 
 @dataclass
 class TrackParseResult:
@@ -363,21 +353,18 @@ def parse_track_title(title: str) -> TrackParseResult:
     feat_artists: list[str] = []
     eti_parts:    list[str] = []
 
-    # ------------------------------------------------------------------
-    # Step 0 — Bare/dash-inline feat. clause with no parentheses at all
-    #   "Song ft. Artist"  →  rest="Song", feat_artists=["Artist"]
-    # Common in Last.fm scrobbles; Step 1 below still runs afterward so a
-    # trailing descriptor like "Remix" in "Song - Remix; feat. Artist" is
-    # still correctly classified as ETI, not swallowed into the feat group.
-    # ------------------------------------------------------------------
+    # Bare/dash-inline feat. clause with no parentheses at all, e.g.
+    # "Song ft. Artist" → rest="Song", feat_artists=["Artist"]. Common in
+    # Last.fm scrobbles; the dash-suffix ETI conversion below still runs
+    # afterward so a trailing descriptor like "Remix" in "Song - Remix;
+    # feat. Artist" is still correctly classified as ETI, not swallowed
+    # into the feat group.
     rest, inline_feat = _extract_inline_feat(rest)
     feat_artists.extend(inline_feat)
 
-    # ------------------------------------------------------------------
-    # Step 1 — Convert dash-suffix ETI to parentheses first
-    #   "Song - X Remix"  →  rest="Song", eti_parts=["(X remix)"]
-    # Only applies when the suffix ends with a recognised descriptor word.
-    # ------------------------------------------------------------------
+    # Convert dash-suffix ETI to parentheses first, e.g. "Song - X Remix"
+    # → rest="Song", eti_parts=["(X remix)"]. Only applies when the
+    # suffix ends with a recognised descriptor word.
     dm = _DASH_SEP_RE.match(rest)
     if dm:
         suffix_candidate = dm.group(2)
@@ -385,10 +372,8 @@ def parse_track_title(title: str) -> TrackParseResult:
             rest = dm.group(1).rstrip()
             eti_parts.append(format_eti(suffix_candidate))
 
-    # ------------------------------------------------------------------
-    # Step 2 — Extract all trailing parenthetical groups (right to left)
-    # Collect them in left-to-right order for classification.
-    # ------------------------------------------------------------------
+    # Extract all trailing parenthetical groups (right to left), collected
+    # in left-to-right order for classification below.
     trailing: list[str] = []
     while True:
         m = _TRAILING_PAREN_RE.search(rest)
@@ -397,9 +382,7 @@ def parse_track_title(title: str) -> TrackParseResult:
         trailing.insert(0, m.group(1))
         rest = rest[:m.start()].rstrip()
 
-    # ------------------------------------------------------------------
-    # Step 3 — Classify each paren group
-    # ------------------------------------------------------------------
+    # Classify each paren group.
     for inner in trailing:
         feat_m = _FEAT_PREFIX_RE.match(inner)
         if feat_m:
@@ -413,18 +396,13 @@ def parse_track_title(title: str) -> TrackParseResult:
             # Not ETI — re-attach as part of the title (subtitle, alternate name, etc.)
             rest = f'{rest} ({inner})'
 
-    # ------------------------------------------------------------------
-    # Step 4 — Apply MB English title case to the clean title
-    # ------------------------------------------------------------------
     clean = mb_guess_case_english(rest.strip())
     eti   = ' '.join(eti_parts) if eti_parts else None
 
     return TrackParseResult(clean_title=clean, feat_artists=feat_artists, eti=eti)
 
 
-# ---------------------------------------------------------------------------
-# Title resolution — preserve manual capitalisation corrections
-# ---------------------------------------------------------------------------
+# -- Title resolution — preserve manual capitalisation corrections -------------
 
 def resolve_title(incoming_raw: str, existing_db: Optional[str] = None) -> str:
     """

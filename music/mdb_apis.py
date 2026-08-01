@@ -93,6 +93,16 @@ MB_INTERVAL   = 1.1
 WIKI_INTERVAL = 0.5
 AOTY_INTERVAL = 3.0
 AOTY_RETRY    = 15.0
+
+# MusicBrainz has had multi-minute outages (SSL handshake failures at the
+# sandbox proxy / MB's own infra) during heavy import sessions — the old
+# defaults (2 retries, ~1-3s total wait) gave up long before those outages
+# cleared, forcing a manual sleep-and-poll loop in the shell. These are
+# overridable via env vars so a one-off run can dial retries up/down without
+# a code change.
+MB_RETRY_ATTEMPTS    = int(os.environ.get('MDB_MB_RETRY_ATTEMPTS', 8))
+MB_RETRY_BACKOFF     = float(os.environ.get('MDB_MB_RETRY_BACKOFF', 2.0))
+MB_RETRY_BACKOFF_MAX = float(os.environ.get('MDB_MB_RETRY_BACKOFF_MAX', 30.0))
 AOTY_AHEAD    = 2
 DATES_AHEAD   = 5
 
@@ -113,7 +123,8 @@ class RateLimiter:
 
 
 def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = None,
-              timeout: int = 10, retry_attempts: int = 0, retry_backoff: float = 1.0) -> bytes:
+              timeout: int = 10, retry_attempts: int = 0, retry_backoff: float = 1.0,
+              retry_backoff_max: 'float | None' = None) -> bytes:
     """Make a GET request and return the raw response bytes.
 
     Centralises urllib boilerplate used across all provider classes.
@@ -125,6 +136,14 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
     mid-handshake) that succeed on a bare retry a moment later. Does not
     retry HTTP error status codes (404, 429, 5xx) — those need
     caller-specific handling, not a blind resend.
+
+    Backoff is exponential (retry_backoff * 2**attempt), optionally capped at
+    retry_backoff_max — a flat retry_backoff (the old behavior) is exponential
+    with attempt=0 for the first retry, so passing only retry_backoff is
+    backward compatible. Use a high retry_attempts + capped
+    retry_backoff_max for providers prone to multi-minute outages (MusicBrainz
+    has had outages lasting several minutes this session) rather than the
+    default couple-of-seconds tolerance.
     """
     for attempt in range(retry_attempts + 1):
         if lim:
@@ -136,14 +155,19 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
         except (urllib.error.URLError, ConnectionError, TimeoutError):
             if attempt == retry_attempts:
                 raise
-            time.sleep(retry_backoff * (attempt + 1))
+            wait = retry_backoff * (2 ** attempt)
+            if retry_backoff_max is not None:
+                wait = min(wait, retry_backoff_max)
+            time.sleep(wait)
 
 
 def _http_get_json(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = None,
-                   timeout: int = 10, retry_attempts: int = 0, retry_backoff: float = 1.0) -> dict:
+                   timeout: int = 10, retry_attempts: int = 0, retry_backoff: float = 1.0,
+                   retry_backoff_max: 'float | None' = None) -> dict:
     """GET + JSON decode."""
     return json.loads(_http_get(url, headers=headers, lim=lim, timeout=timeout,
-                                 retry_attempts=retry_attempts, retry_backoff=retry_backoff))
+                                 retry_attempts=retry_attempts, retry_backoff=retry_backoff,
+                                 retry_backoff_max=retry_backoff_max))
 
 
 _mb_lim   = RateLimiter(MB_INTERVAL)
@@ -881,7 +905,8 @@ def _mb_get(path: str, params: dict = None) -> dict:
     p = {'fmt': 'json', **(params or {})}
     url = f'{MB_API}{path}?' + urllib.parse.urlencode(p)
     return _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_mb_lim,
-                           retry_attempts=2, retry_backoff=1.0)
+                           retry_attempts=MB_RETRY_ATTEMPTS, retry_backoff=MB_RETRY_BACKOFF,
+                           retry_backoff_max=MB_RETRY_BACKOFF_MAX)
 
 
 def _mb_get_safe(path: str, params: dict = None) -> 'dict | None':
@@ -1017,9 +1042,10 @@ def mb_fetch_release_data(mbid: str) -> 'tuple[str, str, str | None]':
 def mb_fetch_artist_data(mbid: str) -> dict:
     """Fetch artist metadata from MusicBrainz.
     Returns dict with type, gender, country, formed_year, disbanded_year,
-    sort_name, disambiguation, wikipedia_url, and members (list of dicts
+    sort_name, disambiguation, wikipedia_url, members (list of dicts
     with mbid/name/ended for 'member of band' relations, present only when
-    this artist is a Group)."""
+    this artist is a Group), and collaborators (list of dicts with mbid/name
+    for 'collaboration' relations, either direction)."""
     data = _mb_get_safe(f'/artist/{mbid}', {'inc': 'url-rels+artist-rels'})
     if not data:
         return {}
@@ -1042,24 +1068,31 @@ def mb_fetch_artist_data(mbid: str) -> dict:
             break
 
     members = []
+    collaborators = []
     for rel in data.get('relations') or []:
-        if rel.get('target-type') != 'artist' or rel.get('type') != 'member of band':
+        if rel.get('target-type') != 'artist':
             continue
-        # Direction 'backward' means this artist page's relation target is a
-        # member OF this artist (i.e. this artist is the group) — the other
-        # direction means this artist is itself a member of the target group.
-        if rel.get('direction') != 'backward':
+        rel_type = rel.get('type')
+        other = rel.get('artist') or {}
+        if not other.get('id'):
             continue
-        member = rel.get('artist') or {}
-        if not member.get('id'):
-            continue
-        members.append({
-            'mbid':  member['id'],
-            'name':  member.get('name', ''),
-            'ended': bool(rel.get('ended')),
-        })
+        if rel_type == 'member of band':
+            # Direction 'backward' means this artist page's relation target is a
+            # member OF this artist (i.e. this artist is the group) — the other
+            # direction means this artist is itself a member of the target group.
+            if rel.get('direction') != 'backward':
+                continue
+            members.append({
+                'mbid':  other['id'],
+                'name':  other.get('name', ''),
+                'ended': bool(rel.get('ended')),
+            })
+        elif rel_type == 'collaboration':
+            collaborators.append({'mbid': other['id'], 'name': other.get('name', '')})
     if members:
         out['members'] = members
+    if collaborators:
+        out['collaborators'] = collaborators
 
     return out
 

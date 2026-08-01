@@ -24,6 +24,7 @@ Default flags:
 
 import argparse
 import csv
+import difflib
 import json
 import logging
 import os
@@ -56,6 +57,8 @@ from mdb_strings import (
     MONTHS, _SOURCE_PRIORITY, _date_prec, _should_update_date, _parse_user_date,
     extract_mbid,
     extract_spotify_id,
+    parse_track_title,
+    normalize_text,
 )
 from mdb_ops import (
     new_ulid, slugify, unique_slug, load_dotenv,
@@ -1545,9 +1548,15 @@ def import_album_unified(
                 scored = sorted(rg_releases, key=mb_canonical_score)
                 primary_mb = scored[0] if scored else None
                 # Only auto-import if the primary is genuinely different from what
-                # we're importing (otherwise we'd loop)
+                # we're importing (otherwise we'd loop). MusicBrainzRelease stores
+                # its MBID as .id, not ._mbid — the old attribute name here always
+                # returned None via getattr's default, so this comparison was
+                # always primary_mb['id'] != None (always true), causing infinite
+                # recursion whenever the "primary" MB release resolved back to the
+                # same release being imported (e.g. Danganronpa: Trigger Happy
+                # Havoc OST, hung for 10+ minutes re-"discovering" itself).
                 if primary_mb and primary_mb.get('id') != (source_data.get('mb') and
-                        getattr(source_data['mb'], '_mbid', None)):
+                        getattr(source_data['mb'], 'id', None)):
                     primary_mbid = primary_mb['id']
                     primary_title = primary_mb.get('title', '')
                     primary_tracks = sum(m.get('track-count', 0)
@@ -1638,6 +1647,25 @@ def import_album_unified(
                     _ex.submit(_import_wiki_step, db_path, release_id, mdb_r.title, artist_name)
                 )
             _wait(_enrichment_futs)
+
+    # Import-completeness check: warn immediately if fewer tracks landed than
+    # the source(s) reported, so gaps get caught here instead of surfacing
+    # later as bad listen matches (a raw title with no real track to match
+    # falls back to the closest fuzzy title, which is often a remix/variant
+    # of a totally different track — see mdb.py audit for the detection side).
+    if mdb_r.total_tracks:
+        with managed_db(db_path) as _cc:
+            _actual_tc = _cc.execute(
+                'SELECT COUNT(*) FROM tracks WHERE release_id=? AND hidden=0 AND variant_section IS NULL',
+                [release_id]
+            ).fetchone()[0]
+        if _actual_tc < mdb_r.total_tracks:
+            console.print(
+                f'      [yellow]⚠ only {_actual_tc}/{mdb_r.total_tracks} tracks imported — '
+                f'source listed more; run `mdb tracks audit --release-id {release_id}` '
+                f'or re-check the source tracklist[/yellow]'
+            )
+
     _auto_rematch(db_path, release_id, artist_name, mdb_r.title)
 
     return release_id, mdb_r.title, artist_name, mdb_r.release_date or ''
@@ -3106,8 +3134,22 @@ def _slug_overlap(title: str, aoty_url: str) -> float:
 # ── cmd: enrich artists ────────────────────────────────────────────────────────
 
 def cmd_enrich_artists(args):
-    """Fetch artist metadata from MusicBrainz (type, gender, country, dates)."""
+    """Fetch artist metadata from MusicBrainz (type, gender, country, dates),
+    and optionally Spotify photo/followers/popularity (--spotify).
+    """
     updated = skipped = 0
+    do_spotify = getattr(args, 'spotify', False)
+    sp_client = None
+    if do_spotify:
+        cid = os.environ.get('SPOTIFY_CLIENT_ID', '')
+        csc = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
+        if cid and csc:
+            sp_client = SpotifyClient(cid, csc)
+        else:
+            console.print('[yellow]--spotify requested but SPOTIFY_CLIENT_ID/SECRET are not set — '
+                          'skipping Spotify enrichment.[/yellow]')
+            do_spotify = False
+
     try:
         with managed_db(args.db or DB_PATH) as conn:
             where  = 'WHERE 1=1'
@@ -3116,7 +3158,15 @@ def cmd_enrich_artists(args):
                 # Skip artists already attempted (mb_attempted=1 covers both "searched but no match"
                 # and "successfully enriched"). Artists imported via mdb import have mbid set but
                 # mb_attempted=0, so they are correctly included here.
-                where += ' AND a.mb_attempted = 0'
+                #
+                # With --spotify, also include artists that already passed the MB step but are
+                # still missing a photo — otherwise a previously-MB-enriched artist would never
+                # enter the queue and its Spotify photo would have to be fetched by hand, which
+                # is exactly the manual step this flag exists to remove.
+                if do_spotify:
+                    where += ' AND (a.mb_attempted = 0 OR a.image_url IS NULL)'
+                else:
+                    where += ' AND a.mb_attempted = 0'
             if args.artist:
                 row = resolve_artist(conn, args.artist)
                 if not row:
@@ -3126,7 +3176,7 @@ def cmd_enrich_artists(args):
                 params.append(row['id'])
 
             queue = conn.execute(
-                f'''SELECT a.id, a.name, a.mbid,
+                f'''SELECT a.id, a.name, a.mbid, a.mb_attempted, a.spotify_id, a.image_url,
                            COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens
                     FROM artists a
                     LEFT JOIN track_artists ta ON ta.artist_id = a.id AND ta.role = "main"
@@ -3161,79 +3211,159 @@ def cmd_enrich_artists(args):
             now = int(time.time())
 
             for artist in queue:
-                mbid = artist['mbid']
+                mb_parts = []
+                wiki_url = None
+                skip_this = False
 
-                if not mbid:
-                    search = _mb_get_safe('/artist/', {
-                        'query': f'artist:"{artist["name"]}"',
-                        'limit': 3,
-                    })
-                    candidates = (search or {}).get('artists') or []
-                    best = next(
-                        (c for c in candidates if c.get('score', 0) >= 90
-                         and _norm(c.get('name', '')) == _norm(artist['name'])),
-                        None
-                    )
-                    if not best:
-                        console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]no MB match[/dim]')
-                        conn.execute('UPDATE artists SET mb_attempted = 1 WHERE id = ?', (artist['id'],))
-                        conn.commit()
+                # Skip the MB step entirely if it already ran (mb_attempted=1) and
+                # this pass was only pulled in by --spotify's "missing photo" filter —
+                # otherwise every already-MB-enriched artist would get needlessly
+                # re-fetched from MB just to reach the Spotify step below.
+                needs_mb = args.force or not artist['mb_attempted']
+
+                if needs_mb:
+                    mbid = artist['mbid']
+
+                    if not mbid:
+                        search = _mb_get_safe('/artist/', {
+                            'query': f'artist:"{artist["name"]}"',
+                            'limit': 3,
+                        })
+                        candidates = (search or {}).get('artists') or []
+                        best = next(
+                            (c for c in candidates if c.get('score', 0) >= 90
+                             and _norm(c.get('name', '')) == _norm(artist['name'])),
+                            None
+                        )
+                        if not best:
+                            console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]no MB match[/dim]')
+                            conn.execute('UPDATE artists SET mb_attempted = 1 WHERE id = ?', (artist['id'],))
+                            conn.commit()
+                            skip_this = True
+                        else:
+                            mbid = best['id']
+                            try:
+                                conn.execute('UPDATE artists SET mbid = ? WHERE id = ?', (mbid, artist['id']))
+                                conn.commit()
+                            except sqlite3.IntegrityError:
+                                console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]MBID already assigned to another artist[/dim]')
+                                skip_this = True
+
+                    if not skip_this:
+                        data = mb_fetch_artist_data(mbid)
+                        if not data:
+                            console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]no MB data[/dim]')
+                            skip_this = True
+                        else:
+                            wiki_url = data.pop('wikipedia_url', None)
+                            members  = data.pop('members', None)
+                            collaborators = data.pop('collaborators', None)
+                            updates = {col: data[key] for key, col in _MB_COL_MAP.items() if key in data}
+                            if wiki_url:
+                                upsert_external_link(conn, EL_ARTIST, artist['id'], EL_SVC_WIKIPEDIA, wiki_url)
+                            updates['mb_attempted'] = 1  # mark done regardless of whether fields changed
+                            updates['updated_at'] = now
+                            set_clause = ', '.join(f'{k} = ?' for k in updates)
+                            conn.execute(f'UPDATE artists SET {set_clause} WHERE id = ?',
+                                         (*updates.values(), artist['id']))
+
+                            members_added = 0
+                            if members:
+                                cur_max = conn.execute(
+                                    'SELECT COALESCE(MAX(sort_order), -1) FROM artist_members WHERE group_artist_id = ?',
+                                    (artist['id'],)
+                                ).fetchone()[0]
+                                for i, m in enumerate(members):
+                                    if m['ended']:
+                                        continue  # only link current members automatically
+                                    member_id, _ = upsert_artist_mb(conn.cursor(), {'id': m['mbid'], 'name': m['name']})
+                                    try:
+                                        conn.execute(
+                                            'INSERT INTO artist_members (group_artist_id, member_artist_id, sort_order) '
+                                            'VALUES (?, ?, ?)',
+                                            (artist['id'], member_id, cur_max + 1 + i)
+                                        )
+                                        members_added += 1
+                                    except sqlite3.IntegrityError:
+                                        pass  # already linked
+
+                            collabs_added = 0
+                            if collaborators:
+                                # Only link collaborators that already exist in our catalog by
+                                # MBID — unlike members, we don't want to mint a new artist row
+                                # for every one-off MB collaboration credit (too noisy; would
+                                # create stub artists with no releases of their own).
+                                for c in collaborators:
+                                    other = conn.execute(
+                                        'SELECT id FROM artists WHERE mbid = ?', (c['mbid'],)
+                                    ).fetchone()
+                                    if not other:
+                                        continue
+                                    try:
+                                        conn.execute(
+                                            '''INSERT INTO artist_relations
+                                               (from_artist_id, to_artist_id, relation_type, source)
+                                               VALUES (?, ?, 'collaboration', 'musicbrainz')''',
+                                            (artist['id'], other['id'])
+                                        )
+                                        collabs_added += 1
+                                    except sqlite3.IntegrityError:
+                                        pass  # already linked
+                            conn.commit()
+                            if 'type'           in updates: mb_parts.append(updates['type'])
+                            if 'gender'         in updates: mb_parts.append(updates['gender'])
+                            if 'country'        in updates: mb_parts.append(updates['country'])
+                            if 'formed_year'    in updates: mb_parts.append(str(updates['formed_year']))
+                            if 'disbanded_year' in updates: mb_parts.append(f'–{updates["disbanded_year"]}')
+                            if wiki_url:                    mb_parts.append(f'[link={wiki_url}]wikipedia[/link]')
+                            if members_added:               mb_parts.append(f'{members_added} member(s)')
+                            if collabs_added:                mb_parts.append(f'{collabs_added} collab(s)')
+
+                    if skip_this and not do_spotify:
                         skipped += 1
                         continue
-                    mbid = best['id']
+
+                sp_parts = []
+                if do_spotify and sp_client and not artist['image_url']:
                     try:
-                        conn.execute('UPDATE artists SET mbid = ? WHERE id = ?', (mbid, artist['id']))
-                        conn.commit()
+                        sp_artist = None
+                        if artist['spotify_id']:
+                            sp_artist = sp_client.get(f"/artists/{artist['spotify_id']}")
+                        else:
+                            search = sp_client.get('/search', {'q': artist['name'], 'type': 'artist', 'limit': 5})
+                            cands = (search.get('artists') or {}).get('items') or []
+                            sp_artist = next(
+                                (c for c in cands if _norm(c.get('name', '')) == _norm(artist['name'])
+                                 and c.get('images')),
+                                None
+                            )
+                        if sp_artist and sp_artist.get('images'):
+                            images = sp_artist['images']
+                            full  = images[0]['url'] if images else None
+                            thumb = images[1]['url'] if len(images) > 1 else full
+                            conn.execute(
+                                'UPDATE artists SET spotify_id = ?, image_url = ?, image_thumb_url = ?,'
+                                ' image_source = ?, spotify_followers = ?, spotify_popularity = ?,'
+                                ' updated_at = ? WHERE id = ?',
+                                (sp_artist['id'], full, thumb, 'spotify',
+                                 (sp_artist.get('followers') or {}).get('total'),
+                                 sp_artist.get('popularity'), now, artist['id'])
+                            )
+                            conn.commit()
+                            sp_parts.append('spotify photo')
+                        else:
+                            sp_parts.append('[dim]no spotify match[/dim]')
                     except sqlite3.IntegrityError:
-                        console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]MBID already assigned to another artist[/dim]')
-                        skipped += 1
-                        continue
+                        sp_parts.append('[dim]spotify_id already assigned to another artist[/dim]')
+                    except Exception as e:
+                        sp_parts.append(f'[dim]spotify error: {e}[/dim]')
 
-                data = mb_fetch_artist_data(mbid)
-                if not data:
-                    console.print(f'  [dim]·[/dim]  {artist["name"]}  [dim]no MB data[/dim]')
+                if skip_this and not sp_parts:
                     skipped += 1
                     continue
-                wiki_url = data.pop('wikipedia_url', None)
-                members  = data.pop('members', None)
-                updates = {col: data[key] for key, col in _MB_COL_MAP.items() if key in data}
-                if wiki_url:
-                    upsert_external_link(conn, EL_ARTIST, artist['id'], EL_SVC_WIKIPEDIA, wiki_url)
-                updates['mb_attempted'] = 1  # mark done regardless of whether fields changed
-                updates['updated_at'] = now
-                set_clause = ', '.join(f'{k} = ?' for k in updates)
-                conn.execute(f'UPDATE artists SET {set_clause} WHERE id = ?',
-                             (*updates.values(), artist['id']))
 
-                members_added = 0
-                if members:
-                    cur_max = conn.execute(
-                        'SELECT COALESCE(MAX(sort_order), -1) FROM artist_members WHERE group_artist_id = ?',
-                        (artist['id'],)
-                    ).fetchone()[0]
-                    for i, m in enumerate(members):
-                        if m['ended']:
-                            continue  # only link current members automatically
-                        member_id, _ = upsert_artist_mb(conn.cursor(), {'id': m['mbid'], 'name': m['name']})
-                        try:
-                            conn.execute(
-                                'INSERT INTO artist_members (group_artist_id, member_artist_id, sort_order) '
-                                'VALUES (?, ?, ?)',
-                                (artist['id'], member_id, cur_max + 1 + i)
-                            )
-                            members_added += 1
-                        except sqlite3.IntegrityError:
-                            pass  # already linked
-                conn.commit()
-                parts = []
-                if 'type'           in updates: parts.append(updates['type'])
-                if 'gender'         in updates: parts.append(updates['gender'])
-                if 'country'        in updates: parts.append(updates['country'])
-                if 'formed_year'    in updates: parts.append(str(updates['formed_year']))
-                if 'disbanded_year' in updates: parts.append(f'–{updates["disbanded_year"]}')
-                if wiki_url:                    parts.append(f'[link={wiki_url}]wikipedia[/link]')
-                if members_added:               parts.append(f'{members_added} member(s)')
-                console.print(f'  [green]✓[/green]  {artist["name"]:<30}  [dim]{" · ".join(parts)}[/dim]')
+                all_parts = mb_parts + sp_parts
+                console.print(f'  [green]✓[/green]  {artist["name"]:<30}  [dim]{" · ".join(all_parts)}[/dim]')
                 updated += 1
 
     except KeyboardInterrupt:
@@ -3588,7 +3718,6 @@ def cmd_artist_images(args):
                 updates.append({
                     'name': row['artist_name'].strip(),
                     'url':  row['profile_image_url'].strip(),
-                    'crop': row.get('profile_image_crop', '').strip() or None,
                 })
 
         console.print(f'[dim]{len(updates)} artists in CSV[/dim]\n')
@@ -3603,8 +3732,8 @@ def cmd_artist_images(args):
                 continue
             conn.execute(
                 "UPDATE artists SET image_url = ?, image_source = 'manual',"
-                " image_position = ?, updated_at = ? WHERE id = ?",
-                (u['url'], u['crop'], now, row[0])
+                " updated_at = ? WHERE id = ?",
+                (u['url'], now, row[0])
             )
             console.print(f'  [green]upd[/green]  {u["name"]}')
             ok += 1
@@ -3767,8 +3896,8 @@ def cmd_artist_merge(args):
 
         # Transfer missing metadata fields (TO takes priority for existing values)
         fields_to_transfer = [
-            'sort_name', 'spotify_id', 'mbid', 'lastfm_url',
-            'image_url', 'image_source', 'image_position', 'hero_image_url',
+            'sort_name', 'spotify_id', 'mbid',
+            'image_url', 'image_source',
             'country', 'formed_year', 'disbanded_year', 'bio',
             'aoty_id', 'aoty_url', 'type', 'gender', 'disambiguation',
         ]
@@ -5269,6 +5398,85 @@ def cmd_stats_refresh(args):
                   f'{f", {time.perf_counter() - t_total:.2f}s" if verbose else ""})')
 
 
+def cmd_checkpoint(args):
+    """Run the full publish pipeline: certs → stats → wal-checkpoint → integrity
+    → make_prod_db → gzip → jekyll build → verify.
+
+    Wraps the exact 8-step sequence that was run by hand after every import
+    batch this session (certs refresh, stats refresh, PRAGMA wal_checkpoint,
+    PRAGMA integrity_check, make_prod_db.py, gzip -k -f -9, jekyll build,
+    cmp against _site) into one command, removing the copy-paste risk of
+    re-typing it each time and skipping a step.
+    """
+    db_path    = args.db or DB_PATH
+    music_dir  = os.path.dirname(os.path.abspath(__file__))
+    repo_root  = os.path.dirname(music_dir)
+    site_dir   = os.path.join(repo_root, '_site')
+
+    def _step(label):
+        console.print(Rule(f'[bold]{label}[/bold]', style='bright_blue'))
+
+    _step('1/8  certs refresh')
+    cmd_certs_refresh(argparse.Namespace(db=db_path))
+
+    _step('2/8  stats refresh')
+    cmd_stats_refresh(argparse.Namespace(db=db_path, verbose=False))
+
+    _step('3/8  WAL checkpoint (TRUNCATE)')
+    conn = open_db(db_path)
+    try:
+        result = conn.execute('PRAGMA wal_checkpoint(TRUNCATE);').fetchone()
+        console.print(f'  {tuple(result)}')
+    finally:
+        conn.close()
+
+    _step('4/8  integrity check')
+    conn = open_db(db_path)
+    try:
+        result = conn.execute('PRAGMA integrity_check;').fetchone()
+        ok = result[0] == 'ok'
+        console.print(f'  [{"green" if ok else "red"}]{result[0]}[/{"green" if ok else "red"}]')
+        if not ok:
+            console.print('[red]Integrity check failed — aborting checkpoint.[/red]')
+            sys.exit(1)
+    finally:
+        conn.close()
+
+    _step('5/8  make_prod_db.py')
+    r = subprocess.run([sys.executable, os.path.join(music_dir, 'make_prod_db.py')],
+                       cwd=music_dir)
+    if r.returncode != 0:
+        console.print('[red]make_prod_db.py failed — aborting checkpoint.[/red]')
+        sys.exit(1)
+
+    _step('6/8  gzip master_prod.sqlite')
+    r = subprocess.run(['gzip', '-k', '-f', '-9', 'master_prod.sqlite'], cwd=music_dir)
+    if r.returncode != 0:
+        console.print('[red]gzip failed — aborting checkpoint.[/red]')
+        sys.exit(1)
+
+    if args.skip_jekyll:
+        console.print('[dim]Skipping jekyll build (--skip-jekyll).[/dim]')
+        return
+
+    _step('7/8  jekyll build')
+    r = subprocess.run(['bundle', 'exec', 'jekyll', 'build', '--destination', '_site'],
+                       cwd=repo_root)
+    if r.returncode != 0:
+        console.print('[red]jekyll build failed — aborting checkpoint.[/red]')
+        sys.exit(1)
+
+    _step('8/8  verify gzip matches _site')
+    src  = os.path.join(music_dir, 'master_prod.sqlite.gz')
+    dest = os.path.join(site_dir, 'music', 'master_prod.sqlite.gz')
+    r = subprocess.run(['cmp', src, dest])
+    if r.returncode == 0:
+        console.print('[bold green]✓ Checkpoint complete — gzip matches _site.[/bold green]')
+    else:
+        console.print('[red]gzip does NOT match _site — investigate before publishing.[/red]')
+        sys.exit(1)
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
@@ -5501,7 +5709,7 @@ _DEDUP_COALESCE_FIELDS = [
     'mbid', 'spotify_id', 'apple_music_id', 'aoty_id', 'aoty_url',
     'aoty_score_critic', 'aoty_score_user', 'aoty_ratings_critic',
     'aoty_ratings_user', 'wikipedia_url', 'album_art_url', 'album_art_source',
-    'album_art_position', 'release_date', 'date_source', 'release_year',
+    'release_date', 'date_source', 'release_year',
     'release_group_mbid', 'type', 'type_secondary', 'label',
     'total_tracks', 'notes', 'spotify_popularity',
 ]
@@ -6145,6 +6353,390 @@ def _show_to_epoch(value) -> 'int | None':
     return None
 
 
+def _check_substring_boost(key: str, other_key: str, min_len: int = 4) -> bool:
+    """True if key/other_key should get a substring-match confidence boost.
+
+    Guards against two false-positive modes:
+    - Degenerate ascii_key() output on non-Latin names (e.g. 'MØ', all-CJK/
+      Hangul/Greek/Hebrew titles can normalize to a single character or empty
+      string), which would otherwise substring-match almost everything.
+    - Short-but-valid queries ('Sia', 'GTA') incidentally appearing inside many
+      unrelated longer names ('Asia', 'Fantasia', 'Persia') — require the
+      shorter string to cover at least half the longer one, not just appear
+      anywhere in it, so a short exact-name query only boosts near-length
+      matches (aliases, stylization drift) rather than any superstring.
+    """
+    if not key or not other_key:
+        return False
+    if key == other_key:
+        return True
+    if len(key) < min_len or len(other_key) < min_len:
+        return False
+    shorter, longer = sorted((key, other_key), key=len)
+    if shorter not in longer:
+        return False
+    return len(shorter) / len(longer) >= 0.5
+
+
+def _check_find_artists(conn: sqlite3.Connection, query: str, threshold: float = 0.72) -> list:
+    """Fuzzy-match query against artists.name and artist_aliases.alias.
+
+    Returns a list of dicts: {id, name, score, matched_on, alias} sorted by score desc,
+    deduped by artist id (best match per artist wins). Checks both the raw table and
+    the alias table so a search for an aliased/former/native-script name still surfaces
+    the canonical artist row — this is the check every import in this session had to do
+    by hand via separate LIKE queries.
+    """
+    key = _norm(query)
+    if not key:
+        return []
+    candidates = {}
+
+    for aid, name in conn.execute('SELECT id, name FROM artists').fetchall():
+        name_key = _norm(name)
+        score = difflib.SequenceMatcher(None, key, name_key).ratio()
+        if _check_substring_boost(key, name_key):
+            score = max(score, 0.9)
+        if score >= threshold:
+            candidates[aid] = {'id': aid, 'name': name, 'score': score,
+                                'matched_on': 'name', 'alias': None}
+
+    for aid, alias, name in conn.execute(
+        'SELECT aa.artist_id, aa.alias, a.name FROM artist_aliases aa '
+        'JOIN artists a ON a.id = aa.artist_id'
+    ).fetchall():
+        alias_key = _norm(alias)
+        score = difflib.SequenceMatcher(None, key, alias_key).ratio()
+        if _check_substring_boost(key, alias_key):
+            score = max(score, 0.9)
+        if score >= threshold and (aid not in candidates or score > candidates[aid]['score']):
+            candidates[aid] = {'id': aid, 'name': name, 'score': score,
+                                'matched_on': 'alias', 'alias': alias}
+
+    return sorted(candidates.values(), key=lambda c: -c['score'])
+
+
+def _check_find_releases(conn: sqlite3.Connection, query: str, artist_id: 'str | None' = None,
+                         threshold: float = 0.72) -> list:
+    """Fuzzy-match query against releases.title, optionally scoped to one artist.
+
+    Returns a list of dicts: {id, title, artist_name, score} sorted by score desc.
+    """
+    key = _norm(query)
+    if not key:
+        return []
+    sql = ('SELECT r.id, r.title, a.name, r.hidden FROM releases r '
+           'JOIN artists a ON a.id = r.primary_artist_id')
+    params = []
+    if artist_id:
+        sql += ' WHERE r.primary_artist_id = ?'
+        params.append(artist_id)
+    results = []
+    for rid, title, artist_name, hidden in conn.execute(sql, params).fetchall():
+        rkey = _norm(title)
+        score = difflib.SequenceMatcher(None, key, rkey).ratio()
+        if _check_substring_boost(key, rkey):
+            score = max(score, 0.9)
+        if score >= threshold:
+            results.append({'id': rid, 'title': title, 'artist_name': artist_name,
+                            'score': score, 'hidden': bool(hidden)})
+    return sorted(results, key=lambda r: -r['score'])
+
+
+def cmd_check(args):
+    """Fuzzy-check whether an artist (and optionally an album) already exists.
+
+    Replaces the manual 'SELECT id, name FROM artists WHERE name LIKE...' +
+    alias-table check that preceded every import this session. Checks
+    artists.name AND artist_aliases in one shot, then (if --album is given)
+    checks that artist's releases for a title match, catching stylization/
+    punctuation drift so real duplicates surface before an import is attempted.
+    """
+    with managed_db(args.db or DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        threshold = args.threshold
+        artists = _check_find_artists(conn, args.artist, threshold)
+
+        if args.json:
+            out = {'artist_query': args.artist, 'artist_matches': artists}
+            if args.album:
+                out['album_query'] = args.album
+                out['album_matches'] = (
+                    _check_find_releases(conn, args.album, artists[0]['id'], threshold) if artists
+                    else _check_find_releases(conn, args.album, threshold=threshold)
+                )
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return
+
+        if not artists:
+            console.print(f'[green]No existing artist matches[/green] for {args.artist!r} — safe to import as new.')
+        else:
+            console.print(f'[yellow]Possible existing artist(s)[/yellow] for {args.artist!r}:')
+            for a in artists:
+                via = f"  [dim](via alias {a['alias']!r})[/dim]" if a['matched_on'] == 'alias' else ''
+                console.print(f"  {a['score']*100:5.1f}%  {a['id']}  {a['name']}{via}")
+
+        if args.album:
+            scoped_id = artists[0]['id'] if artists else None
+            releases = _check_find_releases(conn, args.album, scoped_id, threshold)
+            if not releases:
+                console.print(f'[green]No existing release matches[/green] for {args.album!r} — safe to import as new.')
+            else:
+                console.print(f'[yellow]Possible existing release(s)[/yellow] for {args.album!r}:')
+                for r in releases:
+                    hidden_tag = '  [dim](hidden)[/dim]' if r['hidden'] else ''
+                    console.print(f"  {r['score']*100:5.1f}%  {r['id']}  {r['artist_name']} — {r['title']}{hidden_tag}")
+
+
+_AUDIT_MEANINGFUL_ETI_WORDS: frozenset = frozenset({
+    'remix', 'refix', 'rework', 'bootleg', 'mashup', 'live', 'acoustic',
+    'demo', 'instrumental', 'a cappella', 'reprise', 'cover', 'flip',
+    'rerecorded',
+})
+
+
+def _audit_variant_word(text: 'str | None') -> 'str | None':
+    """Return a normalized variant descriptor (remix name, 'live', 'acoustic', ...)
+    extracted from a title's ETI, or None if the title carries no MEANINGFUL
+    qualifier (a marker of a genuinely different recording).
+
+    Deliberately excludes cosmetic/production tags — "2015 Remaster",
+    "Radio Edit", "Extended Version", "Explicit", disc-locale markers, etc.
+    Those describe the SAME recording in a different master/edit and are
+    overwhelmingly what a naive raw-vs-matched ETI diff flags (noise this
+    heuristic exists specifically to filter out). What actually indicates a
+    different recording — the failure mode behind every real mismatch found
+    in practice (remix-vs-original, live-vs-studio, instrumental-vs-vocal) —
+    is one of _AUDIT_MEANINGFUL_ETI_WORDS. Reuses parse_track_title so this
+    stays consistent with how titles are classified during import.
+    """
+    if not text:
+        return None
+    eti = parse_track_title(text).eti
+    if not eti:
+        return None
+    words = normalize_text(eti.strip('()'))
+    if not any(w in words for w in _AUDIT_MEANINGFUL_ETI_WORDS):
+        return None
+    return words
+
+
+_AUDIT_ARTIST_SPLIT_RE = re.compile(r'\s*(?:&|/|,|\bx\b|\bvs\.?\b|\band\b)\s*', re.IGNORECASE)
+
+
+def _audit_split_artist(raw_artist: str, known_artist_names: set) -> list:
+    """Split a compound raw artist string ("JAY-Z & Kanye West") into parts.
+
+    Scrobble sources frequently record a collaboration's full billing as one
+    raw_artist_name string even though each artist is credited on the track
+    individually. Splitting lets the artist heuristic check "is any of these
+    names credited" instead of false-flagging every legitimate collab.
+
+    Only splits when the raw string as a WHOLE isn't itself a known artist
+    name/alias — plenty of real acts are named "X and Y" or "A & B" or
+    contain a bare "x" (Tegan and Sara, Above & Beyond, TOMORROW X TOGETHER),
+    and splitting those would shred a real single-artist name into garbage.
+    """
+    if normalize_text(raw_artist) in known_artist_names:
+        return [raw_artist]
+    parts = [p.strip() for p in _AUDIT_ARTIST_SPLIT_RE.split(raw_artist) if p.strip()]
+    return parts or [raw_artist]
+
+
+def cmd_audit_matches(args):
+    """Flag listens whose track_id points somewhere plausibly wrong.
+
+    Three targeted heuristics (deliberately narrow — a blunt raw-vs-matched
+    title diff drowns in cosmetic noise: censoring, romanization, medley
+    slashes, bonus-track suffixes). Each one catches a distinct failure mode
+    seen in practice when a raw scrobble title has no exact track to match
+    and the fuzzy matcher falls back to the closest available title:
+
+      variant   — raw title names a specific remix/live/acoustic/etc. cut
+                  that differs from (or is absent from) the matched track's
+                  own qualifier. Catches "matched to the wrong edit."
+      feat      — raw title's "feat. X" doesn't appear among the matched
+                  track's credited artists (any role). Catches "matched to
+                  a same-titled track with different featured artists."
+      artist    — raw scrobble artist isn't credited on the matched track
+                  at all (checked against name + all aliases). Catches
+                  "matched to a completely different song."
+
+    Scope with --artist / --release-id; otherwise scans everything, which is
+    slow on a large catalog — prefer scoping right after a batch of imports.
+    """
+    db_path = args.db or DB_PATH
+    with managed_db(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        where = ["l.track_id IS NOT NULL"]
+        params: list = []
+
+        artist_filter_id = None
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                sys.exit(1)
+            artist_filter_id = row['id']
+            where.append('''t.id IN (
+                SELECT track_id FROM track_artists WHERE artist_id = ?
+            )''')
+            params.append(artist_filter_id)
+
+        if args.release_id:
+            where.append('t.release_id = ?')
+            params.append(args.release_id)
+
+        if args.since:
+            since_ts = _parse_user_date(args.since)
+            if since_ts is None:
+                console.print(f'[red]Could not parse --since date:[/red] {args.since}')
+                sys.exit(1)
+            where.append('l.timestamp >= ?')
+            params.append(int(since_ts))
+
+        rows = cur.execute(f'''
+            SELECT l.id as listen_id, l.raw_artist_name, l.raw_track_name,
+                   l.raw_album_name, l.track_id, t.title as track_title,
+                   t.mix_name, r.id as release_id, r.title as release_title,
+                   r.type_secondary as release_type_secondary
+            FROM listens l
+            JOIN tracks t ON t.id = l.track_id
+            JOIN releases r ON r.id = t.release_id
+            WHERE {' AND '.join(where)}
+        ''', params).fetchall()
+
+        if not args.json:
+            console.print(f'[dim]Auditing {len(rows):,} matched listen(s)…[/dim]')
+
+        # Preload credited-artist names (+aliases) per track, and per-release
+        # track lists (for a friendlier "did you mean" hint on artist flags).
+        track_ids = list({r['track_id'] for r in rows})
+        credited_by_track: dict[str, set] = {}
+        if track_ids:
+            for i in range(0, len(track_ids), 500):
+                chunk = track_ids[i:i + 500]
+                ph = ','.join('?' for _ in chunk)
+                for tid, aname, alias in cur.execute(f'''
+                    SELECT ta.track_id, a.name, aa.alias
+                    FROM track_artists ta
+                    JOIN artists a ON a.id = ta.artist_id
+                    LEFT JOIN artist_aliases aa ON aa.artist_id = a.id
+                    WHERE ta.track_id IN ({ph})
+                ''', chunk):
+                    s = credited_by_track.setdefault(tid, set())
+                    s.add(normalize_text(aname))
+                    if alias:
+                        s.add(normalize_text(alias))
+
+        # Every known artist name/alias in the catalog — used to recognize
+        # when a raw_artist_name that LOOKS like a compound billing ("Fitz
+        # and the Tantrums") is actually one real act's own name, so the
+        # artist heuristic below doesn't shred it into nonsense parts.
+        known_artist_names = {normalize_text(n) for (n,) in cur.execute('SELECT name FROM artists')}
+        known_artist_names |= {normalize_text(a) for (a,) in cur.execute('SELECT alias FROM artist_aliases')}
+
+        findings = {'variant': [], 'feat': [], 'artist': []}
+        seen_keys = set()  # dedup identical (category, raw, matched) triples
+
+        for row in rows:
+            raw_track  = row['raw_track_name'] or ''
+            raw_artist = row['raw_artist_name'] or ''
+            matched_title = row['track_title'] or ''
+            credited = credited_by_track.get(row['track_id'], set())
+
+            # -- artist heuristic --------------------------------------------
+            # Split compound billings ("JAY-Z & Kanye West") and require NONE
+            # of the parts to be credited before flagging — a legitimate
+            # collab where each artist is credited individually shouldn't
+            # trip this just because the raw string names both at once.
+            raw_artist_parts = _audit_split_artist(raw_artist, known_artist_names) if raw_artist else []
+            if raw_artist_parts and not any(normalize_text(p) in credited for p in raw_artist_parts):
+                key = ('artist', normalize_text(raw_artist), row['track_id'])
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    findings['artist'].append(row)
+
+            # -- variant heuristic ---------------------------------------------
+            # Only flag when the RAW title names a meaningful variant
+            # (remix/live/acoustic/instrumental/etc.) that the matched track
+            # itself carries no trace of — that asymmetry is what "matched to
+            # the wrong edit because the right one was never imported" looks
+            # like. The reverse (matched track happens to be a live/remix
+            # version but the raw title doesn't say so) is usually benign —
+            # it's often the only version of that title actually in the
+            # catalog — so it's deliberately not flagged here.
+            #
+            # Special case: raw title says "Live" but the release itself is
+            # already tagged type_secondary='live' (e.g. At Folsom Prison) —
+            # every track on it is inherently a live recording, so a bare
+            # "- Live" suffix on the raw scrobble isn't evidence of a wrong
+            # match, just redundant labeling. Only suppress the 'live' marker
+            # in that case; other qualifiers still apply.
+            raw_variant = _audit_variant_word(raw_track)
+            if raw_variant == 'live' and row['release_type_secondary'] == 'live':
+                raw_variant = None
+            matched_variant = _audit_variant_word(matched_title) or \
+                (normalize_text(row['mix_name']) if row['mix_name'] else None)
+            if raw_variant and raw_variant != matched_variant:
+                key = ('variant', normalize_text(raw_track), row['track_id'])
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    findings['variant'].append(row)
+
+            # -- feat heuristic --------------------------------------------
+            # Flag only when NONE of the extracted feat names are credited,
+            # not "any single one missing" — parse_track_title splits on
+            # "and", so a solo artist name containing "and" (e.g. "Christine
+            # and the Queens") gets split into pieces that individually miss,
+            # even though the credit itself is correct. Requiring zero
+            # overlap avoids that false positive while still catching a
+            # track matched to a same-titled release with wholly different
+            # featured artists.
+            feat_artists = parse_track_title(raw_track).feat_artists
+            if feat_artists and not any(normalize_text(f) in credited for f in feat_artists):
+                key = ('feat', normalize_text(raw_track), row['track_id'])
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    findings['feat'].append(row)
+
+        total = sum(len(v) for v in findings.values())
+
+        if args.json:
+            out = {
+                cat: [dict(r) for r in rs]
+                for cat, rs in findings.items()
+            }
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return
+
+        if total == 0:
+            console.print('[green]No suspicious matches found.[/green]')
+            return
+
+        labels = {
+            'artist':  'Raw artist not credited on matched track',
+            'variant': 'Variant/remix qualifier mismatch',
+            'feat':    'Raw "feat." artist not credited on matched track',
+        }
+        for cat, rs in findings.items():
+            if not rs:
+                continue
+            console.print(f'\n[yellow]{labels[cat]}[/yellow]  ({len(rs)})')
+            for r in rs[:args.limit]:
+                console.print(
+                    f"  [dim]{r['raw_artist_name']!r} — {r['raw_track_name']!r}[/dim]"
+                    f"  →  [bold]{r['track_title']}[/bold]"
+                    f"  [dim]({r['release_title']}, track {r['track_id']})[/dim]"
+                )
+            if len(rs) > args.limit:
+                console.print(f'  [dim]… and {len(rs) - args.limit} more (raise --limit)[/dim]')
+
+        console.print(f'\n[dim]{total} suspicious match(es) across {len(rows):,} audited.[/dim]')
+
+
 def cmd_show(args):
     """Print every column of a release/artist/track row, by ID."""
     with managed_db(args.db or DB_PATH) as conn:
@@ -6315,6 +6907,9 @@ def main():
     p_artists_enrich = es.add_parser('artists', help='Fetch artist metadata from MusicBrainz')
     _add_filter_args(p_artists_enrich)
     p_artists_enrich.add_argument('--force', action='store_true', help='Re-fetch even if already populated')
+    p_artists_enrich.add_argument('--spotify', action='store_true',
+                                  help='Also fetch Spotify photo/followers/popularity for artists missing them '
+                                       '(one command instead of the manual search+curl+UPDATE loop)')
     p_artists_enrich.set_defaults(func=cmd_enrich_artists)
 
     p_art = es.add_parser('art', help='Fill in or replace album art (CAA → Spotify → manual URL)')
@@ -6358,7 +6953,7 @@ def main():
     as_      = p_artist.add_subparsers(dest='artist_cmd', required=True)
     p_img    = as_.add_parser('images', help='Bulk update artist profile images from CSV')
     p_img.add_argument('csv_file', metavar='CSV',
-                       help='CSV with columns: artist_name, profile_image_url[, profile_image_crop]')
+                       help='CSV with columns: artist_name, profile_image_url')
     p_img.add_argument('--db', metavar='PATH')
     p_img.set_defaults(func=cmd_artist_images)
 
@@ -6555,6 +7150,39 @@ def main():
     p_adminpin = sub.add_parser('admin-pin', help='Set or reset the admin view PIN')
     p_adminpin.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
     p_adminpin.set_defaults(func=cmd_admin_pin)
+
+    p_checkpoint = sub.add_parser('checkpoint', help='Run the full publish pipeline (certs, stats, wal-checkpoint, integrity, prod-db, gzip, jekyll build, verify)')
+    p_checkpoint.add_argument('--skip-jekyll', action='store_true',
+                              help='Stop after gzip; skip jekyll build + _site verification')
+    p_checkpoint.add_argument('--db', metavar='PATH')
+    p_checkpoint.set_defaults(func=cmd_checkpoint)
+
+    p_check = sub.add_parser('check', help='Fuzzy-check whether an artist/album already exists before importing')
+    p_check.add_argument('artist', metavar='ARTIST', help='Artist name to check (matches name + aliases)')
+    p_check.add_argument('album', metavar='ALBUM', nargs='?', help='Optional album/release title to check')
+    p_check.add_argument('--threshold', type=float, default=0.72,
+                         help='Minimum fuzzy-match score 0-1 to report a candidate (default: 0.72)')
+    p_check.add_argument('--json', action='store_true', help='Print as JSON instead of a table')
+    p_check.add_argument('--db', metavar='PATH')
+    p_check.set_defaults(func=cmd_check)
+
+    p_audit = sub.add_parser('audit', help='Audit existing data for likely mistakes')
+    audit_sub = p_audit.add_subparsers(dest='audit_cmd', required=True)
+
+    p_audit_matches = audit_sub.add_parser(
+        'matches',
+        help='Flag listens likely matched to the wrong track (variant/feat/artist mismatches)'
+    )
+    p_audit_matches.add_argument('--artist', metavar='NAME_OR_ID',
+                                  help='Scope to one artist (by name, slug, ULID, or Spotify ID)')
+    p_audit_matches.add_argument('--release-id', metavar='ID', help='Scope to one release')
+    p_audit_matches.add_argument('--since', metavar='DATE',
+                                  help='Only audit listens on/after this date (e.g. 2026-07-01)')
+    p_audit_matches.add_argument('--limit', type=int, default=20,
+                                  help='Max example rows to print per category (default: 20)')
+    p_audit_matches.add_argument('--json', action='store_true', help='Print as JSON instead of a report')
+    p_audit_matches.add_argument('--db', metavar='PATH')
+    p_audit_matches.set_defaults(func=cmd_audit_matches)
 
     p_show = sub.add_parser('show', help='Print a release/artist/track row, or --recent for recently touched entities')
     p_show.add_argument('id', nargs='?', help='Release, artist, or track ID (omit with --recent)')

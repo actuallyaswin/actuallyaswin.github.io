@@ -44,6 +44,7 @@ from typing import Any
 from mdb_strings import (
     normalize_text,
     resolve_title,
+    ascii_key,
     _date_prec,
     _should_update_date,
     beatport_is_catalog_addition,
@@ -1141,6 +1142,16 @@ def upsert_tracks_mdb(cur: sqlite3.Cursor,
 
     for t in tracks:
         # Locate existing track: spotify_id → mbid → isrc
+        #
+        # spotify_id and mbid are UNIQUE identity keys — a hit is always the same
+        # recording. isrc is NOT unique (labels reuse ISRCs across genuinely
+        # different recordings: instrumental variants, JP/EN dual-language
+        # pressings, remasters). So an isrc hit on a track that already belongs to
+        # a DIFFERENT release is only trusted as "same track" when the title also
+        # matches; otherwise it's a distinct recording that happens to share a
+        # reused ISRC, and must get its own row on this release rather than being
+        # silently absorbed into the other release (this previously caused tracks
+        # to vanish from imported tracklists — e.g. Catherine, K/DA instrumentals).
         row = None
         if t.spotify_id:
             row = cur.execute(
@@ -1151,9 +1162,14 @@ def upsert_tracks_mdb(cur: sqlite3.Cursor,
                 'SELECT id, title, release_id, variant_section FROM tracks WHERE mbid = ?', (t.mbid,)
             ).fetchone()
         if not row and t.isrc:
-            row = cur.execute(
+            isrc_row = cur.execute(
                 'SELECT id, title, release_id, variant_section FROM tracks WHERE isrc = ?', (t.isrc,)
             ).fetchone()
+            if isrc_row is not None:
+                same_release = isrc_row[2] == release_id
+                same_title   = ascii_key(isrc_row[1]) == ascii_key(t.title)
+                if same_release or same_title:
+                    row = isrc_row
 
         def _do_update(track_id, target_rid, new_vs, include_ids=True):
             if include_ids:
