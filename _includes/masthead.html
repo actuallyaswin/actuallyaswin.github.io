@@ -1,14 +1,11 @@
 <header class="masthead">
   <a class="masthead-title" href="{{ '/' | relative_url }}">Aswin Sivaraman</a>
   <nav class="masthead-nav">
-    <a href="{{ '/' | relative_url }}">Home</a>
-    <a href="{{ '/blog/' | relative_url }}">Blog</a>
-    <a href="{{ '/music/' | relative_url }}">Music</a>
+    {%- comment -%} Match the first path segment: /blog/tag/music/ contains both "blog" and "music". {%- endcomment -%}
+    {%- assign section = page.url | split: '/' | slice: 1 | first -%}
+    <a href="{{ '/' | relative_url }}"{% if section == nil %} aria-current="page"{% endif %}>Home</a>
+    <a href="{{ '/blog/' | relative_url }}"{% if section == 'blog' %} aria-current="page"{% endif %}>Blog</a>
+    <a href="{{ '/music/' | relative_url }}"{% if section == 'music' %} aria-current="page"{% endif %}>Music</a>
     {% include theme-toggle.html %}
-    {% if include.show_search %}
-    <button id="searchBtn" class="search-open-btn" aria-label="Search (⌘K)">
-      <i data-lucide="search"></i>
-    </button>
-    {% endif %}
   </nav>
 </header>

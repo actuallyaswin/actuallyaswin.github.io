@@ -1,28 +1,28 @@
-// Shared search modal — used by index.html (in-SPA) and the standalone
-// artist/release/year pages (results link back to index.html). Expects a
-// global `_db` (sql.js Database) and `escapeHtml` (utils.js) to be loaded.
-// On index.html, `navigate()` (app.js) is used for a smooth in-SPA jump;
-// on the standalone pages it's undefined, so result clicks fall through to
-// a normal browser navigation to index.html.
+// Search field in the music sub-masthead, results in a panel below it.
+// Expects globals `_db` (sql.js), `escapeHtml` (utils.js), `navigate` (app.js).
 
 let _searchDebounce = null;
 
-function _searchOpen() {
-    const overlay = document.getElementById('searchOverlay');
-    const input   = document.getElementById('searchInput');
-    overlay.removeAttribute('hidden');
-    input.value = '';
-    document.getElementById('searchResults').innerHTML = '';
-    requestAnimationFrame(() => input.focus());
+function _showResults(show) {
+    document.getElementById('searchResults').toggleAttribute('hidden', !show);
+    document.getElementById('searchInput').setAttribute('aria-expanded', String(show));
 }
 
+function _searchOpen() {
+    const input = document.getElementById('searchInput');
+    input.focus();
+    input.select();
+    if (document.getElementById('searchResults').innerHTML.trim()) _showResults(true);
+}
+
+// Panel only — the query stays put, so an errant tap doesn't lose the search.
 function _searchClose() {
-    document.getElementById('searchOverlay').setAttribute('hidden', '');
+    _showResults(false);
 }
 
 function _searchQuery(q) {
     const results = document.getElementById('searchResults');
-    if (!_db || q.trim().length < 2) { results.innerHTML = ''; return; }
+    if (!_db || q.trim().length < 2) { results.innerHTML = ''; _showResults(false); return; }
 
     const safe = q.replace(/'/g, "''");
     const isAdmin = typeof getParams === 'function' && getParams().view === 'admin';
@@ -134,9 +134,8 @@ function _searchQuery(q) {
     if (!html) html = `<div class="search-empty">No results for "${escapeHtml(q)}"</div>`;
     results.innerHTML = html;
     lucide.createIcons({ el: results });
+    _showResults(true);
 
-    // Result clicks: smooth in-SPA jump on index.html (navigate() defined),
-    // normal browser navigation to index.html from the standalone pages.
     results.querySelectorAll('.search-result-row').forEach(row => {
         row.addEventListener('click', e => {
             if (typeof navigate === 'function') {
@@ -149,25 +148,38 @@ function _searchQuery(q) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('searchBtn').addEventListener('click', _searchOpen);
+    const input = document.getElementById('searchInput');
+    const clear = document.getElementById('searchClear');
 
-    document.getElementById('searchInput').addEventListener('input', e => {
+    input.addEventListener('input', e => {
+        clear.toggleAttribute('hidden', !e.target.value);
         clearTimeout(_searchDebounce);
         _searchDebounce = setTimeout(() => _searchQuery(e.target.value), 150);
     });
 
-    document.querySelector('.search-backdrop').addEventListener('click', _searchClose);
+    input.addEventListener('focus', _searchOpen);
+
+    clear.addEventListener('click', () => {
+        input.value = '';
+        clear.setAttribute('hidden', '');
+        document.getElementById('searchResults').innerHTML = '';
+        _showResults(false);
+        input.focus();
+    });
+
+    document.addEventListener('click', e => {
+        if (!e.target.closest('.music-subhead-inner')) _searchClose();
+    });
 
     document.addEventListener('keydown', e => {
         if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
             e.preventDefault();
-            const overlay = document.getElementById('searchOverlay');
-            overlay.hasAttribute('hidden') ? _searchOpen() : _searchClose();
+            _searchOpen();
         }
-        if (e.key === 'Escape') _searchClose();
+        if (e.key === 'Escape') { _searchClose(); input.blur(); }
 
         // Arrow key navigation inside results
-        if (!document.getElementById('searchOverlay').hasAttribute('hidden') &&
+        if (!document.getElementById('searchResults').hasAttribute('hidden') &&
             (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             e.preventDefault();
             const rows = [...document.querySelectorAll('.search-result-row')];
