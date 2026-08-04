@@ -1,6 +1,10 @@
-# aswin.db/music
+# Music
 
-A visual diary for Aswin's music listening history (logged from 2011 onward). It is an interactive, client-side web app for exploring 14+ years of music listening data with detailed statistics. Backed by a SQLite database, everything runs entirely in-browser without a backend. The webapp combines data from multiple sources: <b><i>Last.fm</i></b> for listening history (scrobbles with timestamps), <b><i>Spotify</i></b> for artist photos + album art, and <b><i>MusicBrainz</i></b> for album metadata.
+A visual diary of Aswin's music listening, logged from 2011 onward. It runs
+entirely in the browser against a SQLite database, with no backend.
+
+Data comes from three sources: Last.fm for scrobbles and their timestamps,
+Spotify for artist photos and album art, and MusicBrainz for album metadata.
 
 ## Feature wishlist
 
