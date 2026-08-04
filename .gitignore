@@ -1,9 +1,17 @@
 .DS_Store
 music/.env
+
+# Scratch notes are ignored by default, but blog posts and docs must be
+# committable — a blanket *.md previously made everything in _posts/
+# unpublishable, so the blog could never actually ship.
 *.md
 !**/README.md
+!_posts/**/*.md
 !music/WISHLIST.md
 !music/CONVENTIONS_MUSICBRAINZ.md
+
+# Editor/agent state
+.claude/
 
 # Python cache
 **/__pycache__/
@@ -12,6 +20,9 @@ music/.env
 music/*.csv
 music/bulk_*.py
 music/update_*.py
+music/*.ipynb
+music/lastfmstats-*.json
+music/discogs_not_in_mdb.json
 
 # SQLite databases (local only — superseded by master.sqlite)
 music/listening_history.sqlite
@@ -19,15 +30,34 @@ music/listening_history_overrides.sqlite
 
 # Working DB — mirrored to Turso via turso_push.py instead of git/LFS
 # (master_prod.sqlite.gz is still committed; it's what the SPA fetches).
+# Unanchored so a stray root-level master.sqlite — which SQLite creates when a
+# script is run from the wrong cwd — can't be committed by accident.
+master.sqlite
+master.sqlite.gz
+master.sqlite-wal
+master.sqlite-shm
 music/master.sqlite
 music/master.sqlite.gz
 music/master.sqlite-wal
 music/master.sqlite-shm
+# repair_integrity.py timestamped backups
+master.sqlite.bak-*
+music/master.sqlite.bak-*
+
+# Uncompressed prod DB: 45 MB that nothing fetches (config.js reads the .gz).
+# It was tracked and built into _site/, making every deploy 72 MB and every
+# data refresh a ~60 MB permanent addition to git history.
+music/master_prod.sqlite
+music/master_prod.sqlite-wal
+music/master_prod.sqlite-shm
 
 # Music editor (private tool, not deployed)
 music_editor/listening_history.sqlite
 music_editor/listening_history_overrides.sqlite
 music_editor/config.json
+
+# Design scratch — not part of the published site
+mockups/
 
 # Jekyll build output
 _site/

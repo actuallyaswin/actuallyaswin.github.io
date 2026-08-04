@@ -8,6 +8,7 @@ permalink: /blog/:title/
 
 plugins:
   - jekyll-feed
+  - jekyll-sitemap
   - kramdown-math-katex
 
 feed:
@@ -24,12 +25,19 @@ kramdown:
 # music_editor/ is a private local-only tool and should not be publicly accessible
 # music/*.py, *.md, *.csv, *.json, *.ipynb, *.sh are the Python CLI toolchain,
 # working notes, and scratch data behind music/ — not part of the public SPA
+# Jekyll's exclude entries prefix-match, so `music/master_prod.sqlite` also
+# matches `…sqlite.gz` — which the SPA does need. include: takes precedence.
+include:
+  - music/master_prod.sqlite.gz
+
 exclude:
   - music_editor/
   - README.md
   - blog/README.md
   - .gitignore
   - music/*.py
+  - music/tests/
+  - music/pytest.ini
   - music/*.md
   - music/*.csv
   - music/*.json
@@ -44,3 +52,26 @@ exclude:
   - music/master.sqlite.gz
   - music/master.sqlite-wal
   - music/master.sqlite-shm
+  # The uncompressed prod DB is 45 MB and nothing fetches it — config.js reads
+  # the .gz. The exclude list was written for the old master.sqlite naming and
+  # never updated when make_prod_db.py introduced master_prod, so every deploy
+  # published 45 MB of dead weight (72 MB total _site for 17 MB of payload).
+  - music/master_prod.sqlite
+  - music/master_prod.sqlite-wal
+  - music/master_prod.sqlite-shm
+  - music/.env
+  - music/.env.example
+  # Unfinished collection feature — not referenced from music/index.html, so it
+  # would deploy as dead-but-public pages.
+  - music/collection.html
+  - music/collection.js
+  - music/collection-styles.css
+  - music/views/collection-digital.js
+  - music/views/collection-physical.js
+  # Design scratch and stubs
+  - mockups/
+  - movies/
+  - master.sqlite
+  - Justfile
+  - Gemfile
+  - Gemfile.lock

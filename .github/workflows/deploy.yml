@@ -25,7 +25,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # Nothing in the build reads git history (no jekyll-last-modified-at,
+          # no git describe), and a full clone pulls every historical multi-MB
+          # database blob.
+          fetch-depth: 1
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -33,8 +36,105 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Regression tests over the pure functions that decide date precedence,
+      # variant grouping, and the listen dedup key. See music/tests/.
+      - name: Lint and test Python
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pytest ruff
+          # F811 redefinition (catches the duplicate-function class), F821
+          # undefined name (catches leaked/renamed variables), E9 syntax errors.
+          # Deliberately not the whole F ruleset — unused imports are cosmetic
+          # and should not block a deploy.
+          ruff check --select F811,F821,E9 music/
+          cd music && python -m pytest
+
+      # Jekyll does not parse JS, so a syntax error in any of the SPA's script
+      # tags builds cleanly and then dies at runtime in the browser.
+      - name: Check JS syntax
+        run: |
+          set -euo pipefail
+          find music js -name '*.js' -print0 | xargs -0 -n1 node --check
+          echo "JS syntax OK"
+
+      # The Justfile documents this exact failure: a truncated or stale gzip
+      # yields a cryptic sql.js "Extra bytes past the end" error in the browser
+      # with no other symptom. Fail the deploy instead of shipping it.
+      - name: Verify database integrity
+        run: |
+          set -euo pipefail
+          DB=music/master_prod.sqlite.gz
+          test -f "$DB" || { echo "::error::$DB is missing"; exit 1; }
+
+          gzip -t "$DB" || { echo "::error::$DB failed gzip integrity check"; exit 1; }
+
+          gzip -dc "$DB" > /tmp/prod.sqlite
+
+          INTEGRITY=$(sqlite3 /tmp/prod.sqlite 'PRAGMA integrity_check;')
+          echo "integrity_check: $INTEGRITY"
+          test "$INTEGRITY" = "ok" || { echo "::error::integrity_check failed"; exit 1; }
+
+          FK=$(sqlite3 /tmp/prod.sqlite 'PRAGMA foreign_key_check;' | wc -l)
+          echo "foreign_key_check violations: $FK"
+
+          # Sanity-check that the DB actually has data — a valid but empty DB
+          # would otherwise deploy silently.
+          LISTENS=$(sqlite3 /tmp/prod.sqlite 'SELECT COUNT(*) FROM listens;')
+          echo "listens rows: $LISTENS"
+          test "$LISTENS" -gt 1000 || { echo "::error::listens table looks empty ($LISTENS)"; exit 1; }
+
+          # The admin PIN hash must not ship; the editor is local-only now.
+          SETTINGS=$(sqlite3 /tmp/prod.sqlite \
+            "SELECT COUNT(*) FROM settings WHERE key LIKE '%pin%';" 2>/dev/null || echo 0)
+          test "$SETTINGS" = "0" || { echo "::error::admin PIN rows present in prod DB"; exit 1; }
+
       - name: Build with Jekyll
         run: bundle exec jekyll build
+
+      # Guards against the class of bug where an exclude: entry stops matching
+      # after a rename and a large artefact silently starts shipping.
+      - name: Check deploy size budget
+        run: |
+          set -euo pipefail
+          BUDGET_MB=40
+          SIZE_MB=$(du -sm _site | cut -f1)
+          echo "_site is ${SIZE_MB} MB (budget ${BUDGET_MB} MB)"
+          if [ "$SIZE_MB" -gt "$BUDGET_MB" ]; then
+            echo "::error::_site is ${SIZE_MB} MB, over the ${BUDGET_MB} MB budget"
+            du -ah _site | sort -rh | head -20
+            exit 1
+          fi
+
+      - name: Assert local-only files are not published
+        run: |
+          set -euo pipefail
+          fail=0
+          for path in \
+            '_site/music/master_prod.sqlite' \
+            '_site/music/master.sqlite' \
+            '_site/music/views/admin.js' \
+            '_site/music/collection.html' \
+            '_site/mockups' \
+            '_site/music_editor'
+          do
+            if [ -e "$path" ]; then echo "::error::$path was published"; fail=1; fi
+          done
+          if find _site \( -name '.env*' -o -name '*.py' \) | grep -q .; then
+            echo "::error::source or env files found in _site"
+            find _site \( -name '.env*' -o -name '*.py' \)
+            fail=1
+          fi
+          exit $fail
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
