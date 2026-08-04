@@ -159,10 +159,8 @@ const ViewArtist = (() => {
             nameEl.textContent = name;
         }
 
-        // Past names go into the stats table (plain text row), not prominent display
-        // akaEl left hidden intentionally
-
-        document.title = name;
+        // Past names go in the stats table rather than the header.
+        setPageTitle(name);
 
         // ── Stats table ───────────────────────────────────────────────────────
         const statsEl = document.getElementById('artistStatsTable');
@@ -539,11 +537,9 @@ const ViewArtist = (() => {
         section.removeAttribute('hidden');
     }
 
-    // Cert tier comes from `artists.cert`, kept up to date by `mdb.py certs
-    // refresh`, rather than recomputed here from a live play count. Peak
-    // years come from `artist_year_medals`, precomputed once (for every
-    // artist × year) by `mdb.py stats refresh` — this used to be a
-    // dataset-wide RANK() OVER (PARTITION BY year) scan on every page load.
+    // Cert tier comes from `artists.cert` (`mdb.py certs refresh`); peak years
+    // from `artist_year_medals` (`mdb.py stats refresh`). Neither is computed
+    // here — the peak-year ranking is a dataset-wide scan.
     function loadArtistBadges() {
         const safeId = _artistId.replace(/'/g, "''");
         const badgesEl = document.getElementById('artistBadges');
@@ -761,9 +757,8 @@ const ViewArtist = (() => {
         modal.appendChild(inner);
         document.body.appendChild(modal);
 
-        // The keydown handler used to remove itself only on Escape, so
-        // click-to-dismiss left one live handler (and a detached modal) behind
-        // per image opened.
+        // AbortController so click-to-dismiss tears down the keydown handler
+        // too, rather than leaking one per image opened.
         const ac = new AbortController();
         const close = () => { ac.abort(); modal.remove(); };
         modal.addEventListener('click', close, { signal: ac.signal });

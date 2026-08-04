@@ -9,10 +9,8 @@ function currentTheme() {
     return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 }
 
-// persist=false is used for OS-preference changes, so that following the system
-// doesn't count as an explicit user choice. applyTheme used to always write to
-// localStorage, which meant merely loading the page pinned the OS-derived value
-// and permanently disabled the listener below.
+// persist=false for OS-preference changes: following the system isn't an
+// explicit choice, and writing it would pin the value and kill the listener below.
 function applyTheme(theme, persist) {
     if (theme === 'light') {
         document.documentElement.setAttribute('data-theme', 'light');

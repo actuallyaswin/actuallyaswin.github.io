@@ -3,7 +3,7 @@ const ViewStats = (() => {
 
     function mount(container, db, params) {
         _db = db;
-        document.title = 'Stats | Aswin Sivaraman';
+        setPageTitle('Stats');
 
         container.innerHTML = `
             <header>
@@ -18,12 +18,9 @@ const ViewStats = (() => {
     function unmount() { _db = null; }
 
     // ── Cache access ─────────────────────────────────────────────────────────
-    // Every section below is precomputed by `mdb.py stats refresh` (run as
-    // part of `just db-checkpoint`) into the `stats_cache` table — this page
-    // used to run ~20 live aggregate queries per load (several full table
-    // scans), measured at ~12s of blocked JS/WASM time via a HAR capture.
-    // Rendering now just parses pre-baked JSON; there is no live SQL here
-    // except the one-time cache lookup itself.
+    // Every section below is precomputed into `stats_cache` by `mdb.py stats
+    // refresh` (part of `just db-checkpoint`). Rendering only parses pre-baked
+    // JSON — no live SQL here beyond the cache lookup.
     function _cache(key) {
         const res = _db.exec('SELECT value_json FROM stats_cache WHERE key = ?', [key])[0];
         return res ? JSON.parse(res.values[0][0]) : null;
@@ -233,7 +230,7 @@ const ViewStats = (() => {
     function _emptySection(key, note) {
         return `<section class="stat-section">
             <h3>${escapeHtml(SECTIONS[key].title)}</h3>
-            <div class="diversity-stub">
+            <div class="stats-empty">
                 <i data-lucide="construction" style="width:20px;height:20px;color:var(--text-tertiary)"></i>
                 <span>${escapeHtml(note)}</span>
             </div>

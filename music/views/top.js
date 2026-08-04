@@ -4,14 +4,7 @@ const ViewTop = (() => {
     let sortBy = 'listens';
     let range = 'all';             // artists only (existing Week/Month/Year/All)
     let countLimit = 10;           // List/Tiles item count (existing 10/20/50/100)
-    let viewMode = 'list';         // 'list' | 'tiles' | 'collage' — canonicalizes today's
-                                    // inconsistent display-param values (top-artists.js
-                                    // validated `['list','wide','collage']`, top-albums.js
-                                    // validated `['list','tiles','collage']` for the same
-                                    // visual mode). The new URL param is always `tiles`,
-                                    // never `wide`. Since old `?view=top-artists` routes
-                                    // aren't preserved (see Overview), this is a clean
-                                    // break, not a compatibility concern.
+    let viewMode = 'list';         // 'list' | 'tiles' | 'collage'
     let gridShape = { rows: 3, cols: 3 };  // Collage mode only
     let releaseYear = 'all';       // albums/tracks only (existing Released filter)
     let cachedResults = [];
@@ -200,7 +193,7 @@ const ViewTop = (() => {
     function mount(container, db, params) {
         _db = db;
         entityType = ['artists', 'albums', 'tracks'].includes(params.type) ? params.type : 'artists';
-        document.title = `${ENTITY_CONFIG[entityType]?.title || 'Top'} | Aswin Sivaraman`;
+        setPageTitle(ENTITY_CONFIG[entityType]?.title || 'Top');
 
         // Restore remaining state from URL params
         const cfg = ENTITY_CONFIG[entityType];
@@ -208,10 +201,6 @@ const ViewTop = (() => {
         else sortBy = 'listens';
         if (params.range && ['week','month','year','all'].includes(params.range)) range = params.range;
         if (params.count && [10,20,50,100].includes(+params.count)) countLimit = +params.count;
-        // Note: the old top-artists.js accepted `display=wide` for this same
-        // mode; the unified param is always `tiles`. Per spec, old
-        // ?view=top-artists URLs (including &display=wide) aren't preserved
-        // or redirected — this is an accepted, intentional gap, not a bug.
         if (params.display && ['list','tiles','collage'].includes(params.display)) viewMode = params.display;
         if (params.year) releaseYear = params.year;
         if (params.grid && /^\d+x\d+$/.test(params.grid)) {

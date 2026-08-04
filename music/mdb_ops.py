@@ -447,12 +447,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN variant_section TEXT",
         "ALTER TABLE releases ADD COLUMN language TEXT",
         "ALTER TABLE releases ADD COLUMN country TEXT",
-        # NOTE: avg_listen_ts was renamed to stat_avg_listen_ts long ago. The
-        # ADD+RENAME pair used to live here, but since stat_avg_listen_ts now
-        # always already exists, the ADD half re-created a blank avg_listen_ts
-        # column on every single run (the RENAME silently failed with
-        # "duplicate column name" and was swallowed by the except below) —
-        # a self-perpetuating dead column. Don't reintroduce this pair.
+        # Don't re-add an ADD+RENAME pair for avg_listen_ts -> stat_avg_listen_ts:
+        # the RENAME fails once the target exists, so the ADD just recreates a
+        # blank column on every run.
         "ALTER TABLE artists ADD COLUMN stat_avg_listen_ts INTEGER",
         "ALTER TABLE artists ADD COLUMN stat_unique_tracks INTEGER",
         "ALTER TABLE artists ADD COLUMN stat_total_plays INTEGER",
@@ -479,9 +476,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             #   "no such table"         — fresh DB; the column is in SCHEMA,
             #                             which executescript creates below
             # Everything else (locked, disk full, syntax error) must surface.
-            # A blanket `except Exception: pass` here previously hid a broken
-            # ADD+RENAME pair for months; see the note below about
-            # avg_listen_ts.
+            # A blanket `except Exception: pass` here hides broken migrations.
             msg = str(e).lower()
             if 'duplicate column name' not in msg and 'no such table' not in msg:
                 raise
@@ -491,9 +486,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
     old_cols = {r[1] for r in conn.execute('PRAGMA table_info(track_aliases)').fetchall()}
     if old_cols and 'alias_norm' not in old_cols:
         conn.execute('DROP TABLE IF EXISTS track_aliases')
-        # This used to re-execute the loop variable `ddl` (the last ALTER
-        # statement), so the table was never actually recreated here — it only
-        # worked by accident, via the CREATE TABLE IF NOT EXISTS in SCHEMA.
         conn.execute('''
             CREATE TABLE IF NOT EXISTS track_aliases (
                 track_id   TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
@@ -1150,9 +1142,8 @@ def upsert_tracks_mb(cur, release_id: str, mb_tracks: list,
             # genuinely different recordings (instrumental variants, JP/EN dual-
             # language pressings, remasters). Only trust a cross-release isrc hit
             # as "same track" when the title also matches; otherwise treat it as
-            # a distinct recording so it gets its own row instead of silently
-            # stealing/absorbing the existing track (previously caused tracks to
-            # vanish from — or move out of — imported tracklists).
+            # a distinct recording so it gets its own row instead of absorbing
+            # the existing track.
             isrc_row = cur.execute(
                 'SELECT id, title, release_id FROM tracks WHERE isrc = ?', (isrc,)
             ).fetchone()
@@ -1794,10 +1785,8 @@ def title_then_alias_match(raw_album_norm: str, title_norm: str, alias_norms: li
     return any(alias_norm and alias_norm in after_title for alias_norm in alias_norms)
 
 
-# Credited artists for a release. release_artists only carries explicit credits
-# (collabs, split releases); ~60% of releases have no rows there and hang their
-# artist off releases.primary_artist_id, so joining release_artists alone silently
-# skips them.
+# release_artists only holds explicit credits (collabs, splits); most releases
+# hang their artist off primary_artist_id, so both sources are needed.
 _RELEASE_CREDITS_SQL = '''(
     SELECT release_id, artist_id FROM release_artists
     UNION
@@ -2089,9 +2078,8 @@ def managed_db(db_path: str):
     init_schema(conn)
     try:
         yield conn
-        # Commit any work the caller left pending. Previously this contextmanager
-        # only closed the connection, so a forgotten commit silently discarded
-        # everything the command had just done.
+        # Commit any work the caller left pending, so a forgotten commit
+        # doesn't discard it.
         if conn.in_transaction:
             conn.commit()
     except BaseException:

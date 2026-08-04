@@ -57,10 +57,9 @@ verify-build:
     echo "Build OK — output at /tmp/_site_verify"
 
 # Checkpoint the music DB: push master.sqlite to Turso (the durable off-repo
-# copy — replaces git LFS, which kept hitting storage quota from repeated
-# large-binary commits), then regenerate master_prod.sqlite.gz (the stripped
-# copy the SPA fetches) and rebuild _site/ so the served copy never goes
-# stale relative to it — a stale/truncated _site/ copy produces a cryptic
+# copy), then regenerate master_prod.sqlite.gz (the stripped copy the SPA
+# fetches) and rebuild _site/ so the served copy never goes
+# stale relative to it. A stale or truncated _site/ copy produces a cryptic
 # sql.js "Extra bytes past the end" error in the browser with no other
 # symptom. Run this after any music/master.sqlite write before the change is
 # visible on the frontend (dev server or deployed site).

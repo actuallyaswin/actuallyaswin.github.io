@@ -1,9 +1,8 @@
 .DS_Store
 music/.env
 
-# Scratch notes are ignored by default, but blog posts and docs must be
-# committable — a blanket *.md previously made everything in _posts/
-# unpublishable, so the blog could never actually ship.
+# Scratch notes are ignored by default. Blog posts and docs must stay
+# committable, hence the exceptions below.
 *.md
 !**/README.md
 !_posts/**/*.md
@@ -45,8 +44,7 @@ master.sqlite.bak-*
 music/master.sqlite.bak-*
 
 # Uncompressed prod DB: 45 MB that nothing fetches (config.js reads the .gz).
-# It was tracked and built into _site/, making every deploy 72 MB and every
-# data refresh a ~60 MB permanent addition to git history.
+# Tracking it also adds ~60 MB to git history on every data refresh.
 music/master_prod.sqlite
 music/master_prod.sqlite-wal
 music/master_prod.sqlite-shm

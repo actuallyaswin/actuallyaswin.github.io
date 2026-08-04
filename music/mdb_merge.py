@@ -1150,8 +1150,8 @@ def upsert_tracks_mdb(cur: sqlite3.Cursor,
         # a DIFFERENT release is only trusted as "same track" when the title also
         # matches; otherwise it's a distinct recording that happens to share a
         # reused ISRC, and must get its own row on this release rather than being
-        # silently absorbed into the other release (this previously caused tracks
-        # to vanish from imported tracklists — e.g. Catherine, K/DA instrumentals).
+        # silently absorbed into the other release (e.g. Catherine, K/DA
+        # instrumentals share ISRCs with unrelated recordings).
         row = None
         if t.spotify_id:
             row = cur.execute(

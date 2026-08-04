@@ -493,4 +493,3 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
     candidates = list(mb_dates)
     return candidates, wiki_page_id
 
-# NOTE: _save_date / save_release_date lives in mdb_ops.

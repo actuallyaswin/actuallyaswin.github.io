@@ -3,9 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <script>
-    // Blocking, in <head>, before stylesheets: theme.js used to run at the end
-    // of <body>, so every light-mode visitor got a full dark paint that then
-    // snapped to white after first contentful paint.
+    // Must stay blocking and in <head>: run any later and light-mode visitors
+    // get a dark flash before first contentful paint.
     (function () {
       try {
         var t = localStorage.getItem('theme');

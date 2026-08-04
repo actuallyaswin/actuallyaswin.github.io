@@ -98,7 +98,7 @@ const ViewRelease = (() => {
                 </section>
             </div>
 
-            <div id="aboutSection"></div>
+            <div id="editorialSection"></div>
 
 
             <div id="sourcesSection"></div>
@@ -110,7 +110,7 @@ const ViewRelease = (() => {
 
         loadReleaseInfo();
         loadReleaseAliases();
-        loadAbout();
+        loadEditorialNotes();
         loadTracks();
         loadListeningHistory();
         loadVariants();
@@ -237,7 +237,12 @@ const ViewRelease = (() => {
         } else {
             nameEl.innerHTML = escapeHtml(baseTitle || 'Unknown Release') + (etiPart ? ` <span class="tracklist-eti">${escapeHtml(etiPart)}</span>` : '');
         }
-        document.title = baseTitle || title || 'Release';
+        // artistResult is ordered primary-artist-first.
+        const titleEdition = [baseTitle || title || 'Release', etiPart].filter(Boolean).join(' ');
+        const titleArtist  = artistResult?.values?.length
+            ? artistResult.values[0][0]
+            : 'Various Artists';
+        setPageTitle(`“${titleEdition}” by ${titleArtist}`);
 
         const metaParts = [];
         if (releaseDate) metaParts.push(_formatReleaseDate(releaseDate));
@@ -907,7 +912,7 @@ const ViewRelease = (() => {
 
     // ── About this album (Apple Music editorial note) ───────────────────────────
 
-    function loadAbout() {
+    function loadEditorialNotes() {
         const safeId = _releaseId.replace(/'/g, "''");
 
         const result = _db.exec(`
@@ -915,32 +920,37 @@ const ViewRelease = (() => {
         `)[0];
 
         const note = result && result.values[0] && result.values[0][0];
-        const section = document.getElementById('aboutSection');
+        const section = document.getElementById('editorialSection');
         if (!note || !section) return;
 
         const paragraphs = note.split(/\n+/).filter(Boolean)
-            .map(p => `<p class="about-note">${escapeHtml(p)}</p>`).join('');
+            .map(p => `<p class="editorial-note">${escapeHtml(p)}</p>`).join('');
 
         section.innerHTML = `
-            <section class="about-section">
+            <section class="editorial-notes">
                 <h2>Editorial Notes</h2>
-                <div class="about-note-clamp" id="aboutNoteClamp">
+                <div class="editorial-clamp" id="editorialClamp">
                     ${paragraphs}
-                    <div class="about-note-fade"></div>
+                    <div class="editorial-fade"></div>
                 </div>
-                <button class="about-readmore-btn" id="aboutReadmoreBtn">Read more</button>
+                <button class="editorial-toggle" id="editorialToggle">Read more</button>
             </section>
         `;
 
-        const clampEl = document.getElementById('aboutNoteClamp');
-        const btnEl = document.getElementById('aboutReadmoreBtn');
-        // Hide the toggle when there's nothing to expand.
-        if (clampEl.scrollHeight <= clampEl.clientHeight + 1) {
-            btnEl.style.display = 'none';
+        const clampEl = document.getElementById('editorialClamp');
+        const btnEl = document.getElementById('editorialToggle');
+
+        // Clamp, measure, then unclamp if it wasn't worth it. Tolerance of one
+        // line so the toggle never appears just to hide a single trailing line.
+        clampEl.classList.add('is-clamped');
+        const lineHeight = parseFloat(getComputedStyle(clampEl).lineHeight) || 24;
+        if (clampEl.scrollHeight <= clampEl.clientHeight + lineHeight) {
+            clampEl.classList.remove('is-clamped');
+            btnEl.remove();
         } else {
             btnEl.addEventListener('click', () => {
-                const expanded = clampEl.classList.toggle('expanded');
-                btnEl.textContent = expanded ? 'Show less' : 'Read more';
+                const clamped = clampEl.classList.toggle('is-clamped');
+                btnEl.textContent = clamped ? 'Read more' : 'Show less';
             });
         }
     }
@@ -1287,9 +1297,8 @@ const ViewRelease = (() => {
         modal.appendChild(inner);
         document.body.appendChild(modal);
 
-        // The keydown handler used to remove itself only on Escape, so
-        // click-to-dismiss left one live handler (and a detached modal) behind
-        // per image opened.
+        // AbortController so click-to-dismiss tears down the keydown handler
+        // too, rather than leaking one per image opened.
         const ac = new AbortController();
         const close = () => { ac.abort(); modal.remove(); };
         modal.addEventListener('click', close, { signal: ac.signal });

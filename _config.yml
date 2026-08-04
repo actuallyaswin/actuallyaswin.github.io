@@ -52,10 +52,8 @@ exclude:
   - music/master.sqlite.gz
   - music/master.sqlite-wal
   - music/master.sqlite-shm
-  # The uncompressed prod DB is 45 MB and nothing fetches it — config.js reads
-  # the .gz. The exclude list was written for the old master.sqlite naming and
-  # never updated when make_prod_db.py introduced master_prod, so every deploy
-  # published 45 MB of dead weight (72 MB total _site for 17 MB of payload).
+  # The uncompressed prod DB is 45 MB and nothing fetches it: config.js reads
+  # the .gz. Keep both master.sqlite and master_prod.sqlite excluded.
   - music/master_prod.sqlite
   - music/master_prod.sqlite-wal
   - music/master_prod.sqlite-shm

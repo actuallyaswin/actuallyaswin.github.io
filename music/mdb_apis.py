@@ -94,12 +94,8 @@ WIKI_INTERVAL = 0.5
 AOTY_INTERVAL = 3.0
 AOTY_RETRY    = 15.0
 
-# MusicBrainz has had multi-minute outages (SSL handshake failures at the
-# sandbox proxy / MB's own infra) during heavy import sessions — the old
-# defaults (2 retries, ~1-3s total wait) gave up long before those outages
-# cleared, forcing a manual sleep-and-poll loop in the shell. These are
-# overridable via env vars so a one-off run can dial retries up/down without
-# a code change.
+# MusicBrainz outages can last minutes, so retry generously. Env-overridable
+# for one-off runs that want to dial this up or down.
 MB_RETRY_ATTEMPTS    = int(os.environ.get('MDB_MB_RETRY_ATTEMPTS', 8))
 MB_RETRY_BACKOFF     = float(os.environ.get('MDB_MB_RETRY_BACKOFF', 2.0))
 MB_RETRY_BACKOFF_MAX = float(os.environ.get('MDB_MB_RETRY_BACKOFF_MAX', 30.0))
@@ -131,20 +127,13 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
     Applies the rate limiter before opening the connection (so the limiter
     fires even when the caller caches the result and skips the call).
 
-    retry_attempts retries connection resets / TLS handshake blips (e.g. the
-    sandbox's local proxy occasionally drops the tunnel to a provider
-    mid-handshake) that succeed on a bare retry a moment later. 4xx statuses
-    (404, 429, ...) are never retried — they need caller-specific handling, not
-    a blind resend. Transient 5xx statuses (500/502/503/504) are retried, and
-    Retry-After is honoured when present.
+    retry_attempts covers connection resets and TLS handshake blips, plus
+    transient 5xx (500/502/503/504); Retry-After is honoured when present. 4xx
+    is never retried — it needs caller-specific handling, not a blind resend.
 
-    Backoff is exponential (retry_backoff * 2**attempt), optionally capped at
-    retry_backoff_max — a flat retry_backoff (the old behavior) is exponential
-    with attempt=0 for the first retry, so passing only retry_backoff is
-    backward compatible. Use a high retry_attempts + capped
-    retry_backoff_max for providers prone to multi-minute outages (MusicBrainz
-    has had outages lasting several minutes this session) rather than the
-    default couple-of-seconds tolerance.
+    Backoff is exponential (retry_backoff * 2**attempt), capped at
+    retry_backoff_max. Providers prone to long outages want a high
+    retry_attempts with a capped max.
     """
     for attempt in range(retry_attempts + 1):
         if lim:
@@ -154,10 +143,8 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
-            # HTTPError subclasses URLError, so without this branch the handler
-            # below caught every HTTP status — turning a single 404 into 9
-            # requests and, worse, re-hammering an endpoint that just returned
-            # 429. Only transient server-side failures are worth resending.
+            # HTTPError subclasses URLError, so it must be caught before the
+            # handler below or every 404/429 would be retried too.
             if e.code not in (500, 502, 503, 504) or attempt == retry_attempts:
                 raise
             wait = retry_backoff * (2 ** attempt)
@@ -402,11 +389,8 @@ class MusicBrainzRelease:
                 rec    = t.get('recording') or {}
                 length = rec.get('length') or t.get('length')
                 tracks.append({
-                    # Track title/credit win over the recording's: they're what
-                    # this pressing actually printed. Recordings are shared
-                    # across releases and often carry a different language or
-                    # an outright mismatched title (the SM64 OST recordings are
-                    # Japanese and off-by-several against the tracklist).
+                    # Track title/credit win: recordings are shared across
+                    # releases and can carry a different language or a mismatch.
                     'name':              t.get('title') or rec.get('title', ''),
                     'duration_ms':       length,
                     # MB extras for import

@@ -40,9 +40,8 @@ def _strip(conn):
     conn.execute('DROP INDEX IF EXISTS listens_ts_src')
     conn.execute('ALTER TABLE listens DROP COLUMN raw_source_id')
 
-    # The admin editor is a local-only tool and is no longer shipped with the
-    # SPA. Its PBKDF2 salt+hash used to travel inside this very file, so the
-    # "gate" compared a hash against a value the visitor had already downloaded.
+    # The admin editor is local-only; its PBKDF2 salt+hash must not ship inside
+    # a file every visitor downloads.
     try:
         conn.execute("DELETE FROM settings WHERE key LIKE '%pin%'")
     except sqlite3.OperationalError:

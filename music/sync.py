@@ -86,9 +86,7 @@ def _enrich_worker() -> None:
         if not use_wiki:
             cmd.append('--no-wiki')
         try:
-            # Background enrichment previously swallowed every failure and
-            # ignored the exit code, so a broken import was completely
-            # invisible. Keep stderr so the reason is recoverable.
+            # Keep stderr: a background failure is otherwise invisible.
             r = subprocess.run(cmd, stdout=subprocess.DEVNULL,
                                stderr=subprocess.PIPE, text=True)
             if r.returncode != 0:
@@ -123,7 +121,7 @@ def _drain_enrichments() -> None:
 
 
 def _report_enrich_failures() -> None:
-    """Surface background import failures, which used to vanish silently."""
+    """Surface background import failures."""
     if not _enrich_failures:
         return
     console.print(f'\n  [yellow]{len(_enrich_failures)} background enrichment '

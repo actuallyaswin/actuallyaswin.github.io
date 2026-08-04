@@ -622,9 +622,8 @@ def _auto_rematch(db_path: str, release_id: str, artist_name: str, release_title
         #   2. Feat:   raw_album="BUZZCUT (feat. Danny Brown)" → track "BUZZCUT"
         #      The remainder after the track title must look like a feat credit,
         #      NOT a sequel ("SATURATION II") or subtitle ("DEAR LORD, PT. 2").
-        # (raw_artist is already verified above to be one of this release's own
-        # credited artists, so a title collision with an unrelated artist's
-        # same-named track can no longer slip through here.)
+        # (raw_artist is verified above to be one of this release's own credited
+        # artists, so a same-named track by an unrelated artist cannot match.)
         _FEAT_PREFIX_RE = re.compile(
             r'^[ (]+(feat(?:uring)?|ft|with|x)\b', re.IGNORECASE
         )
@@ -1547,11 +1546,8 @@ def import_album_unified(
                 scored = sorted(rg_releases, key=mb_canonical_score)
                 primary_mb = scored[0] if scored else None
                 # Only auto-import if the primary is genuinely different from what
-                # we're importing (otherwise we'd loop). MusicBrainzRelease stores
-                # its MBID as .id, not ._mbid — the old attribute name here always
-                # returned None via getattr's default, so this comparison was
-                # always primary_mb['id'] != None (always true), causing infinite
-                # recursion whenever the "primary" MB release resolved back to the
+                # we're importing, or this recurses. Note MusicBrainzRelease stores
+                # its MBID as .id, not ._mbid.
                 # same release being imported (e.g. Danganronpa: Trigger Happy
                 # Havoc OST, hung for 10+ minutes re-"discovering" itself).
                 if primary_mb and primary_mb.get('id') != (source_data.get('mb') and
@@ -1964,9 +1960,8 @@ def _preview_art(url: str, label: str) -> None:
 
 def _fetch_art_candidates(apple_music_id: 'str | None', spotify_id: 'str | None',
                           get_sp_client) -> dict:
-    """Fetch Apple Music + Spotify art candidates concurrently (one thread
-    per provider — this is what actually parallelizes the pipeline; a
-    release with both IDs no longer pays for two sequential round trips).
+    """Fetch Apple Music + Spotify art candidates concurrently, one thread per
+    provider, so a release with both IDs costs one round trip instead of two.
     Returns {'apple_music': url_or_None, 'spotify': url_or_None}."""
     def _sp_fetch():
         client = get_sp_client()
@@ -3158,10 +3153,8 @@ def cmd_enrich_artists(args):
                 # and "successfully enriched"). Artists imported via mdb import have mbid set but
                 # mb_attempted=0, so they are correctly included here.
                 #
-                # With --spotify, also include artists that already passed the MB step but are
-                # still missing a photo — otherwise a previously-MB-enriched artist would never
-                # enter the queue and its Spotify photo would have to be fetched by hand, which
-                # is exactly the manual step this flag exists to remove.
+                # With --spotify, also include artists that passed the MB step but
+                # still have no photo.
                 if do_spotify:
                     where += ' AND (a.mb_attempted = 0 OR a.image_url IS NULL)'
                 else:
@@ -3891,9 +3884,7 @@ def cmd_artist_merge(args):
         conn.execute('UPDATE artist_relations SET from_artist_id = ? WHERE from_artist_id = ?', [to_id, from_id])
         conn.execute('UPDATE artist_relations SET to_artist_id   = ? WHERE to_artist_id   = ?', [to_id, from_id])
 
-        # artist_members was previously missed here, so merging a group left
-        # dangling group_artist_id/member_artist_id rows behind. Drop rows that
-        # would collide with TO's existing membership first, then repoint.
+        # Drop rows that would collide with TO's existing membership, then repoint.
         conn.execute('''
             DELETE FROM artist_members
             WHERE group_artist_id = ?
@@ -4739,9 +4730,9 @@ def cmd_certs_refresh(args):
         # Counts main-artist plays via track_artists (per-track credit), not
         # release_artists (per-release credit) — an artist can be the main
         # credit on individual tracks (remixes, compilation cuts, features)
-        # within a release primarily credited to someone else. Every other
-        # view (top-artists.js, stats.js, artist.js) already counts this way;
-        # release_artists undercounted artists like The Bloody Beetroots
+        # within a release primarily credited to someone else. stats.js and
+        # artist.js count this way too;
+        # release_artists undercounts artists like The Bloody Beetroots
         # (625 track-level plays vs. 447 release-level), misclassifying them
         # a tier low.
         rows = conn.execute('''
@@ -4792,9 +4783,8 @@ def cmd_certs_refresh(args):
 # ── cmd: stats refresh ───────────────────────────────────────────────────────
 # Precomputes everything music/views/stats.js needs into `stats_cache`, plus
 # the per-artist year-medal ranking artist.js needs into `artist_year_medals`.
-# stats.js was previously running ~20 live aggregate queries (several full
-# table scans) on every page load — ~12s of blocked JS/WASM time by HAR
-# measurement. This turns that into flat SELECTs against pre-baked rows.
+# Replaces ~20 live aggregate queries per page load (~12s of blocked JS/WASM)
+# with flat SELECTs against pre-baked rows.
 # Every SQL query here is a direct port of the matching stats.js section —
 # keep them in sync if a section's logic changes.
 
@@ -5420,11 +5410,8 @@ def cmd_checkpoint(args):
     """Run the full publish pipeline: certs → stats → wal-checkpoint → integrity
     → make_prod_db → gzip → jekyll build → verify.
 
-    Wraps the exact 8-step sequence that was run by hand after every import
-    batch this session (certs refresh, stats refresh, PRAGMA wal_checkpoint,
-    PRAGMA integrity_check + foreign_key_check, make_prod_db.py, gzip -k -f -9, jekyll build,
-    cmp against _site) into one command, removing the copy-paste risk of
-    re-typing it each time and skipping a step.
+    Run this after a batch of imports; skipping a step leaves the frontend
+    serving a stale or truncated database.
     """
     db_path    = args.db or DB_PATH
     music_dir  = os.path.dirname(os.path.abspath(__file__))
@@ -6335,8 +6322,7 @@ def _check_find_artists(conn: sqlite3.Connection, query: str, threshold: float =
     Returns a list of dicts: {id, name, score, matched_on, alias} sorted by score desc,
     deduped by artist id (best match per artist wins). Checks both the raw table and
     the alias table so a search for an aliased/former/native-script name still surfaces
-    the canonical artist row — this is the check every import in this session had to do
-    by hand via separate LIKE queries.
+    the canonical artist row.
     """
     key = _norm(query)
     if not key:
@@ -6397,9 +6383,7 @@ def _check_find_releases(conn: sqlite3.Connection, query: str, artist_id: 'str |
 def cmd_check(args):
     """Fuzzy-check whether an artist (and optionally an album) already exists.
 
-    Replaces the manual 'SELECT id, name FROM artists WHERE name LIKE...' +
-    alias-table check that preceded every import this session. Checks
-    artists.name AND artist_aliases in one shot, then (if --album is given)
+    Checks artists.name AND artist_aliases in one shot, then (if --album is given)
     checks that artist's releases for a title match, catching stylization/
     punctuation drift so real duplicates surface before an import is attempted.
     """
@@ -7145,10 +7129,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Configure logging once, for every subcommand. Previously only two
-    # enrichment commands called basicConfig, so log.warning() calls elsewhere
-    # (notably the AOTY/Wikipedia scrapers) went nowhere — a blocked scraper was
-    # indistinguishable from "no data found".
+    # Configure logging once, for every subcommand — the scrapers log warnings
+    # that would otherwise go nowhere.
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, 'verbose', False) else logging.WARNING,
         format='  [%(levelname)s] %(message)s',
