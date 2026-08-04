@@ -598,7 +598,7 @@ def _base_title(title: str) -> str:
     treated like remixes.  Only specific known-safe 'X version' compounds
     are stripped (album, single, radio, original).  Keyword-prefixed cases
     like '(Remastered Version)' are handled by the 'remaster' keyword plus
-    the trailing [^\)\]]* absorber.
+    the trailing [^\\)\\]]* absorber.
     """
     # Strip parenthetical/bracketed qualifiers that don't involve remixes.
     # 'live' is intentionally absent here — handled separately below because

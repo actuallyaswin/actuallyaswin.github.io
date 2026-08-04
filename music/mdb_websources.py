@@ -69,7 +69,7 @@ def _aoty_get(url: str, **kw):
     _aoty_lim.wait()
     r = requests.get(url, headers={'User-Agent': AOTY_UA}, timeout=15, **kw)
     if r.status_code == 403:
-        log.debug('AOTY 403 — waiting %.0fs', AOTY_RETRY)
+        log.warning('AOTY returned 403 (rate limited or blocked) — waiting %.0fs', AOTY_RETRY)
         time.sleep(AOTY_RETRY)
         _aoty_lim.wait()
         r = requests.get(url, headers={'User-Agent': AOTY_UA}, timeout=15, **kw)
@@ -82,7 +82,7 @@ def find_aoty_url(release_name: str, artist_name: str) -> 'str | None':
     try:
         r = _aoty_get(AOTY_SEARCH, params={'q': query, 'type': 'albums'})
     except Exception as e:
-        log.debug('AOTY search error: %s', e)
+        log.warning('AOTY search failed (treated as no match): %s', e)
         return None
     soup       = BeautifulSoup(r.text, 'html.parser')
     candidates = soup.find_all('a', href=re.compile(r'^/album/'))[:8]
@@ -125,7 +125,7 @@ def scrape_aoty_page(url: str) -> dict:
     try:
         r = _aoty_get(url)
     except Exception as e:
-        log.debug('AOTY fetch error: %s', e)
+        log.warning('AOTY page fetch/parse failed (treated as no data): %s', e)
         return _empty_aoty()
     soup = BeautifulSoup(r.text, 'html.parser')
     rows = soup.find_all('div', class_='detailRow')
@@ -277,7 +277,7 @@ def _wiki_get_html(wiki_url: 'str | None' = None, page_id: 'int | None' = None) 
             d = json.loads(r.read())
         return (d.get('parse') or {}).get('text', {}).get('*')
     except Exception as e:
-        log.debug('Wikipedia error: %s', e)
+        log.warning('Wikipedia fetch failed (treated as no data): %s', e)
         return None
 
 
@@ -298,7 +298,7 @@ def _wiki_url_to_id(wiki_url: str) -> 'int | None':
         pid = int(ids[0]) if ids else None
         return pid if pid and pid > 0 else None
     except Exception as e:
-        log.debug('Wikipedia ID lookup error: %s', e)
+        log.warning('Wikipedia ID lookup failed: %s', e)
         return None
 
 
@@ -478,7 +478,7 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
                     if wiki_page_id:
                         wiki_date = fetch_wikipedia_date(page_id=wiki_page_id)
             except Exception as e:
-                log.debug('Wikipedia keyword search error: %s', e)
+                log.warning('Wikipedia keyword search failed: %s', e)
         elif article:
             # Gemini returned an article title — resolve to page_id
             # _wiki_url_to_id also works with bare titles (no /wiki/ prefix)

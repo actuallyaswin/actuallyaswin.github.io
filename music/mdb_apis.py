@@ -81,7 +81,7 @@ class MetadataRelease(Protocol):
 # ── API constants ──────────────────────────────────────────────────────────────
 
 MB_API  = 'https://musicbrainz.org/ws/2'
-MB_UA   = 'aswin-music-browser/1.0 (personal project)'
+MB_UA   = 'aswin-music-browser/1.0 ( https://actuallyaswin.github.io/music/ )'
 SP_TOKEN = 'https://accounts.spotify.com/api/token'
 SP_BASE  = 'https://api.spotify.com/v1'
 CAA_API  = 'https://coverartarchive.org'
@@ -133,9 +133,10 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
 
     retry_attempts retries connection resets / TLS handshake blips (e.g. the
     sandbox's local proxy occasionally drops the tunnel to a provider
-    mid-handshake) that succeed on a bare retry a moment later. Does not
-    retry HTTP error status codes (404, 429, 5xx) — those need
-    caller-specific handling, not a blind resend.
+    mid-handshake) that succeed on a bare retry a moment later. 4xx statuses
+    (404, 429, ...) are never retried — they need caller-specific handling, not
+    a blind resend. Transient 5xx statuses (500/502/503/504) are retried, and
+    Retry-After is honoured when present.
 
     Backoff is exponential (retry_backoff * 2**attempt), optionally capped at
     retry_backoff_max — a flat retry_backoff (the old behavior) is exponential
@@ -152,6 +153,24 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
             req = urllib.request.Request(url, headers=headers or {})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
+        except urllib.error.HTTPError as e:
+            # HTTPError subclasses URLError, so without this branch the handler
+            # below caught every HTTP status — turning a single 404 into 9
+            # requests and, worse, re-hammering an endpoint that just returned
+            # 429. Only transient server-side failures are worth resending.
+            if e.code not in (500, 502, 503, 504) or attempt == retry_attempts:
+                raise
+            wait = retry_backoff * (2 ** attempt)
+            if retry_backoff_max is not None:
+                wait = min(wait, retry_backoff_max)
+            # Honour Retry-After when the server tells us how long to wait.
+            retry_after = e.headers.get('Retry-After') if e.headers else None
+            if retry_after:
+                try:
+                    wait = max(wait, float(retry_after))
+                except ValueError:
+                    pass
+            time.sleep(wait)
         except (urllib.error.URLError, ConnectionError, TimeoutError):
             if attempt == retry_attempts:
                 raise
@@ -383,14 +402,19 @@ class MusicBrainzRelease:
                 rec    = t.get('recording') or {}
                 length = rec.get('length') or t.get('length')
                 tracks.append({
-                    'name':              rec.get('title') or t.get('title', ''),
+                    # Track title/credit win over the recording's: they're what
+                    # this pressing actually printed. Recordings are shared
+                    # across releases and often carry a different language or
+                    # an outright mismatched title (the SM64 OST recordings are
+                    # Japanese and off-by-several against the tracklist).
+                    'name':              t.get('title') or rec.get('title', ''),
                     'duration_ms':       length,
                     # MB extras for import
                     '_mb_recording_id':  rec.get('id'),
                     '_isrcs':            list(rec.get('isrcs') or []),
                     '_disc_number':      disc_num,
                     '_track_number':     t.get('position'),
-                    '_artist_credit':    rec.get('artist-credit') or t.get('artist-credit') or [],
+                    '_artist_credit':    t.get('artist-credit') or rec.get('artist-credit') or [],
                 })
         data['_track_list'] = tracks
         self._data = data
@@ -1028,7 +1052,7 @@ def mb_fetch_release_data(mbid: str) -> 'tuple[str, str, str | None]':
     rg_mbid      = rg.get('id')
     rg_first, wiki_url = '', None
     if rg_mbid:
-        rg_data = _mb_get_safe(f'release-group/{rg_mbid}', {'inc': 'url-rels'})
+        rg_data = _mb_get_safe(f'/release-group/{rg_mbid}', {'inc': 'url-rels'})
         if rg_data:
             rg_first = (rg_data.get('first-release-date') or '').strip()
             for rel in rg_data.get('relations') or []:

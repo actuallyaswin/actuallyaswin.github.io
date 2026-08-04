@@ -40,7 +40,6 @@ import urllib.parse
 import urllib.request
 import hashlib
 import getpass
-import os
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -3837,7 +3836,8 @@ def cmd_artist_merge(args):
     """
     Merge FROM artist into TO artist (the canonical record to keep).
 
-    - Repoints release_artists, track_artists, releases.primary_artist_id
+    - Repoints release_artists, track_artists, releases.primary_artist_id,
+      artist_aliases, artist_relations, artist_members
     - Inserts FROM artist's name as a past_name alias on TO (unless --no-alias)
     - Transfers missing metadata fields from FROM → TO
     - Deletes the FROM artist row
@@ -3867,7 +3867,6 @@ def cmd_artist_merge(args):
         ta_count  = conn.execute('SELECT COUNT(*) FROM track_artists   WHERE artist_id = ?', [from_id]).fetchone()[0]
         rel_count = conn.execute('SELECT COUNT(*) FROM releases WHERE primary_artist_id = ?', [from_id]).fetchone()[0]
 
-        conn.execute('PRAGMA foreign_keys = OFF')
         now = int(time.time())
 
         # Remove FROM rows where TO is already present (avoid UNIQUE constraint violations)
@@ -3891,6 +3890,26 @@ def cmd_artist_merge(args):
         conn.execute('UPDATE artist_aliases  SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
         conn.execute('UPDATE artist_relations SET from_artist_id = ? WHERE from_artist_id = ?', [to_id, from_id])
         conn.execute('UPDATE artist_relations SET to_artist_id   = ? WHERE to_artist_id   = ?', [to_id, from_id])
+
+        # artist_members was previously missed here, so merging a group left
+        # dangling group_artist_id/member_artist_id rows behind. Drop rows that
+        # would collide with TO's existing membership first, then repoint.
+        conn.execute('''
+            DELETE FROM artist_members
+            WHERE group_artist_id = ?
+              AND member_artist_id IN (SELECT member_artist_id FROM artist_members
+                                       WHERE group_artist_id = ?)
+        ''', [from_id, to_id])
+        conn.execute('''
+            DELETE FROM artist_members
+            WHERE member_artist_id = ?
+              AND group_artist_id IN (SELECT group_artist_id FROM artist_members
+                                      WHERE member_artist_id = ?)
+        ''', [from_id, to_id])
+        conn.execute('UPDATE artist_members SET group_artist_id  = ? WHERE group_artist_id  = ?', [to_id, from_id])
+        conn.execute('UPDATE artist_members SET member_artist_id = ? WHERE member_artist_id = ?', [to_id, from_id])
+        # A merge can make an artist its own member; that edge is meaningless.
+        conn.execute('DELETE FROM artist_members WHERE group_artist_id = member_artist_id')
 
         console.print(f'  [dim]Repointed {ra_count} release_artists, {ta_count} track_artists, {rel_count} primary releases[/dim]')
 
@@ -3932,7 +3951,6 @@ def cmd_artist_merge(args):
         console.print(f'  [dim]Deleted artist row: {from_name} ({from_id})[/dim]')
 
         conn.commit()
-        conn.execute('PRAGMA foreign_keys = ON')
     console.print(f'\n  [green]✓[/green]  Merged [bold]{from_name}[/bold] → [bold]{to_name}[/bold]')
 
 
@@ -5404,7 +5422,7 @@ def cmd_checkpoint(args):
 
     Wraps the exact 8-step sequence that was run by hand after every import
     batch this session (certs refresh, stats refresh, PRAGMA wal_checkpoint,
-    PRAGMA integrity_check, make_prod_db.py, gzip -k -f -9, jekyll build,
+    PRAGMA integrity_check + foreign_key_check, make_prod_db.py, gzip -k -f -9, jekyll build,
     cmp against _site) into one command, removing the copy-paste risk of
     re-typing it each time and skipping a step.
     """
@@ -5439,6 +5457,22 @@ def cmd_checkpoint(args):
         if not ok:
             console.print('[red]Integrity check failed — aborting checkpoint.[/red]')
             sys.exit(1)
+
+        # integrity_check only validates page structure, not references — a DB
+        # with hundreds of orphaned rows passes it. Gate on referential
+        # integrity too, or those orphans ship to production.
+        fk = conn.execute('PRAGMA foreign_key_check;').fetchall()
+        if fk:
+            by_table = {}
+            for row in fk:
+                by_table[row[0]] = by_table.get(row[0], 0) + 1
+            console.print(f'  [red]{len(fk)} foreign key violations[/red]')
+            for table, n in sorted(by_table.items(), key=lambda kv: -kv[1]):
+                console.print(f'    [dim]{n:5}  {table}[/dim]')
+            console.print('[red]Referential integrity check failed — aborting checkpoint.[/red]')
+            console.print('[dim]Run: python repair_integrity.py --dry-run[/dim]')
+            sys.exit(1)
+        console.print('  [green]no foreign key violations[/green]')
     finally:
         conn.close()
 
@@ -5618,89 +5652,6 @@ def _dedup_suggest_canonical(releases: list[dict]) -> int:
         return r['listen_count'] * 4 + r['track_count'] * 2 + ids
     best = max(range(len(releases)), key=lambda i: score(releases[i]))
     return best
-
-
-def _dedup_show_preview(releases: list[dict], all_tracks: list[list[dict]],
-                        all_ext: list[list[dict]], matched: list,
-                        unmatched: list[list]) -> None:
-    from rich.table import Table
-    from rich import box as rbox
-
-    labels = [chr(ord('A') + i) for i in range(len(releases))]
-    total_listens = sum(r['listen_count'] for r in releases)
-    artist = releases[0]['artist_name'] or 'unknown artist'
-
-    console.print()
-    console.rule(
-        f'[bold]{releases[0]["title"]}[/bold]  [dim]({artist})[/dim]'
-        f'  [dim]{total_listens} listens[/dim]',
-        style='bright_blue',
-    )
-
-    # Release comparison table
-    t = Table(box=rbox.SIMPLE_HEAD, show_header=True, pad_edge=False,
-              show_edge=False)
-    t.add_column('', style='dim', min_width=16, no_wrap=True)
-    for label, r in zip(labels, releases):
-        hdr = (f'[bold cyan]{label}[/bold cyan]  [dim]{r["id"][:12]}…[/dim]'
-               f'  [dim]{r["listen_count"]}L {r["track_count"]}T[/dim]')
-        t.add_column(hdr, min_width=22, no_wrap=False)
-
-    def yn(v):
-        return '[green]✓[/green]' if v else '[dim]—[/dim]'
-
-    field_rows = [
-        ('Title',       lambda r, e: r['title']),
-        ('Date',        lambda r, e: (
-            f"{r['release_date'] or '—'}  [dim][{r['date_source'] or '?'}][/dim]")),
-        ('Type',        lambda r, e: (
-            ' · '.join(filter(None, [r['type'], r['type_secondary']])) or '[dim]—[/dim]')),
-        ('MBID',        lambda r, e: (r['mbid'][:16] if r['mbid'] else '[dim]—[/dim]')),
-        ('Spotify',     lambda r, e: yn(r['spotify_id'])),
-        ('Apple Music', lambda r, e: yn(r['apple_music_id'])),
-        ('AOTY',        lambda r, e: yn(r['aoty_url'])),
-        ('Wikipedia',   lambda r, e: yn(r['wikipedia_url'])),
-        ('Beatport',    lambda r, e: yn(e.get(7))),
-        ('Bandcamp',    lambda r, e: yn(e.get(6))),
-        ('Art source',  lambda r, e: r['album_art_source'] or '[dim]—[/dim]'),
-        ('Label',       lambda r, e: r['label'] or '[dim]—[/dim]'),
-        ('AOTY score',  lambda r, e: (
-            f"{r['aoty_score_critic'] or '—'} / {r['aoty_score_user'] or '—'}"
-            if (r['aoty_score_critic'] or r['aoty_score_user']) else '[dim]—[/dim]')),
-        ('RG MBID',     lambda r, e: (
-            r['release_group_mbid'][:16] if r['release_group_mbid'] else '[dim]—[/dim]')),
-    ]
-    for fname, fval in field_rows:
-        t.add_row(fname, *[fval(r, e) for r, e in zip(releases, all_ext)])
-    console.print(t)
-
-    # Track comparison (two-release groups only)
-    if len(releases) == 2 and (all_tracks[0] or all_tracks[1]):
-        console.print()
-        if matched:
-            console.print(f'  [dim]Matched[/dim]  {len(matched)} tracks')
-            for ta, tb in matched[:6]:
-                how = ('ISRC' if (ta['isrc'] and ta['isrc'] == tb['isrc']) else 'title')
-                tot = ta['listen_count'] + tb['listen_count']
-                console.print(
-                    f'    [dim]{ta["disc_number"]}:{ta["track_number"]:02d}[/dim]  '
-                    f'{ta["title"]}  [dim]←[{how}]→  {tot}L[/dim]'
-                )
-            if len(matched) > 6:
-                console.print(f'    [dim]… {len(matched) - 6} more[/dim]')
-        for label, ulist in zip(labels, unmatched):
-            if ulist:
-                console.print(
-                    f'  [dim]Only in {label}[/dim]  {len(ulist)} tracks'
-                    + (' [dim](will move to canonical)[/dim]' if len(ulist) <= 6 else '')
-                )
-                for tr in ulist[:4]:
-                    console.print(
-                        f'    [dim]{tr["disc_number"]}:{tr["track_number"]:02d}[/dim]  '
-                        f'{tr["title"]}  [dim]{tr["listen_count"]}L[/dim]'
-                    )
-                if len(ulist) > 4:
-                    console.print(f'    [dim]… {len(ulist) - 4} more[/dim]')
 
 
 _DEDUP_UNIQUE_FIELDS = frozenset({'mbid', 'spotify_id', 'apple_music_id'})
@@ -7193,6 +7144,16 @@ def main():
     p_show.set_defaults(func=lambda a: cmd_show_recent(a) if a.recent else cmd_show(a))
 
     args = parser.parse_args()
+
+    # Configure logging once, for every subcommand. Previously only two
+    # enrichment commands called basicConfig, so log.warning() calls elsewhere
+    # (notably the AOTY/Wikipedia scrapers) went nowhere — a blocked scraper was
+    # indistinguishable from "no data found".
+    logging.basicConfig(
+        level=logging.DEBUG if getattr(args, 'verbose', False) else logging.WARNING,
+        format='  [%(levelname)s] %(message)s',
+    )
+
     if getattr(args, 'cmd', None) == 'show' and not args.recent and not args.id:
         p_show.error('the following arguments are required: id (or pass --recent)')
     try:

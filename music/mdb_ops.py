@@ -188,8 +188,8 @@ CREATE TABLE IF NOT EXISTS track_aliases (
 );
 CREATE INDEX IF NOT EXISTS track_aliases_norm ON track_aliases (alias_norm);
 CREATE TABLE IF NOT EXISTS release_artists (
-    release_id TEXT NOT NULL REFERENCES releases(id),
-    artist_id  TEXT NOT NULL REFERENCES artists(id),
+    release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+    artist_id  TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
     role       TEXT NOT NULL DEFAULT 'main',
     PRIMARY KEY (release_id, artist_id)
 );
@@ -222,8 +222,8 @@ CREATE INDEX IF NOT EXISTS idx_tracks_canonical
     WHERE canonical_track_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tracks_language ON tracks(language);
 CREATE TABLE IF NOT EXISTS track_artists (
-    track_id  TEXT NOT NULL REFERENCES tracks(id),
-    artist_id TEXT NOT NULL REFERENCES artists(id),
+    track_id  TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    artist_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
     role      TEXT NOT NULL DEFAULT 'main',
     PRIMARY KEY (track_id, artist_id, role)
 );
@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS genres (
     slug    TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS release_genres (
-    release_id    TEXT    NOT NULL REFERENCES releases(id),
+    release_id    TEXT    NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
     aoty_genre_id INTEGER NOT NULL REFERENCES genres(aoty_id),
     is_primary    INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (release_id, aoty_genre_id)
@@ -274,15 +274,15 @@ CREATE TABLE IF NOT EXISTS legacy_track_map (
     confidence   REAL
 );
 CREATE TABLE IF NOT EXISTS release_variants (
-    canonical_id TEXT NOT NULL REFERENCES releases(id),
-    variant_id   TEXT NOT NULL REFERENCES releases(id),
+    canonical_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+    variant_id   TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
     variant_type TEXT,
     sort_order   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (canonical_id, variant_id)
 );
 CREATE TABLE IF NOT EXISTS release_sources (
-    compilation_id TEXT NOT NULL REFERENCES releases(id),
-    source_id      TEXT NOT NULL REFERENCES releases(id),
+    compilation_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+    source_id      TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
     disc_number    INTEGER,
     PRIMARY KEY (compilation_id, source_id)
 );
@@ -300,7 +300,7 @@ CREATE TABLE IF NOT EXISTS external_links (
     PRIMARY KEY (entity_type, entity_id, service)
 );
 CREATE TABLE IF NOT EXISTS release_soundtrack_meta (
-    release_id        TEXT PRIMARY KEY REFERENCES releases(id),
+    release_id        TEXT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
     source_type       TEXT CHECK(source_type IN ('film','video_game','tv_series','musical','podcast','other')),
     industry_region   TEXT,  -- ISO 3166-1 alpha-2 (US, IN, GB, JP, ES, ...)
     original_language TEXT   -- ISO 639-1 (en, hi, ta, es, ja, ...)
@@ -330,7 +330,7 @@ CREATE INDEX IF NOT EXISTS ci_format_coarse ON collection_items(format_coarse);
 CREATE INDEX IF NOT EXISTS ci_coarse_genre ON collection_items(coarse_genre);
 CREATE TABLE IF NOT EXISTS release_service_links (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    release_id    TEXT NOT NULL REFERENCES releases(id),
+    release_id    TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
     service       INTEGER NOT NULL,
     service_id    TEXT NOT NULL,
     variant_label TEXT,
@@ -345,7 +345,7 @@ CREATE TABLE IF NOT EXISTS stats_cache (
     updated_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS artist_year_medals (
-    artist_id  TEXT NOT NULL REFERENCES artists(id),
+    artist_id  TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
     year       INTEGER NOT NULL,
     rank       INTEGER NOT NULL,   -- 1 = most-played artist that year, etc.
     plays      INTEGER NOT NULL,
@@ -365,7 +365,37 @@ def open_db(path=None) -> sqlite3.Connection:
     return conn
 
 
+def _bootstrap_tables(conn: sqlite3.Connection) -> None:
+    """Create the base tables on a brand-new database.
+
+    init_schema runs its additive ALTER migrations *before* executescript(SCHEMA)
+    so that indexes in SCHEMA which reference migrated columns find them
+    present. That ordering assumes the tables already exist — on a genuinely
+    empty file every statement before executescript fails, so `init_schema`
+    could not create a database from scratch at all.
+
+    This pass runs SCHEMA statement-by-statement first, ignoring failures (an
+    index over a not-yet-migrated column is expected to fail here and is
+    created for real by the executescript at the end of init_schema). Every
+    statement in SCHEMA is IF NOT EXISTS, so this is idempotent and a no-op on
+    an existing database.
+    """
+    if conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]:
+        return  # not a fresh database; normal migration path applies
+
+    for stmt in SCHEMA.split(';'):
+        if not stmt.strip():
+            continue
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # index over a column added by a later ALTER; retried at the end
+    conn.commit()
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
+    _bootstrap_tables(conn)
+
     # Additive column migrations run before executescript so that any
     # indexes in SCHEMA that reference new columns find them already present.
     for ddl in [
@@ -443,18 +473,37 @@ def init_schema(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(ddl)
-        except Exception:
-            pass  # column already exists
+        except sqlite3.OperationalError as e:
+            # Two outcomes are expected and benign:
+            #   "duplicate column name" — existing DB already migrated
+            #   "no such table"         — fresh DB; the column is in SCHEMA,
+            #                             which executescript creates below
+            # Everything else (locked, disk full, syntax error) must surface.
+            # A blanket `except Exception: pass` here previously hid a broken
+            # ADD+RENAME pair for months; see the note below about
+            # avg_listen_ts.
+            msg = str(e).lower()
+            if 'duplicate column name' not in msg and 'no such table' not in msg:
+                raise
 
     # Replace old track_aliases (track_id, alias, source) with the correct schema.
     # Safe because the table held no permanent data before this migration.
     old_cols = {r[1] for r in conn.execute('PRAGMA table_info(track_aliases)').fetchall()}
     if old_cols and 'alias_norm' not in old_cols:
         conn.execute('DROP TABLE IF EXISTS track_aliases')
-        try:
-            conn.execute(ddl)
-        except Exception:
-            pass  # column already exists
+        # This used to re-execute the loop variable `ddl` (the last ALTER
+        # statement), so the table was never actually recreated here — it only
+        # worked by accident, via the CREATE TABLE IF NOT EXISTS in SCHEMA.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS track_aliases (
+                track_id   TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                alias      TEXT NOT NULL,
+                alias_norm TEXT NOT NULL,
+                alias_type TEXT NOT NULL DEFAULT 'common',
+                language   TEXT,
+                PRIMARY KEY (track_id, alias_norm)
+            )
+        ''')
 
     conn.execute('''
         CREATE TABLE IF NOT EXISTS settings (
@@ -502,7 +551,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             INSERT OR IGNORE INTO genres_new (aoty_id, name, slug)
                 SELECT aoty_id, name, slug FROM genres WHERE aoty_id IS NOT NULL;
             CREATE TABLE release_genres_new (
-                release_id    TEXT    NOT NULL REFERENCES releases(id),
+                release_id    TEXT    NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
                 aoty_genre_id INTEGER NOT NULL REFERENCES genres_new(aoty_id),
                 is_primary    INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (release_id, aoty_genre_id)
@@ -529,8 +578,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.executescript("""
             PRAGMA foreign_keys = OFF;
             CREATE TABLE release_variants_new (
-                canonical_id TEXT NOT NULL REFERENCES releases(id),
-                variant_id   TEXT NOT NULL REFERENCES releases(id),
+                canonical_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+                variant_id   TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
                 variant_type TEXT,
                 sort_order   INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (canonical_id, variant_id)
@@ -1745,6 +1794,17 @@ def title_then_alias_match(raw_album_norm: str, title_norm: str, alias_norms: li
     return any(alias_norm and alias_norm in after_title for alias_norm in alias_norms)
 
 
+# Credited artists for a release. release_artists only carries explicit credits
+# (collabs, split releases); ~60% of releases have no rows there and hang their
+# artist off releases.primary_artist_id, so joining release_artists alone silently
+# skips them.
+_RELEASE_CREDITS_SQL = '''(
+    SELECT release_id, artist_id FROM release_artists
+    UNION
+    SELECT id, primary_artist_id FROM releases WHERE primary_artist_id IS NOT NULL
+)'''
+
+
 def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
     """Match unresolved listens via track_aliases + artist_aliases + release_aliases.
 
@@ -1764,7 +1824,7 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
     lookup: dict[tuple, str] = {}
 
     # Phase 1: track_aliases
-    rows = conn.execute('''
+    rows = conn.execute(f'''
         SELECT
             lower(a.name)                            AS artist_name_norm,
             aa.alias_norm                            AS artist_alias_norm,
@@ -1775,7 +1835,7 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
         JOIN   tracks         t   ON t.id          = ta.track_id
         JOIN   releases       r   ON r.id          = t.release_id
         JOIN   release_aliases ra ON ra.release_id  = r.id
-        JOIN   release_artists rex ON rex.release_id = r.id
+        JOIN   {_RELEASE_CREDITS_SQL} rex ON rex.release_id = r.id
         JOIN   artists         a  ON a.id           = rex.artist_id
         LEFT JOIN artist_aliases aa ON aa.artist_id = a.id
     ''').fetchall()
@@ -1789,7 +1849,7 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
 
     # Phase 2: plain track titles, for releases that only have a release_aliases
     # entry (no per-track aliases needed — the track's own title normalizes fine).
-    rows = conn.execute('''
+    rows = conn.execute(f'''
         SELECT
             lower(a.name)                            AS artist_name_norm,
             aa.alias_norm                            AS artist_alias_norm,
@@ -1799,7 +1859,7 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
         FROM   tracks         t
         JOIN   releases       r   ON r.id          = t.release_id
         JOIN   release_aliases ra ON ra.release_id  = r.id
-        JOIN   release_artists rex ON rex.release_id = r.id
+        JOIN   {_RELEASE_CREDITS_SQL} rex ON rex.release_id = r.id
         JOIN   artists         a  ON a.id           = rex.artist_id
         LEFT JOIN artist_aliases aa ON aa.artist_id = a.id
     ''').fetchall()
@@ -1834,14 +1894,14 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
     # -> track_id) — then for listens phases 1-2 couldn't place, check whether
     # raw_album looks like "<title> ... <alias>" for a same-artist release.
     if still_unmatched:
-        release_rows = conn.execute('''
+        release_rows = conn.execute(f'''
             SELECT
                 lower(a.name)     AS artist_name_norm,
                 aa.alias_norm     AS artist_alias_norm,
                 r.id              AS release_id,
                 r.title           AS release_title
             FROM   releases        r
-            JOIN   release_artists rex ON rex.release_id = r.id
+            JOIN   {_RELEASE_CREDITS_SQL} rex ON rex.release_id = r.id
             JOIN   artists         a   ON a.id           = rex.artist_id
             LEFT JOIN artist_aliases aa ON aa.artist_id  = a.id
             WHERE  r.hidden = 0
@@ -2029,5 +2089,20 @@ def managed_db(db_path: str):
     init_schema(conn)
     try:
         yield conn
+        # Commit any work the caller left pending. Previously this contextmanager
+        # only closed the connection, so a forgotten commit silently discarded
+        # everything the command had just done.
+        if conn.in_transaction:
+            conn.commit()
+    except BaseException:
+        # Explicit rollback so a partially applied multi-statement change is
+        # never left half-written. Covers KeyboardInterrupt and SystemExit too,
+        # which is why this catches BaseException.
+        try:
+            if conn.in_transaction:
+                conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()

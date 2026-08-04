@@ -70,6 +70,9 @@ PYTHON     = sys.executable
 
 _enrich_q:      queue.Queue         = queue.Queue()
 _enrich_thread: threading.Thread | None = None
+# Collected failures from the background enrichment worker, reported at drain
+# time so a broken import is visible instead of silently dropped.
+_enrich_failures: list = []
 
 
 def _enrich_worker() -> None:
@@ -83,10 +86,18 @@ def _enrich_worker() -> None:
         if not use_wiki:
             cmd.append('--no-wiki')
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-        _enrich_q.task_done()
+            # Background enrichment previously swallowed every failure and
+            # ignored the exit code, so a broken import was completely
+            # invisible. Keep stderr so the reason is recoverable.
+            r = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, text=True)
+            if r.returncode != 0:
+                tail = (r.stderr or '').strip().splitlines()[-3:]
+                _enrich_failures.append((url, r.returncode, ' / '.join(tail)))
+        except Exception as e:
+            _enrich_failures.append((url, None, str(e)))
+        finally:
+            _enrich_q.task_done()
 
 
 def _enqueue_enrichment(url: str, use_wiki: bool = False) -> None:
@@ -102,11 +113,29 @@ def _enqueue_enrichment(url: str, use_wiki: bool = False) -> None:
 def _drain_enrichments() -> None:
     """Wait for all queued enrichments to finish. Call before exiting."""
     if _enrich_q.empty() and (_enrich_thread is None or not _enrich_thread.is_alive()):
+        _report_enrich_failures()
         return
     n = _enrich_q.qsize()
     label = f'{n} release{"s" if n != 1 else ""}' if n else 'current release'
     console.print(f'\n  [dim]Finishing background enrichment ({label})…[/dim]')
     _enrich_q.join()
+    _report_enrich_failures()
+
+
+def _report_enrich_failures() -> None:
+    """Surface background import failures, which used to vanish silently."""
+    if not _enrich_failures:
+        return
+    console.print(f'\n  [yellow]{len(_enrich_failures)} background enrichment '
+                  f'import(s) failed:[/yellow]')
+    for url, code, detail in _enrich_failures[:10]:
+        suffix = f' [dim](exit {code})[/dim]' if code is not None else ''
+        console.print(f'    [dim]{url}[/dim]{suffix}')
+        if detail:
+            console.print(f'      [dim]{detail[:160]}[/dim]')
+    if len(_enrich_failures) > 10:
+        console.print(f'    [dim]… and {len(_enrich_failures) - 10} more[/dim]')
+    _enrich_failures.clear()
 
 _SP_HISTORY_DEFAULT = os.path.join(
     os.path.expanduser('~'), 'Downloads', 'Spotify Extended Streaming History'
