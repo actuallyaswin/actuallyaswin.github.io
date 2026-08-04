@@ -182,6 +182,12 @@ ol {
   color: var(--accent-dark);
 }
 
+/* aria-current rather than a class, so the state reaches assistive tech too. */
+.masthead-nav a[aria-current='page'] {
+  color: var(--fg);
+  font-weight: 700;
+}
+
 .theme-toggle {
   background: none;
   border: none;
