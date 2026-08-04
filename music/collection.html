@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>aswin.db/collection</title>
+  <meta property="og:title" content="aswin.db/collection">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,400;0,700;1,400&family=Raleway:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm" as="fetch" crossorigin>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="collection-styles.css">
+</head>
+<body>
+  <div class="collection-container">
+    <div id="view-container">
+      <div class="loading">Loading collection...</div>
+    </div>
+    <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
+      <i data-lucide="sun"></i>
+    </button>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+  <script src="config.js"></script>
+  <script src="utils.js"></script>
+  <script src="views/collection-physical.js"></script>
+  <script src="views/collection-digital.js"></script>
+  <script src="collection.js"></script>
+</body>
+</html>

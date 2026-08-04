@@ -25,12 +25,17 @@ permalink: /music/index.html
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,400;0,700;1,400&family=Raleway:wght@400;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flag-icons@7.2.3/css/flag-icons.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.min.css"
+          integrity="sha384-krui876Mk6M6Lq6uj1SQo+u4MoImxFwCfwzWNU982QBMNci3VMZ3FoYSdUakJD5I"
+          crossorigin="anonymous" referrerpolicy="no-referrer">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flag-icons@7.2.3/css/flag-icons.min.css"
+          integrity="sha384-aQuvIWWIbpu/mSqULLDiUveyYiPoJzPKAWjUmGJ+Elm+N/LJhzfZqsutsfw870JS"
+          crossorigin="anonymous" referrerpolicy="no-referrer">
     <link rel="stylesheet" href="{{ '/css/global.css' | relative_url }}">
     <link rel="stylesheet" href="styles.css">
     <!-- Preload the WASM binary so it fetches in parallel with sql-wasm.js parsing -->
-    <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm" as="fetch" crossorigin>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.wasm" as="fetch" crossorigin
+          integrity="sha384-AS2JK6pQgcjrHesLM8C6EQ0u87+/VcHqKXIPDFVCgQgO2A258+LHg7ID8d66NgPW">
     <script src="{{ '/js/lucide.js' | relative_url }}"></script>
 </head>
 <body>
@@ -54,13 +59,23 @@ permalink: /music/index.html
 
     <div class="container">
         <div id="view-container">
-            <div class="loading">Loading database...</div>
+            <div class="db-loading">
+                <div class="db-loading-label">Loading…</div>
+                <div class="db-progress"><div class="db-progress-fill"></div></div>
+                <div class="db-loading-hint">Fetching listening database…</div>
+            </div>
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.js"
+            integrity="sha384-KsfptB549CXfbfsdxZmPo2PlmgCyJ+RNqHTQE1Gj45t3p4DaA1QbZYVyqlni4pOO"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+            integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"
+            integrity="sha384-cnROoUgVILyibe3J0zhzWoJ9p2WmdnK7j/BOTSWqVDbC1pVw2d+i6Q/1ESKJKCYf"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="config.js"></script>
     <script src="constants.js"></script>
     <script src="genre-tree.js"></script>
@@ -72,7 +87,6 @@ permalink: /music/index.html
     <script src="views/artist.js"></script>
     <script src="views/release.js"></script>
     <script src="views/genre.js"></script>
-    <script src="views/admin.js"></script>
     <script src="views/recommendations.js"></script>
     <script src="views/history.js"></script>
     <script src="views/stats.js"></script>

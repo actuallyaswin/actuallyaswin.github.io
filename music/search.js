@@ -72,7 +72,7 @@ function _searchQuery(q) {
         html += `<div class="search-section-label">Releases</div>`;
         for (const [id, title, art, artist, year] of releases.values) {
             const thumb = art
-                ? `<img class="search-result-thumb" src="${art}" alt="" loading="lazy">`
+                ? `<img class="search-result-thumb" src="${escapeHtml(art)}" alt="" loading="lazy">`
                 : `<div class="search-result-thumb" style="background:var(--bg-tertiary)"></div>`;
             html += `<a class="search-result-row" href="index.html?view=release&id=${encodeURIComponent(id)}">
                 ${thumb}
@@ -97,7 +97,7 @@ function _searchQuery(q) {
         html += `<div class="search-section-label">Artists</div>`;
         for (const [id, name, img] of artists.values) {
             const thumb = img
-                ? `<img class="search-result-thumb round" src="${img}" alt="" loading="lazy">`
+                ? `<img class="search-result-thumb round" src="${escapeHtml(img)}" alt="" loading="lazy">`
                 : `<div class="search-result-thumb round" style="background:var(--bg-tertiary)"></div>`;
             html += `<a class="search-result-row" href="index.html?view=artist&id=${encodeURIComponent(id)}">
                 ${thumb}

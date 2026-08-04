@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html>
+  <head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Genius API</title>
+  <meta name="description" content="Use our API and help build the world's greatest public knowledge project since Wikipedia">
+
+  <link rel="stylesheet" href="/css/main.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
+  <script src="/js/content/property-descriptions.js"></script>
+  <script src="/js/genius-api-explorer.js"></script>
+  <script src="/js/all.js"></script>
+  <link rel="canonical" href="https://docs.genius.com/">
+
+  <script>
+    (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+    (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+    m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+    })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+    ga('create', 'UA-10346621-9', 'auto');
+    ga('send', 'pageview');
+
+  </script>
+
+  <meta property="og:title" content="Genius API Documentation" />
+  <meta property="og:image" content="https://assets.rapgenius.com/images/home_page/fb-logo-big.png"/>
+  <meta property="og:description" content="Use our API and help build the world's greatest public knowledge project since Wikipedia" />
+  <meta property="og:url" content="https://docs.genius.com" />
+
+  <meta name="twitter:card" content="summary"/>
+  <meta name="twitter:site" content="@geniusdevs"/>
+  <meta name="twitter:title" content="Genius API Documentation"/>
+  <meta name="twitter:description" content="Use our API and help build the world's greatest public knowledge project since Wikipedia"/>
+  <meta name="twitter:url" content="https://docs.genius.com" />
+  <meta name="twitter:image" content="https://images.rapgenius.com/365f0e9e7e66a120867b7b0ff340264a.750x750x1.png"/>
+</head>
+
+  <body ng-cloak
+        data-spy="scroll"
+        data-target="#left-nav"
+        ng-app="geniusApiExplorer"
+        ng-controller="DocsController"
+        genius-app-host="http://genius.com"
+        genius-api-host="https://api.genius.com">
+    <header class="wrapped_header">
+  <div class="logo_container">
+  </div>
+</header>
+
+    <a href="#" id="nav-button">
+      <span>NAV</span>
+    </a>
+    <div class="tocify-wrapper">
+      <div class="search">
+        <input type="text" class="search" id="input-search" placeholder="Search">
+      </div>
+      <ul class="search-results"></ul>
+      <div>
+        <ul class="tocify-header outside_link">
+          <li class="tocify-item">
+            <a href="http://genius.com/api-clients">Manage Clients</a>
+          </li>
+          <li class="tocify-item">
+            <a target="_blank" href="http://genius.com/api-support">Support Forum</a>
+          </li>
+          <li class="tocify-item">
+            <a target="_blank" href="http://genius.com/static/terms">TOS</a>
+          </li>
+        </ul>
+      </div>
+      <div id="toc"></div>
+    </div>
+    <div class="page-wrapper">
+      <div class="dark-box"></div>
+      <div class="content">
+        
+<h1 id="/getting-started-h1">Getting Started</h1>
+
+<div class="commercial-notice">
+  <p>Commercial use of the Genius API is not allowed without a license. Please reach out to <a href="mailto:api-sales@genius.com">api-sales@genius.com</a> to discuss commercial usage.</p>
+</div>
+
+<blockquote class="hide-mobile" ng-hide="geniusAccessToken">
+    <p><strong>These Docs are a Genius App</strong></p>
+    <p>Interactively explore API endpoints by connecting your Genius account to this page. Learn how your app can access Genius's content and community this easily too!
+    <br /><br />
+    <button genius-auth-button="" class="pure-button genius-auth-button" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+            Authorize With Genius
+    </button>
+    </p>
+</blockquote>
+
+<blockquote class="hide-mobile" ng-show="geniusAccessToken">
+  <p><strong>You've linked your Genius account with this site. You're on your way to building something great!</strong></p>
+</blockquote>
+
+<blockquote>
+  <p><strong>Add Genius Annotations To Your Own Site</strong></p>
+  <p>
+    In addition to interacting with Genius annotations through the API, it's easy to make any page annotatable and display annotations you've created on it. Just add the script tag:
+    <br />
+    <br />
+    <code class="centered-block">
+      <strong>&lt;script src="https://genius.codes"&gt;&lt;/script&gt;</strong>
+    </code>
+    <br />
+  </p>
+</blockquote>
+
+<h3 id="registering-your-application">Registering Your Application</h3>
+
+<p>First, visit the Genius <a href="http://genius.com/api-clients" target="_blank">API Client management page</a> and create an API client for your application. This will provide you with a <strong><code class="language-plaintext highlighter-rouge">client_id</code></strong> and a <strong><code class="language-plaintext highlighter-rouge">client_secret</code></strong> that you’ll use to identify your application to Genius. The <strong><code class="language-plaintext highlighter-rouge">redirect_uri</code></strong> is used for authenticating Genius users with your application. You can change it later. The API Client will belong to the user account signed in to Genius when it’s created.</p>
+
+<h3 id="making-requests">Making Requests</h3>
+
+<p>The available endpoints are listed below in the resources section, along with embedded examples showing how they work and what they return.</p>
+
+<p>Genius uses OAuth2 for authentication. All API requests must be authenticated. There are plenty of libraries available to help with this part of your integration. There’s also a <a href="#/authentication-h1">detailed guide below</a> if you’re committed to implementing it yourself.</p>
+
+<div genius-docs-expando="" title="'Looking for an OAuth2 client library?'">
+  <ul class="two-column-box-list">
+    
+      <li>
+        <strong>Clojure</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/pelle/clauth" target="_blank">clauth</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Cocoa &amp; Cocoa Touch</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/nxtbgthng/OAuth2Client" target="_blank">OAuth2Client</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Go</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/golang/oauth2" target="_blank">OAuth2 for Go</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Haskell</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/freizl/hoauth2" target="_blank">hoauth2</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Java</strong>
+        <ul>
+          
+            <li>
+              <a href="http://oltu.apache.org/" target="_blank">Apache Oltu</a>
+            </li>
+          
+            <li>
+              <a href="https://github.com/fernandezpablo85/scribe-java" target="_blank">scribe-java</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>JavaScript</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/andreareginato/simple-oauth2" target="_blank">simple-oauth2</a>
+            </li>
+          
+            <li>
+              <a href="http://passportjs.org/" target="_blank">Passport</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>PHP</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/adoy/PHP-OAuth2" target="_blank">PHP-OAuth2</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Python</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/litl/rauth" target="_blank">rauth</a>
+            </li>
+          
+            <li>
+              <a href="https://github.com/demianbrecht/sanction" target="_blank">sanction</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>.Net</strong>
+        <ul>
+          
+            <li>
+              <a href="http://www.nuget.org/packages/Microsoft.Owin.Security.OAuth" target="_blank">Owin</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Qt/C++</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/pipacs/o2" target="_blank">O2</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Ruby</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/intridea/omniauth" target="_blank">OmniAuth</a>
+            </li>
+          
+            <li>
+              <a href="https://github.com/intridea/oauth2" target="_blank">intridea/oauth2</a>
+            </li>
+          
+            <li>
+              <a href="https://github.com/lostisland/faraday_middleware" target="_blank">Faraday + Faraday Middleware</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+      <li>
+        <strong>Scala</strong>
+        <ul>
+          
+            <li>
+              <a href="https://github.com/mohiva/play-silhouette" target="_blank">play-silhouette</a>
+            </li>
+          
+        </ul>
+      </li>
+    
+    <li class="clear">&nbsp;</li>
+  </ul>
+</div>
+
+<h1 id="resources-h1">Resources</h1>
+
+<div class="resource-description">
+  <h2 id="annotations-h2">Annotations</h2>
+  <p>An <strong>annotation</strong> is a piece of content about a part of a document. The document may be a <em>song</em> (hosted on Genius) or a <em>web page</em> (hosted anywhere). The part of a document that an annotation is attached to is called a <em>referent</em>.</p>
+
+<p>Annotation data returned from the API includes both the substance of the annotation and the necessary information for displaying it in its original context.</p>
+
+  </div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="annotations/:id" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="GET">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/annotations-show">GET /annotations/:id</h4>
+  <p>Data for a specific annotation.</p>
+
+<div ng-init="params.id = 10225840"></div>
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>id</code></strong></td>
+      <td>
+        ID of the annotation
+        <br />
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="ID" ng-model="params.id" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>text_format</code></strong></td>
+      <td>
+        Format for text bodies related to the document. One or more of <code>dom</code>, <code>plain</code>, and <code>html</code>, separated by commas (defaults to <code>dom</code>). See details of each option <a href="#response-format-h1">here</a>
+          <br />
+          <div class="pure-form">
+            <input type="text" ng-disabled="unauthorized" class="pure-input" placeholder="Text Format" ng-model="params.text_format" />
+          </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="" genius-api-base="https://api.genius.com" genius-user-auth="" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/annotations-create">POST /annotations</h4>
+  <p><strong class="required-scope">Requires scope: <code>create_annotation</code></strong></p>
+
+<p>Creates a new annotation on a public web page. The returned value will be the new annotation object, in the same form as would be returned by <a href="#/annotation-show"><code class="language-plaintext highlighter-rouge">GET /annotation/:id</code></a> with the new annotation’s ID.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Example Payload:
+</code></pre></div></div>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+  </span><span class="nl">"annotation"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"body"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+      </span><span class="nl">"markdown"</span><span class="p">:</span><span class="w"> </span><span class="s2">"hello **world!**"</span><span class="w">
+    </span><span class="p">}</span><span class="w">
+  </span><span class="p">},</span><span class="w">
+  </span><span class="nl">"referent"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"raw_annotatable_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"http://seejohncode.com/2014/01/27/vim-commands-piping/"</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"fragment"</span><span class="p">:</span><span class="w"> </span><span class="s2">"execute commands"</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"context_for_display"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+      </span><span class="nl">"before_html"</span><span class="p">:</span><span class="w"> </span><span class="s2">"You may know that you can "</span><span class="p">,</span><span class="w">
+      </span><span class="nl">"after_html"</span><span class="p">:</span><span class="w"> </span><span class="s2">" from inside of vim, with a vim command:"</span><span class="w">
+    </span><span class="p">}</span><span class="w">
+  </span><span class="p">},</span><span class="w">
+  </span><span class="nl">"web_page"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"canonical_url"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"og_url"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Secret of Mana"</span><span class="w">
+  </span><span class="p">}</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<table show="false" class="table parameters-table">  <tbody>          <tr>                    <td genius-parent-param-cell="" colspan="2" class="parent-param" ng-class="state.show_annotation ? 'showing' : 'hiding'">            <div>              <strong><code>annotation</code></strong>                            <a class="expander" href="" ng-click="state.show_annotation = !state.show_annotation" ng-bind="state.show_annotation ? 'hide child params' : 'show child params'"></a>            </div>            <table show="false" class="table parameters-table">  <tbody>          <tr>                    <td genius-parent-param-cell="" colspan="2" class="parent-param" ng-class="state.show_body ? 'showing' : 'hiding'">            <div>              <strong><code>body</code></strong>                            <a class="expander" href="" ng-click="state.show_body = !state.show_body" ng-bind="state.show_body ? 'hide child params' : 'show child params'"></a>            </div>            <table show="false" class="table parameters-table">  <tbody>          <tr>                  <td class="param">            <div>              <strong><code>markdown</code></strong>                              <br /><small>              Required</small>            </div>          </td>          <td class="value">            <p>The text for the note, in <a href="https://help.github.com/articles/github-flavored-markdown/">markdown</a></p>
+          </td>              </tr>      </tbody></table>          </td>              </tr>      </tbody></table>          </td>              </tr>          <tr>                    <td genius-parent-param-cell="" colspan="2" class="parent-param" ng-class="state.show_referent ? 'showing' : 'hiding'">            <div>              <strong><code>referent</code></strong>                            <a class="expander" href="" ng-click="state.show_referent = !state.show_referent" ng-bind="state.show_referent ? 'hide child params' : 'show child params'"></a>            </div>            <table show="false" class="table parameters-table">  <tbody>          <tr>                  <td class="param">            <div>              <strong><code>raw_annotatable_url</code></strong>                              <br /><small>              Required</small>            </div>          </td>          <td class="value">            <p>The original URL of the page</p>
+          </td>              </tr>          <tr>                  <td class="param">            <div>              <strong><code>fragment</code></strong>                              <br /><small>              Required</small>            </div>          </td>          <td class="value">            <p>The highlighted fragment</p>
+          </td>              </tr>          <tr>                    <td genius-parent-param-cell="" colspan="2" class="parent-param" ng-class="state.show_context_for_display ? 'showing' : 'hiding'">            <div>              <strong><code>context_for_display</code></strong>                            <a class="expander" href="" ng-click="state.show_context_for_display = !state.show_context_for_display" ng-bind="state.show_context_for_display ? 'hide child params' : 'show child params'"></a>            </div>            <table show="false" class="table parameters-table">  <tbody>          <tr>                  <td class="param">            <div>              <strong><code>before_html</code></strong>                          </div>          </td>          <td class="value">            <p>The HTML before the highlighted fragment (prefer up to 200 characters)</p>
+          </td>              </tr>          <tr>                  <td class="param">            <div>              <strong><code>after_html</code></strong>                          </div>          </td>          <td class="value">            <p>The HTML after the highlighted fragment (prefer up to 200 characters)</p>
+          </td>              </tr>      </tbody></table>          </td>              </tr>      </tbody></table>          </td>              </tr>          <tr>                    <td genius-parent-param-cell="" colspan="2" class="parent-param" ng-class="state.show_web_page ? 'showing' : 'hiding'">            <div>              <strong><code>web_page</code></strong>                              <br /><small>At least one required</small>                            <a class="expander" href="" ng-click="state.show_web_page = !state.show_web_page" ng-bind="state.show_web_page ? 'hide child params' : 'show child params'"></a>            </div>            <table show="false" class="table parameters-table">  <tbody>          <tr>                  <td class="param">            <div>              <strong><code>canonical_url</code></strong>                          </div>          </td>          <td class="value">            <p>The <code class="language-plaintext highlighter-rouge">href</code> property of the <code class="language-plaintext highlighter-rouge">&lt;link rel="canonical"&gt;</code> tag on the page. Including it will help make sure newly created annotation appear on the correct page</p>
+          </td>              </tr>          <tr>                  <td class="param">            <div>              <strong><code>og_url</code></strong>                          </div>          </td>          <td class="value">            <p>The <code class="language-plaintext highlighter-rouge">content</code> property of the <code class="language-plaintext highlighter-rouge">&lt;meta property="og:url"&gt;</code> tag on the page. Including it will help make sure newly created annotation appear on the correct page</p>
+          </td>              </tr>          <tr>                  <td class="param">            <div>              <strong><code>title</code></strong>                          </div>          </td>          <td class="value">            <p>The title of the page</p>
+          </td>              </tr>      </tbody></table>          </td>              </tr>      </tbody></table>
+
+</div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="" genius-api-base="https://api.genius.com" genius-user-auth="" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/annotations-update">PUT /annotations/:id</h4>
+  <p><strong class="required-scope">Requires scope: <code>manage_annotation</code></strong></p>
+
+<p>Updates an annotation created by the authenticated user. Accepts the same parameters as <a href="#/annotation-create"><code class="language-plaintext highlighter-rouge">POST /annotation</code></a> above.</p>
+
+</div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="" genius-api-base="https://api.genius.com" genius-user-auth="" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/annotations-destroy">DELETE /annotations/:id</h4>
+  <p><strong class="required-scope">Requires scope: <code>manage_annotation</code></strong></p>
+
+<p>Deletes an annotation created by the authenticated user.</p>
+
+</div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="annotations/:id/upvote" genius-api-base="https://api.genius.com" genius-user-auth="" genius-http-method="PUT">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/annotations-upvote">PUT /annotations/:id/upvote</h4>
+  <p><strong class="required-scope">Requires scope: <code>vote</code></strong></p>
+
+<p>Votes positively for the annotation on behalf of the authenticated user.</p>
+
+</div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="" genius-api-base="https://api.genius.com" genius-user-auth="" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/annotations-downvote">PUT /annotations/:id/downvote</h4>
+  <p><strong class="required-scope">Requires scope: <code>vote</code></strong></p>
+
+<p>Votes negatively for the annotation on behalf of the authenticated user.</p>
+
+</div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/annotations-unvote">PUT /annotations/:id/unvote</h4>
+  <p><strong class="required-scope">Requires scope: <code>vote</code></strong></p>
+
+<p>Removes the authenticated user’s vote (up or down) for the annotation.</p>
+
+</div>
+
+<div class="resource-description">
+  <h2 id="referents-h2">Referents</h2>
+  <p><strong>Referents</strong> are the sections of a piece of content to which <em>annotations</em> are attached. Each referent is associated with a <em>web page</em> or a <em>song</em> and may have one or more annotations. Referents can be searched by the document they are attached to or by the user that created them.</p>
+
+<p>When a new annotation is created either a referent is created with it or that annotation is attached to an existing referent.</p>
+
+  </div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="referents" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/referents-index">GET /referents</h4>
+  <p>Referents by content item or user responsible for an included annotation.</p>
+
+<p>You may pass only one of <code class="language-plaintext highlighter-rouge">song_id</code> and <code class="language-plaintext highlighter-rouge">web_page_id</code>, not both.</p>
+
+<div ng-init="params.web_page_id = '10347'"></div>
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>created_by_id</code></strong></td>
+      <td>ID of a user to get referents for
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="User ID" ng-model="params.created_by_id" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>song_id</code></strong></td>
+      <td>ID of a song to get referents for
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Song ID" ng-model="params.song_id" ng-change="params.web_page_id = null" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>web_page_id</code></strong></td>
+      <td>ID of a web page to get referents for
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Web Page ID" ng-model="params.web_page_id" ng-change="params.song_id = null" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>text_format</code></strong></td>
+      <td>Format for text bodies related to the document. One or more of <code>dom</code>, <code>plain</code>, and <code>html</code>, separated by commas (defaults to <code>dom</code>). See details of each option <a href="#response-format-h1">here</a>
+      <br />
+      <div class="pure-form">
+        <input type="text" class="pure-input" placeholder="Text Format" ng-model="params.text_format" ng-disabled="unauthorized" />
+      </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>per_page</code></strong></td>
+      <td>
+        Number of results to return per request
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Per Page" ng-model="params.per_page" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>page</code></strong></td>
+      <td>
+        Paginated offset, (e.g., <code>per_page=5&amp;page=3</code> returns songs 11&ndash;15)
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Page" ng-model="params.page" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="resource-description">
+  <h2 id="songs-h2">Songs</h2>
+  <p>A <strong>song</strong> is a document hosted on Genius. It’s usually music lyrics.</p>
+
+<p>Data for a song includes details about the document itself and information about all the <em>referents</em> that are attached to it, including the text to which they refer.</p>
+
+  </div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="songs/:id" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="GET">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/songs-show">GET /songs/:id</h4>
+  <p>Data for a specific song.</p>
+
+<div ng-init="params.id = 378195"></div>
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>id</code></strong></td>
+      <td>
+        ID of the song
+        <br />
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="ID" ng-model="params.id" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>text_format</code></strong></td>
+      <td>Format for text bodies related to the document. One or more of <code>dom</code>, <code>plain</code>, and <code>html</code>, separated by commas (defaults to <code>dom</code>). See details of each option <a href="#response-format-h1">here</a>
+      <br />
+      <div class="pure-form">
+        <input type="text" class="pure-input" placeholder="Text Format" ng-model="params.text_format" ng-disabled="unauthorized" />
+      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="resource-description">
+  <h2 id="artists-h2">Artists</h2>
+  <p>An <strong>artist</strong> is how Genius represents the creator of one or more <em>songs</em> (or other documents hosted on Genius). It’s usually a musician or group of musicians.</p>
+
+  </div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="artists/:id" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="GET">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/artists-show">GET /artists/:id</h4>
+  <p>Data for a specific artist.</p>
+
+<div ng-init="params.id = 16775"></div>
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>id</code></strong></td>
+      <td>
+        ID of the artist
+        <br />
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="ID" ng-model="params.id" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>text_format</code></strong></td>
+      <td>Format for text bodies related to the document. One or more of <code>dom</code>, <code>plain</code>, and <code>html</code>, separated by commas (defaults to <code>dom</code>). See details of each option <a href="#response-format-h1">here</a>
+      <br />
+      <div class="pure-form">
+        <input type="text" class="pure-input" placeholder="Text Format" ng-model="params.text_format" ng-disabled="unauthorized" />
+      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="artists/:id/songs" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/artists-songs">GET /artists/:id/songs</h4>
+  <p>Documents (songs) for the artist specified. By default, 20 items are returned for each request.</p>
+
+<div ng-init="params.id = 16775"></div>
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>id</code></strong></td>
+      <td>
+        ID of the artist.
+        <br />
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="ID" ng-model="params.id" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>sort</code></strong></td>
+      <td>
+        <code>title</code> (default) or <code>popularity</code>
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Sort" ng-model="params.sort" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>per_page</code></strong></td>
+      <td>
+        Number of results to return per request
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Per Page" ng-model="params.per_page" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>page</code></strong></td>
+      <td>
+        Paginated offset, (e.g., <code>per_page=5&amp;page=3</code> returns songs 11&ndash;15)
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Page" ng-model="params.page" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="resource-description">
+  <h2 id="web_pages-h2">Web Pages</h2>
+  <p>A <strong>web page</strong> is a single, publicly accessible page to which annotations may be attached. Web pages map 1-to-1 with unique, canonical URLs.</p>
+
+  </div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="web_pages/lookup" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="GET">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/web_pages-lookup">GET /web_pages/lookup</h4>
+  <p>Information about a web page retrieved by the page’s full URL (including protocol). The returned data includes Genius’s ID for the page, which may be used to look up associated referents with the <a href="#/referents-index"><code class="language-plaintext highlighter-rouge">/referents</code></a> endpoint.</p>
+
+<p>Data is only available for pages that already have at least one annotation.</p>
+
+<p>Provide as many of the following variants of the URL as possible:</p>
+
+<div ng-init="params.raw_annotatable_url = 'https://docs.genius.com'"></div>
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>raw_annotatable_url</code></strong></td>
+      <td>
+        The URL as it would appear in a browser
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Raw URL" ng-model="params.raw_annotatable_url" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>canonical_url</code></strong></td>
+      <td>
+        The URL as specified by an appropriate <code>&lt;link&gt;</code> tag in a page's <code>&lt;head&gt;</code>
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="Canonical URL" ng-model="params.canoncial_url" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td><strong><code>og_url</code></strong></td>
+      <td>
+        The URL as specified by an <code>og:url</code> <code>&lt;meta&gt;</code> tag in a page's <code>&lt;head&gt;</code>
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="OG URL" ng-model="params.og_url" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="resource-description">
+  <h2 id="search-h2">Search</h2>
+  <p>The <strong>search</strong> capability covers all content hosted on Genius (all <em>songs</em>).</p>
+
+  </div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="search" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="GET">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/search-search">GET /search</h4>
+  <p>Search documents hosted on Genius.</p>
+
+<div ng-init="params.q = 'Kendrick Lamar'"></div>
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>q</code></strong></td>
+      <td>The term to search for
+        <div class="pure-form">
+          <input type="text" class="pure-input" placeholder="ID" ng-model="params.q" ng-disabled="unauthorized" />
+        </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="resource-description">
+  <h2 id="account-h2">Account</h2>
+  <p><strong>Account</strong> information includes general contact information and Genius-specific details about a user.</p>
+
+  </div>
+
+<div class="genius-action-explorer" ng-controller="ExplorerController" genius-on-any-return="update()" genius-path-template="account" genius-api-base="https://api.genius.com" genius-user-auth="true" genius-http-method="">
+  <blockquote class="pure-form">
+    <div class="pure-form-wrapper">
+      
+      <span class="domain-placeholder placeholder">api.genius.com/</span>
+      <input class="pure-input request-uri" genius-api-path-input="" type="text" ng-model="path" ng-disabled="unauthorized" />
+      <button class="pure-button tryit" ng-click="update()" ng-hide="unauthorized">Try It</button>
+      <span ng-show="true" class="token-placeholder placeholder">Authorization: Bearer</span>
+      <input ng-show="true" class="pure-input token" placeholder="Access Token" type="text" ng-model="geniusAccessToken" />
+      <small ng-show="true">See details about using an access token in the <a href="#/using-an-access-token">authentication section</a> below.</small>
+      <genius-json-explorer data="result.data" expand-by="expandExplorerBy"></genius-json-explorer>
+      <button genius-auth-button="" class="pure-button genius-auth-button" ng-hide="&lt;% !unauthorized %&gt;" genius-api-host="https://api.genius.com" genius-client-id="Bfc6rUwAQORdAnImaRH_PG2adJwYGhURV8KdE0mEZY6BImhFj--6ntlO2UMloT62" genius-redirect-uri="https://docs.genius.com">
+        Authenticate with the Docs App to Try</button>
+      
+    </div>
+  </blockquote>
+  <h4 class="action-url" id="/account-show">GET /account</h4>
+  <p><strong class="required-scope">Requires scope: <code>me</code></strong></p>
+
+<p>Account information for the currently authenticated user.</p>
+
+<table class="table table-bordered">
+  <tbody>
+    <tr>
+      <td><strong><code>text_format</code></strong></td>
+      <td>Format for text bodies related to the document. One or more of <code>dom</code>, <code>plain</code>, and <code>html</code>, separated by commas (defaults to <code>dom</code>). See details of each option <a href="#response-format-h1">here</a>
+      <br />
+      <div class="pure-form">
+        <input type="text" class="pure-input" placeholder="Text Format" ng-model="params.text_format" ng-disabled="unauthorized" />
+      </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+</div>
+
+<h1 id="authentication">Authentication</h1>
+
+<blockquote>
+<p>
+<strong>Access for Apps Without Users</strong><br />
+If your application doesn't include user-specific behaviors you can use the <em>client</em> access token associated with your API instead of tokens for authenticated users. These tokens are only valid for read-only endpoints that are not restricted by a <a href="#/available-scopes">required scope</a>.
+</p>
+<p>You can get a client access token by clicking "Generate Access Token" on the API Client management page.</p>
+</blockquote>
+
+<p>Genius uses the OAuth2 standard for making API calls on behalf of individual users. Requests are authenticated with an <strong>Access Token</strong> sent in an HTTP header (or as a request parameter if you must).</p>
+
+<p>All interaction with the API must be done over HTTPS.</p>
+
+<blockquote>
+  <p>An example request would look like this:</p>
+</blockquote>
+
+<blockquote>
+<pre class="outdented-url">
+https://api.genius.com/oauth/authorize?
+client_id=YOUR_CLIENT_ID&amp;
+redirect_uri=YOUR_REDIRECT_URI&amp;
+scope=REQUESTED_SCOPE&amp;
+state=SOME_STATE_VALUE&amp;
+response_type=code
+</pre>
+</blockquote>
+
+<h3 id="getting-an-access-token">Getting an Access Token</h3>
+
+<p>Start by directing a user of your application to Genius’s authentication page at <code class="language-plaintext highlighter-rouge">https://api.genius.com/oauth/authorize</code> with the following query parameters:</p>
+
+<ul>
+  <li><strong><code class="language-plaintext highlighter-rouge">client_id</code></strong>: Your application’s Client ID, as listed on the API Client management page</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">redirect_uri</code></strong>: The URI Genius will redirect the user to after they’ve authorized your application; it must be the same as the one set for the API client on the management page</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">scope</code></strong>: The permissions your application is requesting as a space-separated list (see <a href="#/available-scopes">available scopes</a> below)</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">state</code></strong>: A value that will be returned with the code redirect for maintaining arbitrary state through the authorization process</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">response_type</code></strong>: Always “code”</li>
+</ul>
+
+<blockquote>
+<p>
+<strong>More About State</strong><br />
+One important use for this value is increased security&mdash;by including a unique, difficult to guess value (say, a hash of a user session value), potential attackers can be prevented from sending phony redirects to your app.
+</p>
+</blockquote>
+
+<p>On the authentication page the user can choose to allow your application to access Genius on their behalf. They’ll be asked to sign in (or, if necessary, create an account) first. Then the user is redirected to <code class="language-plaintext highlighter-rouge">https://YOUR_REDIRECT_URI/?code=CODE&amp;state=SOME_STATE_VALUE</code>.</p>
+
+<p>Your application can exchange the <code class="language-plaintext highlighter-rouge">code</code> query parameter from the redirect for an access token by making a <code class="language-plaintext highlighter-rouge">POST</code> request to <code class="language-plaintext highlighter-rouge">https://api.genius.com/oauth/token</code> with the following request body data:</p>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+  </span><span class="nl">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"CODE_FROM_REDIRECT"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"client_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"YOUR_CLIENT_ID"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"client_secret"</span><span class="p">:</span><span class="w"> </span><span class="s2">"YOUR_CLIENT_SECRET"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"redirect_uri"</span><span class="p">:</span><span class="w"> </span><span class="s2">"YOUR_REDIRECT_URI"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"response_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"code"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"grant_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"authorization_code"</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<ul>
+  <li><strong><code class="language-plaintext highlighter-rouge">code</code></strong>: The <code class="language-plaintext highlighter-rouge">code</code> query parameter from the redirect to your <code class="language-plaintext highlighter-rouge">redirect_uri</code></li>
+  <li><strong><code class="language-plaintext highlighter-rouge">client_secret</code></strong>: Your application’s Client Secret, as listed on the API Client management page</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">grant_type</code></strong>: Aways “authorization_code”</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">client_id</code></strong>: As above</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">redirect_uri</code></strong>: As above</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">response_type</code></strong>: As above</li>
+</ul>
+
+<p>Most of these are the same values as used in the initial request.</p>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+  </span><span class="nl">"access_token"</span><span class="p">:</span><span class="w"> </span><span class="s2">"ACCESS_TOKEN"</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>The response body will be an object with the token as the value for the <code class="language-plaintext highlighter-rouge">access_token</code> key. Save the token and use it to make requests on behalf of the authorizing user.</p>
+
+<div genius-docs-expando="" title="'Building a client-only application?'">
+  <p class="warning">An alternative authentication flow is available for browser-based, client-only applications. <em>This mechanism is much less secure than the full code exchange process and should only be used by applications without a server or native platform to execute the full code flow.</em></p>
+
+<p>Where "code" is used as the <code>response_type</code> value in the instructions above, use <code>token</code>. Instead of being redirected with a code that your application exchanges for an access token, the user is redirected to <code>https://REDIRECT_URI/#access_token=ACCESS_TOKEN&amp;state=STATE</code>. Extract the access token from the URL hash fragment and use it to make requests.</p>
+
+<p>With the token response type, the user's access token is exposed in the browser, where it could be accessed by malicious JavaScript or otherwise intercepted much more easily than when it's only exchanged between servers. The client secret isn't used, so it's much easier for potential attackers to fake authorization requests. Don't use the token flow if you don't have to.</p>
+
+</div>
+
+<h3 id="/available-scopes">Available Scopes</h3>
+
+<p>Access tokens can only be used for resources that are covered by the scopes provided when they created. These are the available scopes and the endpoints they grant permission for:</p>
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th>Scope</th>
+      <th>Endpoints</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>me</code></td>
+      <td>
+        <a href="#account-show">
+          <code>GET /account</code>
+        </a>
+      </td>
+    </tr>
+    <tr>
+      <td><code>create_annotation</code></td>
+      <td>
+        <a href="#annotations-create">
+          <code>POST /annotations</code>
+        </a>
+      </td>
+    </tr>
+    <tr>
+      <td><code>manage_annotation</code></td>
+      <td>
+        <a href="#annotations-update">
+          <code>PUT /annotations/:id</code>
+        </a>
+        <br />
+        <a href="#annotations-destroy">
+          <code>DELETE /annotations/:id</code>
+        </a>
+      </td>
+    </tr>
+    <tr>
+      <td><code>vote</code></td>
+      <td>
+        <a href="#annotations-upvote">
+          <code>PUT /annotations/:id/upvote</code>
+        </a>
+        <br />
+        <a href="#annotations-downvote">
+          <code>PUT /annotations/:id/downvote</code>
+        </a>
+        <br />
+        <a href="#annotations-unvote">
+          <code>PUT /annotations/:id/unvote</code>
+        </a>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="/using-an-access-token">Using An Access Token</h3>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>GET /some-endpoint HTTP/1.1
+User-Agent: CompuServe Classic/1.22
+Accept: application/json
+Host: api.genius.com
+Authorization: Bearer ACCESS_TOKEN
+</code></pre></div></div>
+
+<p>To make authenticated requests with an access token, include it in an HTTP <code class="language-plaintext highlighter-rouge">Authorization</code> header preceded by the word “Bearer” and a space. For example, the value of the header could be <code class="language-plaintext highlighter-rouge">Bearer 1234tokentokentoken</code>.</p>
+
+<p>Passing the token in the authorization header is the preferred way to authenticate API requests. However, the API also supports providing the token as the <code class="language-plaintext highlighter-rouge">access_token</code> query parameter of a <code class="language-plaintext highlighter-rouge">GET</code> request or element of a <code class="language-plaintext highlighter-rouge">POST</code> body.</p>
+
+<h1 id="/response-format-h1">Response Format</h1>
+
+<div class="row">
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>GET https://api.genius.com/web_pages/lookup?canonical_url=http://example.com
+</code></pre></div></div>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+  </span><span class="nl">"meta"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"status"</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span><span class="w">
+  </span><span class="p">},</span><span class="w">
+  </span><span class="nl">"response"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"web_page"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+      </span><span class="nl">"annotation_count"</span><span class="p">:</span><span class="mi">7</span><span class="p">,</span><span class="w">
+      </span><span class="nl">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">1480</span><span class="p">,</span><span class="w">
+      </span><span class="err">...</span><span class="w">
+    </span><span class="p">}</span><span class="w">
+  </span><span class="p">}</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>All Genius API responses are JSON. Every JSON response has a <code class="language-plaintext highlighter-rouge">meta</code> field with a <code class="language-plaintext highlighter-rouge">status</code> value that is an integer representation of the HTTP status code for the response.</p>
+
+<p>For successful requests, there is also a top-level <code class="language-plaintext highlighter-rouge">response</code> field which will be a nested object. For example, a request for details about annotations on a web page:</p>
+
+
+</div>
+
+<div class="row">
+
+<h3 id="errors">Errors</h3>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>GET https://api.genius.com/apples
+</code></pre></div></div>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+  </span><span class="nl">"meta"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"status"</span><span class="p">:</span><span class="w"> </span><span class="mi">404</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Not found"</span><span class="w">
+  </span><span class="p">}</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>If a request fails or errors (i.e. the <code class="language-plaintext highlighter-rouge">status</code> values is 4xx or 5xx). the <code class="language-plaintext highlighter-rouge">meta</code> field will also have a <code class="language-plaintext highlighter-rouge">message</code> value that is a string with details about the error. For example, a request to a non-existent API endpoint:</p>
+
+
+</div>
+
+<div class="row">
+
+<h3 id="text-formatting">Text Formatting (<code>text_format</code> option)</h3>
+
+<div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">{</span><span class="w">
+  </span><span class="nl">"plain"</span><span class="p">:</span><span class="w"> </span><span class="s2">"A hilarious word!"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"html"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&lt;p&gt;A hilarious word!&lt;/p&gt;"</span><span class="p">,</span><span class="w">
+  </span><span class="nl">"dom"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+    </span><span class="nl">"tag"</span><span class="p">:</span><span class="w"> </span><span class="s2">"root"</span><span class="p">,</span><span class="w">
+    </span><span class="nl">"children"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w">
+      </span><span class="nl">"tag"</span><span class="p">:</span><span class="w"> </span><span class="s2">"p"</span><span class="p">,</span><span class="w">
+      </span><span class="nl">"children"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">"A hilarious word!"</span><span class="w"> </span><span class="p">]</span><span class="w">
+    </span><span class="p">}</span><span class="w"> </span><span class="p">]</span><span class="w">
+  </span><span class="p">}</span><span class="w">
+</span><span class="p">}</span><span class="w">
+</span></code></pre></div></div>
+
+<p>Many API requests accept a <code class="language-plaintext highlighter-rouge">text_format</code> query parameter that can be used to specify how text content is formatted. The value for the parameter must be one or more of <code class="language-plaintext highlighter-rouge">plain</code>, <code class="language-plaintext highlighter-rouge">html</code>, and <code class="language-plaintext highlighter-rouge">dom</code>. The value returned will be an object with key-value pairs of formats and results:</p>
+
+<ul>
+  <li><strong><code class="language-plaintext highlighter-rouge">plain</code></strong> is just plain text, no markup</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">html</code></strong> is a string of unescaped HTML suitable for rendering by a browser</li>
+  <li><strong><code class="language-plaintext highlighter-rouge">dom</code></strong> is a nested object representing and HTML DOM hierarchy that can be used to programmatically present structured content</li>
+</ul>
+
+
+</div>
+
+
+      </div>
+    </div>
+  </body>
+</html>

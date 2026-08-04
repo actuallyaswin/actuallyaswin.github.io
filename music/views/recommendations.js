@@ -1,5 +1,6 @@
 const ViewRecommendations = (() => {
     let _db   = null;
+    let _ac = null;
     let _seed = 0;
 
     // ── Seed-based picker ──────────────────────────────────────────────────────
@@ -19,7 +20,7 @@ const ViewRecommendations = (() => {
     // Uses <div role="link"> so a nested <a> for the Spotify icon is valid HTML.
     function _card(id, title, artist, art, year, spotifyId) {
         const img = art
-            ? `<div class="disc-card-img" style="background-image:url('${art}')"></div>`
+            ? `<div class="disc-card-img" style="background-image:url('${cssUrl(art)}')"></div>`
             : `<div class="disc-card-img" style="background:var(--bg-tertiary)"></div>`;
         const sub = [artist, year].filter(Boolean).join(' · ');
         const streaming = SHOW_STREAMING_LINKS && spotifyId
@@ -28,9 +29,9 @@ const ViewRecommendations = (() => {
                   <span class="disc-card-streaming-icon"></span>
                </a>`
             : '';
-        return `<div class="disc-card" role="link" tabindex="0"
-                     onclick="navigate({view:'release',id:'${id}'})"
-                     onkeydown="if(event.key==='Enter'||event.key===' ')navigate({view:'release',id:'${id}'})">
+        // id is DB-derived; carry it in a data attribute and handle activation
+        // with a delegated listener rather than interpolating it into inline JS.
+        return `<div class="disc-card" role="link" tabindex="0" data-release-id="${escapeHtml(id)}">
             ${img}
             <div class="disc-card-meta">
                 <div class="disc-card-info">
@@ -376,6 +377,18 @@ const ViewRecommendations = (() => {
 
     // ── Public API ─────────────────────────────────────────────────────────────
 
+    // Delegated activation for the role="link" cards, replacing the inline
+    // onclick/onkeydown that interpolated a DB-derived id into JS.
+    function _onActivate(e) {
+        if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+        const card = e.target.closest('.disc-card[data-release-id]');
+        if (!card) return;
+        // Let the nested Spotify anchor win.
+        if (e.target.closest('a')) return;
+        e.preventDefault();
+        navigate({ view: 'release', id: card.dataset.releaseId });
+    }
+
     function mount(container, db) {
         _db   = db;
         _seed = _db.exec('SELECT COUNT(*) FROM listens')[0].values[0][0];
@@ -387,10 +400,19 @@ const ViewRecommendations = (() => {
             </header>
             <div id="recShelves" class="rec-shelves"></div>
         `;
+
+        _ac = new AbortController();
+        const shelves = document.getElementById('recShelves');
+        shelves.addEventListener('click', _onActivate, { signal: _ac.signal });
+        shelves.addEventListener('keydown', _onActivate, { signal: _ac.signal });
+
         _load();
     }
 
-    function unmount() { _db = null; }
+    function unmount() {
+        if (_ac) { _ac.abort(); _ac = null; }
+        _db = null;
+    }
 
     return { mount, unmount };
 })();

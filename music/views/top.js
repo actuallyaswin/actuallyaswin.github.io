@@ -638,7 +638,7 @@ const ViewTop = (() => {
                 card.href = cfg.cardHref(f);
                 const imgSrc = f.imageUrl || getFallbackImageUrl();
                 card.innerHTML = `
-                    <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
+                    <div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
                     <div class="image-card-overlay">
                         <div class="image-card-name">${escapeHtml(f.name || f.title || '')}</div>
                         ${f.artistName ? `<div class="image-card-artist">${escapeHtml(f.artistName)}</div>` : ''}
@@ -672,7 +672,7 @@ const ViewTop = (() => {
             const label = collageTheme === 'captioned'
                 ? `<div class="image-card-collage-label">${escapeHtml(f.label || f.name || f.title || '')}</div>`
                 : '';
-            card.innerHTML = `<div class="image-card-img" style="background-image: url('${f.imageUrl || getFallbackImageUrl()}')"></div>${label}`;
+            card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(f.imageUrl || getFallbackImageUrl())}')"></div>${label}`;
             if (i >= show) card.style.display = 'none';
             container.appendChild(card);
         });
@@ -710,7 +710,7 @@ const ViewTop = (() => {
                 const card = document.createElement('a');
                 card.className = 'image-card topster-cell';
                 card.href = cfg.cardHref(f);
-                card.innerHTML = `<div class="image-card-img" style="background-image: url('${f.imageUrl || getFallbackImageUrl()}')"></div>`;
+                card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(f.imageUrl || getFallbackImageUrl())}')"></div>`;
                 tierEl.appendChild(card);
 
                 const line = document.createElement('div');
@@ -791,7 +791,7 @@ const ViewTop = (() => {
 
         el.innerHTML = `
             <span class="track-rank">${rank + 1}</span>
-            <div class="recent-play-thumb" style="background-image:url('${f.imageUrl || getFallbackImageUrl()}')"></div>
+            <div class="recent-play-thumb" style="background-image:url('${cssUrl(f.imageUrl || getFallbackImageUrl())}')"></div>
             <div class="recent-play-info">
                 <div class="recent-play-name">${escapeHtml(f.title || '')}</div>
                 ${f.artistName ? `<div class="recent-play-album">${escapeHtml(f.artistName)}</div>` : ''}

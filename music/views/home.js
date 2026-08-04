@@ -4,6 +4,7 @@ const ViewHome = (() => {
 
     function mount(container, db, params) {
         _db = db;
+        _abortController = new AbortController();
         document.title = 'Music | Aswin Sivaraman';
 
         container.innerHTML = `
@@ -250,7 +251,7 @@ const ViewHome = (() => {
             card.href = `?view=release&id=${encodeURIComponent(id)}`;
             card.title = title + (artistName ? ` · ${artistName}` : '');
             const imgSrc = albumArtUrl || getFallbackImageUrl();
-            card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
+            card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>`;
             container.appendChild(card);
         });
 
@@ -297,7 +298,7 @@ const ViewHome = (() => {
             ].filter(Boolean).join(' · ');
             return `
                 <div class="recent-play-row">
-                    <div class="recent-play-thumb" style="background-image: url('${imgSrc}')"></div>
+                    <div class="recent-play-thumb" style="background-image: url('${cssUrl(imgSrc)}')"></div>
                     <div class="recent-play-info">
                         <div class="recent-play-name">${escapeHtml(trackTitle)}</div>
                         ${subtitleParts ? `<div class="recent-play-album">${subtitleParts}</div>` : ''}
@@ -341,7 +342,7 @@ const ViewHome = (() => {
 
         grid.innerHTML = picked.map(([id, title, art, artist, year]) => {
             const img = art
-                ? `<div class="disc-card-img" style="background-image:url('${art}')"></div>`
+                ? `<div class="disc-card-img" style="background-image:url('${cssUrl(art)}')"></div>`
                 : `<div class="disc-card-img" style="background:var(--bg-tertiary)"></div>`;
             const sub = [artist, year].filter(Boolean).join(' · ');
             return `<a class="disc-card" href="?view=release&id=${encodeURIComponent(id)}">
@@ -492,7 +493,7 @@ const ViewHome = (() => {
         }, { passive: false });
         document.addEventListener('touchstart', e => {
             if (!grid.contains(e.target)) tooltip.style.display = 'none';
-        });
+        }, { signal: _abortController.signal });
 
         // Color mode toggle
         const toggleBtn = document.getElementById('colorModeToggle');

@@ -2,7 +2,7 @@
 layout: default
 title: "Aswin Sivaraman"
 description: "Aswin Sivaraman — ML Engineer at Apple working on Siri. PhD from Indiana University. Research in speech and music processing."
-og_image: "https://actuallyaswin.github.io/img/og-preview.png"
+og_image: "https://actuallyaswin.github.io/img/og-preview.jpg"
 num_journals: 1
 num_pubs_conf: 7
 num_preprints: 4
@@ -11,50 +11,31 @@ num_workshops: 1
   <div class="grid-container">
     <div class="grid-x grid-margin-x">
       <div class="cell medium-3 column-profile">
-        <img class="headshot" src="https://avatars.githubusercontent.com/u/3477082" alt="Aswin Sivaraman">
+        <img class="headshot" width="256" height="256" fetchpriority="high"
+             src="https://avatars.githubusercontent.com/u/3477082?s=512"
+             alt="Portrait of Aswin Sivaraman">
         <h1>Aswin Sivaraman</h1>
         <div lang="ta">&lt; அஸ்வின் சிவராமன் &gt;</div>
         <div class="links">
-          <a
-            target="_blank"
-            href="https://scholar.google.com/citations?user=kX-hu3cAAAAJ&amp;hl=en"
-            title="Google Scholar"
-            aria-label="Google Scholar"
-            ><i class="ai ai-fw ai-google-scholar-square" aria-hidden="true"></i></a>
-          <a
-            target="_blank"
-            href="https://www.linkedin.com/in/actuallyaswin"
-            title="LinkedIn"
-            aria-label="LinkedIn"
-            ><i class="fab fa-fw fa-linkedin" aria-hidden="true"></i></a>
-          <a
-            target="_blank"
-            href="https://www.github.com/actuallyaswin"
-            title="Github"
-            aria-label="GitHub"
-            ><i class="fab fa-fw fa-github-square" aria-hidden="true"></i></a>
-          <a
-            target="_blank"
-            href="https://www.twitter.com/actuallyaswin"
-            title="Twitter"
-            aria-label="Twitter"
-            ><i class="fab fa-fw fa-twitter-square" aria-hidden="true"></i></a>
+          {% include icon-link.html href="https://scholar.google.com/citations?user=kX-hu3cAAAAJ&hl=en" label="Google Scholar" icon="google-scholar" %}
+          {% include icon-link.html href="https://www.github.com/actuallyaswin" label="GitHub" icon="github" %}
+          {% include icon-link.html href="https://www.linkedin.com/in/actuallyaswin" label="LinkedIn" icon="linkedin" %}
+          {% include icon-link.html href="https://x.com/actuallyaswin" label="X" icon="x" %}
         </div>
         <a
           class="email"
-          target="_blank"
           title="Email"
-          href="mailto:asivara@iu.edu"
-          >asivara@iu.edu</a>
+          href="mailto:aswin.sivaraman@gmail.com"
+          >aswin.sivaraman@gmail.com</a>
       </div>
       <div class="cell medium-9 column-content">
         <h2>About Me</h2>
         <section>
           <ul class="emoji">
-            <li>I currently work on the Siri Attention and Invocation team at <a target="_blank" href="https://www.apple.com">Apple</a>. My group is responsible for Siri features such as "Hey Siri" and "back-to-back requests". We work on creating natural conversation features that improve how users interact with Apple devices.</li>
-            <li>I received my PhD from <a target="_blank" href="https://www.indiana.edu">Indiana University</a>, advised by Prof. <a target="_blank" href="http://www.minjekim.com/">Minje Kim</a> as a member of the <a target="_blank" href="http://saige.sice.indiana.edu/">SAIGE</a> research lab. My dissertation tackled personalization for speech enhancement systems. I am also a proud alumni of the <a target="_blank" href="https://www.ece.illinois.edu">Electrical and Computer Engineering</a> department at <a target="_blank" href="https://www.illinois.edu">University of Illinois</a>.</li>
-            <li>My research focus is on using deep learning for speech and music processing. Overall, I am interested in building fair resource-efficient acoustic models.</li>
-            <li>I love teaching opportunities, and have helped facilitate courses such as Deep Learning Systems (ENGR-E 533), Machine Learning for Signal Processing (ENGR-E 511), and The Art of Web Programming (CS 498RK).</li>
+            <li>I build the on-device models that decide when Siri should be listening. My work at <a target="_blank" rel="noopener noreferrer" href="https://www.apple.com">Apple</a> ships in &ldquo;Hey Siri&rdquo; and back-to-back requests across iPhone, Watch, and HomePod, on the Siri Attention and Invocation team.</li>
+            <li>I received my PhD from <a target="_blank" rel="noopener noreferrer" href="https://www.indiana.edu">Indiana University</a>, advised by Prof. <a target="_blank" rel="noopener noreferrer" href="http://www.minjekim.com/">Minje Kim</a> as a member of the <a target="_blank" rel="noopener noreferrer" href="http://saige.sice.indiana.edu/">SAIGE</a> research lab. My dissertation tackled personalization for speech enhancement systems. Before that I studied <a target="_blank" rel="noopener noreferrer" href="https://www.ece.illinois.edu">Electrical and Computer Engineering</a> at the <a target="_blank" rel="noopener noreferrer" href="https://www.illinois.edu">University of Illinois</a>.</li>
+            <li>My research applies deep learning to speech and music processing, with a focus on resource-efficient acoustic models that run on device.</li>
+            <li>I have helped teach Deep Learning Systems (ENGR-E 533), Machine Learning for Signal Processing (ENGR-E 511), and The Art of Web Programming (CS 498RK).</li>
             <li>In my spare time, I enjoy watching movies, sharing music, DJing, traveling, taking candid photographs, and playing video games (especially DDR or ITG).</li>
           </ul>
         </section>
@@ -96,7 +77,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>Apple</strong>, <small>Seattle, WA</small><br />
               <span class="job-title">ML Engineer</span><br />
-              <span class="time">2024 Aug. &ndash; Current</span>
+              <span class="time">2024 Aug. &ndash; Present</span>
             </div>
           </div>
           <div class="cell large-6 grid-x grid-padding-x">
@@ -108,7 +89,7 @@ num_workshops: 1
             </div>
           </div>
         </section>
-        <h3>Internships</h3>
+        <h3>Internships &amp; Residencies</h3>
         <section class="grid-x grid-padding-x">
           <div class="cell small-6 grid-x grid-padding-x">
             <div class="cell shrink"><img class="logo" src="img/logos/apple_box.svg" alt=""></div>
@@ -123,7 +104,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>Microsoft</strong>, <small>Redmond, WA</small><br />
               <span class="job-title">Research Intern</span><br />
-              <span class="time">2022 Summer</span>
+              <span class="time">2022 Jun. &ndash; 2022 Sep.</span>
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
@@ -131,7 +112,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>Google</strong>, <small>Cambridge, MA</small><br />
               <span class="job-title">Research Intern</span><br />
-              <span class="time">2021 Summer</span>
+              <span class="time">2021 Jun. &ndash; 2021 Sep.</span>
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
@@ -139,7 +120,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>X</strong>, <small>Mountain View, CA</small><br />
               <span class="job-title">AI Resident</span><br />
-              <span class="time">2020 Summer</span>
+              <span class="time">2020 Jun. &ndash; 2020 Sep.</span>
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
@@ -147,7 +128,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>Spotify</strong>, <small>Cambridge, MA</small><br />
               <span class="job-title">Research Scientist Intern</span><br />
-              <span class="time">2019 Summer</span>
+              <span class="time">2019 Jun. &ndash; 2019 Sep.</span>
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
@@ -155,7 +136,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>Amazon</strong>, <small>Seattle, WA</small><br />
               <span class="job-title">Applied Scientist Intern</span><br />
-              <span class="time">2018 Summer</span>
+              <span class="time">2018 Jun. &ndash; 2018 Sep.</span>
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
@@ -163,7 +144,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>Qualcomm</strong>, <small>San Diego, CA</small><br />
               <span class="job-title">Software Engineer Intern</span><br />
-              <span class="time">2014 Summer</span>
+              <span class="time">2014 Jun. &ndash; 2014 Sep.</span>
             </div>
           </div>
           <div class="cell small-6 grid-x grid-padding-x">
@@ -171,7 +152,7 @@ num_workshops: 1
             <div class="cell auto">
               <strong>Viasat</strong>, <small>Carlsbad, CA</small><br />
               <span class="job-title">Engineer Intern</span><br />
-              <span class="time">2013 Summer</span>
+              <span class="time">2013 Jun. &ndash; 2013 Sep.</span>
             </div>
           </div>
         </section>
@@ -179,55 +160,56 @@ num_workshops: 1
         <h3>International Journal Articles</h3>
         <ol class="list-journals">
           <li>
-            Aswin Sivaraman and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2104.02017">Efficient Personalized Speech Enhancement through Self-Supervised Learning</a>&rdquo;, in <em>IEEE Journal of Selected Topics in Signal Processing</em>, 2022.
+            <strong>Aswin Sivaraman</strong> and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2104.02017">Efficient Personalized Speech Enhancement through Self-Supervised Learning</a>&rdquo;, in <em>IEEE Journal of Selected Topics in Signal Processing</em>, 2022.
           </li>
         </ol>
         <h3>Refereed International Conference Proceedings</h3>
+        <p class="section-note">WASPAA is an archival, peer-reviewed IEEE workshop; non-archival workshop papers are listed separately below.</p>
         <ol class="list-conferences">
           <li>
-            Shruti Palaskar, Oggi Rudovic, Sameer Dharur, Florian Pesce, Gautam Krishna, Aswin Sivaraman, Jack Berkowitz, Ahmed Hussen Abdelaziz, Saurabh Adya, and Ahmed Tewfik, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2406.09617">Multimodal Large Language Models with Fusion Low Rank Adaptation for Device Directed Speech Detection</a>&rdquo;, in Proc. <em>Annual Conference of the International Speech Communication Association (Interspeech)</em>, 2024.
+            Shruti Palaskar, Oggi Rudovic, Sameer Dharur, Florian Pesce, Gautam Krishna, <strong>Aswin Sivaraman</strong>, Jack Berkowitz, Ahmed Hussen Abdelaziz, Saurabh Adya, and Ahmed Tewfik, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2406.09617">Multimodal Large Language Models with Fusion Low Rank Adaptation for Device Directed Speech Detection</a>&rdquo;, in Proc. <em>Annual Conference of the International Speech Communication Association (Interspeech)</em>, 2024.
           </li>
           <li>
-            Anastasia Kuznetsova, Aswin Sivaraman, and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2211.07493">The Potential of Neural Speech Synthesis-Based Data Augmentation for Personalized Speech Enhancement</a>&rdquo;, in Proc. <em>IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)</em>, 2023.
+            Anastasia Kuznetsova, <strong>Aswin Sivaraman</strong>, and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2211.07493">The Potential of Neural Speech Synthesis-Based Data Augmentation for Personalized Speech Enhancement</a>&rdquo;, in Proc. <em>IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)</em>, 2023.
           </li>
           <li>
-            Aswin Sivaraman, Scott Wisdom, Hakan Erdogan, and John R Hershey, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2110.10739">Adapting Speech Separation to Real-World Meetings Using Mixture Invariant Training</a>&rdquo;, in Proc. <em>IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)</em>, 2022.
-            <span class="no-print">[<a target="_blank" href="https://ami-mixit.github.io/">audio demo</a>]</span>
+            <strong>Aswin Sivaraman</strong>, Scott Wisdom, Hakan Erdogan, and John R Hershey, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2110.10739">Adapting Speech Separation to Real-World Meetings Using Mixture Invariant Training</a>&rdquo;, in Proc. <em>IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)</em>, 2022.
+            <span class="no-print">[<a target="_blank" rel="noopener noreferrer" href="https://ami-mixit.github.io/">audio demo</a>]</span>
           </li>
           <li>
-            Aswin Sivaraman and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2105.03542">Zero-Shot Personalized Speech Enhancement through Speaker-Informed Model Selection</a>&rdquo;, in Proc. <em>IEEE Workshop on Applications of Signal Processing to Audio and Acoustics (WASPAA)</em>, 2021.
+            <strong>Aswin Sivaraman</strong> and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2105.03542">Zero-Shot Personalized Speech Enhancement through Speaker-Informed Model Selection</a>&rdquo;, in Proc. <em>IEEE Workshop on Applications of Signal Processing to Audio and Acoustics (WASPAA)</em>, 2021.
           </li>
           <li>
-            Aswin Sivaraman, Sunwoo Kim, and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2104.02018">Personalized Speech Enhancement through Self-Supervised Data Augmentation and Purification</a>&rdquo;, in Proc. <em>Annual Conference of the International Speech Communication Association (Interspeech)</em>, 2021.
+            <strong>Aswin Sivaraman</strong>, Sunwoo Kim, and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2104.02018">Personalized Speech Enhancement through Self-Supervised Data Augmentation and Purification</a>&rdquo;, in Proc. <em>Annual Conference of the International Speech Communication Association (Interspeech)</em>, 2021.
           </li>
           <li>
-            Sravana Reddy, Yongze Yu, Aasish Pappu, Aswin Sivaraman, Rezvaneh Rezapour, and Rosie Jones, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2103.02585">Detecting Extraneous Content in Podcasts</a>&rdquo;, in Proc. <em>16th Conference of the European Chapter of the Association for Computational Linguistics (EACL)</em>, 2021.
+            Sravana Reddy, Yongze Yu, Aasish Pappu, <strong>Aswin Sivaraman</strong>, Rezvaneh Rezapour, and Rosie Jones, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2103.02585">Detecting Extraneous Content in Podcasts</a>&rdquo;, in Proc. <em>16th Conference of the European Chapter of the Association for Computational Linguistics (EACL)</em>, 2021.
           </li>
           <li>
-            Aswin Sivaraman and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2005.08128">Sparse Mixture of Local Experts for Efficient Speech Enhancement</a>&rdquo;, in Proc. <em>Annual Conference of the International Speech Communication Association (Interspeech)</em>, 2020.
-            <span class="no-print">[<a target="_blank" href="https://saige.sice.indiana.edu/research-projects/sparse-mle/">audio demo</a>] [<a target="_blank" href="https://github.com/IU-SAIGE/sparse_mle">source code</a>]</span>
+            <strong>Aswin Sivaraman</strong> and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2005.08128">Sparse Mixture of Local Experts for Efficient Speech Enhancement</a>&rdquo;, in Proc. <em>Annual Conference of the International Speech Communication Association (Interspeech)</em>, 2020.
+            <span class="no-print">[<a target="_blank" rel="noopener noreferrer" href="https://saige.sice.indiana.edu/research-projects/sparse-mle/">audio demo</a>] [<a target="_blank" rel="noopener noreferrer" href="https://github.com/IU-SAIGE/sparse_mle">source code</a>]</span>
           </li>
         </ol>
-        <h3>Workshops</h3>
+        <h3>Workshop Papers (Non-Archival)</h3>
         <ol class="list-workshops">
           <li>
-            Aswin Sivaraman and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2011.03426">Self-Supervised Learning from Contrastive Mixtures for Personalized Speech Enhancement</a>&rdquo;, in <em>Neural Information Processing Systems (NeurIPS) Workshop on Self-Supervised Learning for Speech and Audio Processing</em>, 2020.
-            <span class="no-print">[<a target="_blank" href="https://saige.sice.indiana.edu/research-projects/contrastive-mixtures/">audio demo</a>] [<a target="_blank" href="https://slideslive.com/38942016">slides</a>] [<a target="_blank" href="https://github.com/IU-SAIGE/contrastive_mixtures">source code</a>]</span>
+            <strong>Aswin Sivaraman</strong> and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2011.03426">Self-Supervised Learning from Contrastive Mixtures for Personalized Speech Enhancement</a>&rdquo;, in <em>Neural Information Processing Systems (NeurIPS) Workshop on Self-Supervised Learning for Speech and Audio Processing</em>, 2020.
+            <span class="no-print">[<a target="_blank" rel="noopener noreferrer" href="https://saige.sice.indiana.edu/research-projects/contrastive-mixtures/">audio demo</a>] [<a target="_blank" rel="noopener noreferrer" href="https://slideslive.com/38942016">slides</a>] [<a target="_blank" rel="noopener noreferrer" href="https://github.com/IU-SAIGE/contrastive_mixtures">source code</a>]</span>
           </li>
         </ol>
-        <h3>Preprints</h3>
+        <h3>Other Manuscripts &amp; Preprints</h3>
         <ol class="list-preprints">
           <li>
-            Megan Wei, Mateusz Modrzejewski, Aswin Sivaraman, and Dorien Herremans, &ldquo;<a target="_blank" href="https://arxiv.org/abs/2409.09378">Prevailing Research Areas for Music AI in the Era of Foundation Models</a>&rdquo;, <em>arXiv preprint arXiv:2409.09378</em>, 2024.
+            Megan Wei, Mateusz Modrzejewski, <strong>Aswin Sivaraman</strong>, and Dorien Herremans, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/2409.09378">Prevailing Research Areas for Music AI in the Era of Foundation Models</a>&rdquo;, <em>arXiv preprint arXiv:2409.09378</em>, 2024.
           </li>
           <li>
-            Sanna Wager, George Tzanetakis, Cheng-i Wang, Lijiang Guo, Aswin Sivaraman, and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/1902.00956">Deep Autotuner: A Data-Driven Approach to Natural-Sounding Pitch Correction for Singing Voice in Karaoke Performances</a>&rdquo;, <em>arXiv preprint arXiv:1902.00956</em>, 2019.
+            Sanna Wager, George Tzanetakis, Cheng-i Wang, Lijiang Guo, <strong>Aswin Sivaraman</strong>, and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/1902.00956">Deep Autotuner: A Data-Driven Approach to Natural-Sounding Pitch Correction for Singing Voice in Karaoke Performances</a>&rdquo;, <em>arXiv preprint arXiv:1902.00956</em>, 2019.
           </li>
           <li>
-            Sanna Wager, Lijiang Guo, Aswin Sivaraman, and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/1805.02603">A Data-Driven Approach to Smooth Pitch Correction for Singing Voice in Pop Music</a>&rdquo;, <em>arXiv preprint arXiv:1805.02603</em>, 2018.
+            Sanna Wager, Lijiang Guo, <strong>Aswin Sivaraman</strong>, and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/1805.02603">A Data-Driven Approach to Smooth Pitch Correction for Singing Voice in Pop Music</a>&rdquo;, <em>arXiv preprint arXiv:1805.02603</em>, 2018.
           </li>
           <li>
-            Kai Zhen, Aswin Sivaraman, Jongmo Sung, and Minje Kim, &ldquo;<a target="_blank" href="https://arxiv.org/abs/1801.09774">On psychoacoustically weighted cost functions towards resource-efficient deep neural networks for speech denoising</a>&rdquo;, <em>arXiv preprint arXiv:1801.09774</em>, 2018.
+            Kai Zhen, <strong>Aswin Sivaraman</strong>, Jongmo Sung, and Minje Kim, &ldquo;<a target="_blank" rel="noopener noreferrer" href="https://arxiv.org/abs/1801.09774">On psychoacoustically weighted cost functions towards resource-efficient deep neural networks for speech denoising</a>&rdquo;, <em>arXiv preprint arXiv:1801.09774</em>, 2018.
           </li>
         </ol>
         <footer>

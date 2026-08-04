@@ -39,7 +39,7 @@ const ViewStats = (() => {
                                             : `?view=release&id=${encodeURIComponent(rid)}`;
             const thumb = img || getFallbackImageUrl();
             return `<a href="${href}" class="lang-expand-card">
-                <div class="lang-expand-thumb${kind === 'artist' ? ' rounded' : ''}" style="background-image:url('${thumb}')"></div>
+                <div class="lang-expand-thumb${kind === 'artist' ? ' rounded' : ''}" style="background-image:url('${cssUrl(thumb)}')"></div>
                 <div class="lang-expand-name">${escapeHtml(name)}</div>
                 <div class="lang-expand-count">${formatNumber(n)} plays</div>
             </a>`;
@@ -323,7 +323,7 @@ const ViewStats = (() => {
             const thumb = art_url || getFallbackImageUrl();
             const sub   = artist ? `${escapeHtml(artist)} · ${formatNumber(n)} plays` : `${formatNumber(n)} plays`;
             return `<a href="${href}" class="lang-expand-card lang-expand-card-wide">
-                <div class="lang-expand-thumb" style="background-image:url('${thumb}')"></div>
+                <div class="lang-expand-thumb" style="background-image:url('${cssUrl(thumb)}')"></div>
                 <div class="lang-expand-name">${escapeHtml(title)}</div>
                 <div class="lang-expand-count">${sub}</div>
             </a>`;

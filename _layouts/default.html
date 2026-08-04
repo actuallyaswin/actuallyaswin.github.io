@@ -2,26 +2,48 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <script>
+    // Blocking, in <head>, before stylesheets: theme.js used to run at the end
+    // of <body>, so every light-mode visitor got a full dark paint that then
+    // snapped to white after first contentful paint.
+    (function () {
+      try {
+        var t = localStorage.getItem('theme');
+        if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+      } catch (e) {}
+    })();
+  </script>
   <meta http-equiv="x-ua-compatible" content="ie=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% if page.layout == "post" %}{{ page.title }}{% elsif page.title and page.title != site.title %}{{ page.title }} | {{ site.title }}{% else %}{{ site.title }}{% endif %}</title>
-  <meta name="description" content="{{ page.description | default: site.description }}">
+  <meta name="description" content="{{ page.description | default: page.excerpt | strip_html | strip_newlines | truncate: 155 | default: site.description }}">
   <link rel="canonical" href="{{ page.url | absolute_url }}">
+  <link rel="icon" href="{{ '/img/favicon.svg' | relative_url }}" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <meta property="og:url" content="{{ page.url | absolute_url }}">
-  <meta property="og:type" content="website">
+  <meta property="og:type" content="{% if page.layout == 'post' %}article{% else %}website{% endif %}">
+  <meta property="og:site_name" content="{{ site.title }}">
   <meta property="og:title" content="{{ page.title | default: site.title }}">
-  <meta property="og:description" content="{{ page.description | default: site.description }}">
-  <meta property="og:image" content="{{ page.og_image | default: 'https://actuallyaswin.github.io/img/og-preview.png' }}">
+  <meta property="og:description" content="{{ page.description | default: page.excerpt | strip_html | strip_newlines | truncate: 155 | default: site.description }}">
+  <meta property="og:image" content="{{ page.og_image | default: 'https://actuallyaswin.github.io/img/og-preview.jpg' }}">
+  <meta property="og:image:alt" content="{{ page.title | default: site.title }}">
+  {% if page.layout == "post" %}<meta property="article:published_time" content="{{ page.date | date_to_xmlschema }}">{% endif %}
   <meta name="twitter:card" content="summary_large_image">
   <meta property="twitter:domain" content="actuallyaswin.github.io">
   <meta property="twitter:url" content="{{ page.url | absolute_url }}">
   <meta name="twitter:title" content="{{ page.title | default: site.title }}">
-  <meta name="twitter:description" content="{{ page.description | default: site.description }}">
-  <meta name="twitter:image" content="{{ page.og_image | default: 'https://actuallyaswin.github.io/img/og-preview.png' }}">
+  <meta name="twitter:description" content="{{ page.description | default: page.excerpt | strip_html | strip_newlines | truncate: 155 | default: site.description }}">
+  <meta name="twitter:image" content="{{ page.og_image | default: 'https://actuallyaswin.github.io/img/og-preview.jpg' }}">
   {% feed_meta %}
   <link rel="stylesheet" type="text/css" href="{{ '/css/global.css' | relative_url }}">
   <link rel="stylesheet" type="text/css" href="{{ '/css/blog.css' | relative_url }}">
-  <link rel="stylesheet" type="text/css" href="{{ '/css/katex/katex.css' | relative_url }}">
+  {% comment %}
+    kramdown-math-katex renders math server-side into .katex markup, so detect
+    that rather than relying on front matter — gating on a `math:` flag would
+    silently unstyle any post that forgot to set it.
+  {% endcomment %}
+  {% if content contains "katex" %}<link rel="stylesheet" type="text/css" href="{{ '/css/katex/katex.css' | relative_url }}">{% endif %}
   <style>
     :root {
       --num-journals: {{ page.num_journals | default: 0 }};
@@ -30,14 +52,39 @@
       --num-workshops: {{ page.num_workshops | default: 0 }};
     }
   </style>
+  {% if page.url == "/" %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Person",
+    "name": "Aswin Sivaraman",
+    "alternateName": "அஸ்வின் சிவராமன்",
+    "url": "{{ site.url }}",
+    "image": "https://avatars.githubusercontent.com/u/3477082",
+    "email": "mailto:aswin.sivaraman@gmail.com",
+    "jobTitle": "Machine Learning Engineer",
+    "worksFor": { "@type": "Organization", "name": "Apple" },
+    "alumniOf": [
+      { "@type": "CollegeOrUniversity", "name": "Indiana University Bloomington" },
+      { "@type": "CollegeOrUniversity", "name": "University of Illinois Urbana-Champaign" }
+    ],
+    "knowsAbout": ["Speech Enhancement", "Machine Learning", "Audio Signal Processing", "Music Information Retrieval"],
+    "sameAs": [
+      "https://scholar.google.com/citations?user=kX-hu3cAAAAJ&hl=en",
+      "https://www.github.com/actuallyaswin",
+      "https://www.linkedin.com/in/actuallyaswin",
+      "https://x.com/actuallyaswin"
+    ]
+  }
+  </script>
+  {% endif %}
 </head>
 <body>
   {% include masthead.html %}
   <main>
     {{ content }}
   </main>
-  <script src="{{ '/js/theme.js' | relative_url }}"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-  <script src="{{ '/js/mermaid-init.js' | relative_url }}"></script>
+  <script src="{{ '/js/theme.js' | relative_url }}" defer></script>
+  <script src="{{ '/js/mermaid-init.js' | relative_url }}" defer></script>
 </body>
 </html>

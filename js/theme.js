@@ -1,28 +1,29 @@
 // Theme Management
-// Detects system preference and handles theme toggle
+// The initial theme is applied by a blocking inline script in <head> (see
+// _layouts/default.html) to avoid a flash of the wrong theme; this file only
+// handles the toggle and the OS-preference listener.
 // Shares the data-theme attribute contract with music/theme.js:
 // no attribute = dark (default), data-theme="light" = explicit override.
 
-function getInitialTheme() {
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme) {
-        return savedTheme;
-    }
-
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
-        return 'light';
-    }
-
-    return 'dark';
+function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 }
 
-function applyTheme(theme) {
+// persist=false is used for OS-preference changes, so that following the system
+// doesn't count as an explicit user choice. applyTheme used to always write to
+// localStorage, which meant merely loading the page pinned the OS-derived value
+// and permanently disabled the listener below.
+function applyTheme(theme, persist) {
     if (theme === 'light') {
         document.documentElement.setAttribute('data-theme', 'light');
     } else {
         document.documentElement.removeAttribute('data-theme');
     }
-    localStorage.setItem('theme', theme);
+    if (persist) {
+        try {
+            localStorage.setItem('theme', theme);
+        } catch (e) {}
+    }
     updateThemeToggleIcon(theme);
 }
 
@@ -38,19 +39,26 @@ function updateThemeToggleIcon(theme) {
 }
 
 function toggleTheme() {
-    const currentTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
-    applyTheme(newTheme);
+    applyTheme(currentTheme() === 'light' ? 'dark' : 'light', true);
 }
 
 (function initTheme() {
-    const theme = getInitialTheme();
-    applyTheme(theme);
+    // The attribute is already set; just sync the toggle icon.
+    updateThemeToggleIcon(currentTheme());
+
+    const toggle = document.getElementById('themeToggle');
+    if (toggle) {
+        toggle.addEventListener('click', toggleTheme);
+    }
 
     if (window.matchMedia) {
-        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', e => {
-            if (!localStorage.getItem('theme')) {
-                applyTheme(e.matches ? 'light' : 'dark');
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+            let saved = null;
+            try {
+                saved = localStorage.getItem('theme');
+            } catch (err) {}
+            if (!saved) {
+                applyTheme(e.matches ? 'light' : 'dark', false);
             }
         });
     }

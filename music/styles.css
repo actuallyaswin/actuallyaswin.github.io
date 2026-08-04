@@ -25,7 +25,8 @@ a {
     --text: #e8e8e8;
     --muted: #9aa0a6;
     --text-secondary: #9aa0a6;
-    --text-tertiary: #767c85;
+    /* raised from #767c85, which was only 3.73:1 on --bg-secondary */
+    --text-tertiary: #8b919b;
 
     --border: #20232c;
     --border-hover: #3a3f4d;
@@ -33,6 +34,14 @@ a {
     --success: #6bbf7a;
     --error: #e0685f;
     --warning: #d9a441;
+
+    /* Brand/cert colours as tokens so light mode can override them; they were
+       hardcoded hexes tuned only against the dark background. */
+    --cert-gold: #c9a227;
+    --cert-platinum: #aab4be;
+    --cert-diamond: #67a1fd;
+    --svc-spotify: #1ed760;
+    --svc-apple: #fa243c;
 
     --shadow-primary: rgba(135, 174, 115, 0.2);
     --shadow-sm: rgba(0, 0, 0, 0.2);
@@ -65,9 +74,16 @@ a {
     --border: #eee;
     --border-hover: #ccc;
 
-    --success: #2f8a45;
+    /* darkened to clear AA 4.5:1 on --bg (#fefefe): were 4.30 and 3.67 */
+    --success: #1f6b33;
     --error: #c23b32;
-    --warning: #b3791f;
+    --warning: #8a5a0f;
+
+    --cert-gold: #8a6d10;
+    --cert-platinum: #5c6672;
+    --cert-diamond: #1c4f9c;
+    --svc-spotify: #0d7a35;
+    --svc-apple: #c00d22;
 
     --shadow-primary: rgba(61, 101, 41, 0.15);
     --shadow-sm: rgba(0, 0, 0, 0.05);
@@ -77,6 +93,33 @@ a {
     --chart-bg-solid: rgba(61, 101, 41, 0.8);
 
     --overlay: rgba(0, 0, 0, 0.3);
+}
+
+/* Accessibility: there were no visible focus indicators anywhere in this
+   stylesheet (0 :focus-visible rules, 16 blanket `outline: none`), so keyboard
+   navigation gave no indication of position. :focus-visible does not fire on
+   mouse clicks, which is what those `outline: none` rules were suppressing. */
+:where(a, button, select, input, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Stat/number columns jitter without tabular figures. */
+.stat-value,
+.db-loading-hint,
+.release-card-stats,
+.tracklist-plays {
+    font-variant-numeric: tabular-nums;
 }
 
 body {
@@ -2381,9 +2424,9 @@ a.stat-card:hover .stat-label::after {
     background: transparent;
     width: 100%;
 }
-.badge-cert-gold     { border-color: #c9a227; color: #c9a227; }
-.badge-cert-platinum { border-color: #aab4be; color: #aab4be; }
-.badge-cert-diamond  { border-color: #67a1fd; color: #67a1fd; }
+.badge-cert-gold     { border-color: var(--cert-gold); color: var(--cert-gold); }
+.badge-cert-platinum { border-color: var(--cert-platinum); color: var(--cert-platinum); }
+.badge-cert-diamond  { border-color: var(--cert-diamond); color: var(--cert-diamond); }
 
 /* Type badge (Solo / Band / Supergroup) */
 .badge-type {
@@ -2858,7 +2901,7 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     text-transform: uppercase;
 }
 .history-source-lastfm  { background: rgba(210,0,80,0.15); color: #d20050; }
-.history-source-spotify { background: rgba(30,215,96,0.15); color: #1db954; }
+.history-source-spotify { background: rgba(30,215,96,0.15); color: var(--svc-spotify); }
 
 /* Stats view */
 .stat-section { margin-bottom: 3rem; }
@@ -3107,6 +3150,118 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     padding: 3rem;
     color: var(--text-secondary);
     font-size: 1.1rem;
+}
+
+/* DB bootstrap: the gzipped database is ~18 MB, so the download needs real
+   feedback. Previously this was a single static "Loading database..." string
+   for the full ~14 s on 4G. */
+.db-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 4rem 1rem;
+    text-align: center;
+}
+
+.db-loading-label {
+    font-size: 1.1rem;
+    color: var(--text-secondary);
+}
+
+.db-progress {
+    width: 100%;
+    max-width: 280px;
+    height: 3px;
+    background: var(--bg-tertiary);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.db-progress-fill {
+    width: 0;
+    height: 100%;
+    background: var(--primary);
+    transition: width 0.2s linear;
+}
+
+.db-loading-hint {
+    font-size: 0.8125rem;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Terminal error/not-found state. Reusing .loading for these made a dead end
+   look identical to "still working". */
+.app-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 4rem 1rem;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.app-error-icon {
+    width: 32px;
+    height: 32px;
+    color: var(--text-tertiary);
+}
+
+.app-error-title {
+    margin: 0;
+    font-size: 1.25rem;
+    color: var(--text);
+}
+
+.app-error-message {
+    margin: 0;
+    max-width: 40ch;
+    font-size: 0.9375rem;
+}
+
+.app-error-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.app-error-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.app-error-btn:hover {
+    background: var(--bg-tertiary);
+}
+
+/* Empty / zero-result state, distinct from .loading */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 3rem 1rem;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.empty-state-title {
+    font-size: 1rem;
+    color: var(--text);
+}
+
+.empty-state-hint {
+    font-size: 0.8125rem;
+    max-width: 32ch;
 }
 
 /* Back Button */
@@ -3742,7 +3897,7 @@ footer a:hover {
 }
 
 .admin-source--lastfm  { background: #d4183822; color: #f04e4e; }
-.admin-source--spotify { background: #1db95422; color: #1db954; }
+.admin-source--spotify { background: #1db95422; color: var(--svc-spotify); }
 
 .admin-skip { color: var(--text-tertiary); }
 

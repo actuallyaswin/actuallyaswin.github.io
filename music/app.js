@@ -1,6 +1,11 @@
 let _db = null;
 let _currentView = null;
 
+// NOTE: the 'admin' route was removed deliberately. views/admin.js shipped to
+// every visitor of the public site, and its PIN gate compared a PBKDF2 hash
+// read from the same database the browser had already downloaded — bypassable
+// by setting one sessionStorage key. The editor now lives outside this repo and
+// is run against a local copy of the DB instead.
 const VIEWS = {
     'home':            () => ViewHome,
     'year':            () => ViewYear,
@@ -8,7 +13,6 @@ const VIEWS = {
     'artist':          () => ViewArtist,
     'release':         () => ViewRelease,
     'genre':           () => ViewGenre,
-    'admin':           () => ViewAdmin,
     'recommendations': () => ViewRecommendations,
     'history':         () => ViewHistory,
     'stats':           () => ViewStats,
@@ -18,21 +22,67 @@ function getParams() {
     return Object.fromEntries(new URLSearchParams(window.location.search));
 }
 
+function renderErrorPage(container, title, message, options = {}) {
+    const { retry = false } = options;
+    container.innerHTML = `
+        <div class="app-error">
+            <i data-lucide="${retry ? 'cloud-off' : 'compass'}" class="app-error-icon"></i>
+            <h1 class="app-error-title">${escapeHtml(title)}</h1>
+            <p class="app-error-message">${escapeHtml(message)}</p>
+            <div class="app-error-actions">
+                ${retry ? '<button type="button" class="app-error-btn" id="appErrorRetry">Try again</button>' : ''}
+                <a class="app-error-link" href="?">Back to home</a>
+            </div>
+        </div>`;
+    if (retry) {
+        const btn = document.getElementById('appErrorRetry');
+        if (btn) btn.addEventListener('click', () => window.location.reload());
+    }
+}
+
 function navigate(params, pushState = true) {
-    if (_currentView && _currentView.unmount) _currentView.unmount();
+    if (_currentView && _currentView.unmount) {
+        // A throw here must not prevent the next view from mounting.
+        try {
+            _currentView.unmount();
+        } catch (err) {
+            console.error('View unmount failed:', err);
+        }
+    }
     _currentView = null;
 
     const container = document.getElementById('view-container');
     const viewName = params.view || 'home';
-    const viewFn = VIEWS[viewName] || VIEWS['home'];
-    _currentView = viewFn();
 
     if (pushState) {
         const qs = new URLSearchParams(params).toString();
         history.pushState(params, '', qs ? `?${qs}` : '?');
     }
 
-    _currentView.mount(container, _db, params);
+    // Unknown views used to silently fall through to home while leaving the
+    // bogus ?view= in the address bar, so reloading or sharing reproduced it.
+    if (!VIEWS[viewName]) {
+        renderErrorPage(container, 'Page not found', `There's no “${viewName}” view here.`);
+        return;
+    }
+
+    _currentView = VIEWS[viewName]();
+
+    // Error boundary: views run many synchronous queries with little internal
+    // handling, and a single schema drift used to white-screen the whole SPA.
+    try {
+        _currentView.mount(container, _db, params);
+    } catch (err) {
+        console.error(`View "${viewName}" failed to mount:`, err);
+        _currentView = null;
+        renderErrorPage(
+            container,
+            'Something went wrong',
+            'This page could not be rendered. The error has been logged to the console.',
+            { retry: true }
+        );
+        return;
+    }
 
     // Fade-in transition
     container.style.animation = 'none';
@@ -40,8 +90,7 @@ function navigate(params, pushState = true) {
     container.style.animation = 'viewFadeIn 0.18s ease forwards';
 }
 
-// Search modal logic lives in search.js (shared with the standalone
-// artist/release/year pages).
+// Search modal logic lives in search.js.
 document.addEventListener('DOMContentLoaded', () => {
     lucide.createIcons();
 });
@@ -87,28 +136,49 @@ window.addEventListener('popstate', e => {
         'year':         'Loading year…',
         'top':          'Loading…',
     };
-    container.innerHTML = `<div class="loading">${VIEW_LOADING[params.view] || 'Loading…'}</div>`;
+    const label = VIEW_LOADING[params.view] || 'Loading…';
+    container.innerHTML = `
+        <div class="db-loading">
+            <div class="db-loading-label">${label}</div>
+            <div class="db-progress"><div class="db-progress-fill" id="dbProgressFill"></div></div>
+            <div class="db-loading-hint" id="dbProgressHint">Fetching listening database…</div>
+        </div>`;
+
+    const fill = document.getElementById('dbProgressFill');
+    const hint = document.getElementById('dbProgressHint');
+    const MB = 1024 * 1024;
 
     try {
-        console.time('[db] init-sql');
         const SQL = await initSqlJs({
-            locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+            locateFile: file => `https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/${file}`
         });
-        console.timeEnd('[db] init-sql');
 
-        console.time('[db] fetch-db');
-        const buffer = await DB_CONFIG.fetchDatabase();
-        console.timeEnd('[db] fetch-db');
+        const buffer = await DB_CONFIG.fetchDatabase((ratio, loaded, total) => {
+            if (fill) fill.style.width = `${(ratio * 100).toFixed(1)}%`;
+            if (hint) {
+                hint.textContent =
+                    `${(loaded / MB).toFixed(1)} of ${(total / MB).toFixed(0)} MB`;
+            }
+        });
 
-        console.time('[db] parse-db');
+        if (hint) hint.textContent = 'Opening database…';
+        // Yield a frame so the label above actually paints before sql.js blocks
+        // the main thread parsing ~47 MB.
+        await new Promise(requestAnimationFrame);
+
         _db = new SQL.Database(new Uint8Array(buffer));
-        console.timeEnd('[db] parse-db');
 
-        console.time('[db] mount-view');
         navigate(params, false);
-        console.timeEnd('[db] mount-view');
     } catch (err) {
         console.error('Error loading database:', err);
-        container.innerHTML = '<div class="loading" style="color: var(--error);">Error loading database. Please refresh.</div>';
+        const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+        renderErrorPage(
+            container,
+            offline ? 'You appear to be offline' : 'Could not load the database',
+            offline
+                ? 'Reconnect and try again — the listening database is about 18 MB.'
+                : 'The listening database failed to download or was corrupt.',
+            { retry: true }
+        );
     }
 })();

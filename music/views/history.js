@@ -121,7 +121,7 @@ const ViewHistory = (() => {
             ? [artistName, releaseTitle].filter(Boolean).join(' · ')
             : [rawArtist, rawAlbum].filter(Boolean).join(' · ');
         const thumb  = matched && art
-            ? `<div class="recent-play-thumb" style="background-image:url('${art}')"></div>`
+            ? `<div class="recent-play-thumb" style="background-image:url('${cssUrl(art)}')"></div>`
             : `<div class="recent-play-thumb history-thumb-empty"></div>`;
         const srcBadge = `<span class="history-source history-source-${source}">${source === 'spotify' ? 'SP' : 'LFM'}</span>`;
         const timeStr  = _relTime(ts);

@@ -282,7 +282,7 @@ const ViewYear = (() => {
                 card.className = 'image-card';
                 card.href = `?view=release&id=${encodeURIComponent(id)}`;
                 const imgSrc = albumArtUrl || getFallbackImageUrl();
-                card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
+                card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>`;
                 if (i >= show) card.style.display = 'none';
                 container.appendChild(card);
             });
@@ -311,7 +311,7 @@ const ViewYear = (() => {
                 card.href = `?view=release&id=${encodeURIComponent(id)}`;
                 const imgSrc = albumArtUrl || getFallbackImageUrl();
                 card.innerHTML = `
-                    <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
+                    <div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
                     <div class="image-card-overlay">
                         <div class="image-card-name">${escapeHtml(title)}</div>
                         <div class="image-card-artist">${escapeHtml(artistName || 'Various Artists')}</div>
@@ -357,7 +357,7 @@ const ViewYear = (() => {
                 card.className = 'image-card';
                 card.href = `?view=artist&id=${encodeURIComponent(id)}`;
                 const imgSrc = imageUrl || getFallbackImageUrl();
-                card.innerHTML = `<div class="image-card-img" style="background-image: url('${imgSrc}')"></div>`;
+                card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>`;
                 if (i >= show) card.style.display = 'none';
                 container.appendChild(card);
             });
@@ -386,7 +386,7 @@ const ViewYear = (() => {
                 card.href = `?view=artist&id=${encodeURIComponent(id)}`;
                 const imgSrc = imageUrl || getFallbackImageUrl();
                 card.innerHTML = `
-                    <div class="image-card-img" style="background-image: url('${imgSrc}')"></div>
+                    <div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
                     <div class="image-card-overlay">
                         <div class="image-card-name">${escapeHtml(name)}</div>
                         <div class="image-card-stats">

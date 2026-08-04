@@ -1275,12 +1275,26 @@ const ViewRelease = (() => {
         const modal = document.createElement('div');
         modal.id = 'artModal';
         modal.className = 'art-modal';
-        modal.innerHTML = `<div class="art-modal-inner"><img src="${url}" alt=""></div>`;
+        // Build the <img> via the DOM rather than innerHTML: the URL comes from
+        // scraped third-party metadata, and a quote in it would break out of
+        // the attribute.
+        const inner = document.createElement('div');
+        inner.className = 'art-modal-inner';
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = '';
+        inner.appendChild(img);
+        modal.appendChild(inner);
         document.body.appendChild(modal);
-        const close = () => modal.remove();
-        modal.addEventListener('click', close);
-        document.addEventListener('keydown', function onKey(e) {
-            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
-        });
+
+        // The keydown handler used to remove itself only on Escape, so
+        // click-to-dismiss left one live handler (and a detached modal) behind
+        // per image opened.
+        const ac = new AbortController();
+        const close = () => { ac.abort(); modal.remove(); };
+        modal.addEventListener('click', close, { signal: ac.signal });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') close();
+        }, { signal: ac.signal });
     }
 })();

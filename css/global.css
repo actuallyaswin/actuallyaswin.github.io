@@ -17,25 +17,46 @@
 }
 
 :root {
+    color-scheme: dark;
     --accent: #87ae73;
     --accent-dark: #9fcf88;
     --accent-text: #d8e8cf;
     --bg: #16181d;
     --fg: #e8e8e8;
-    --muted: #9aa0a6;
+    /* raised from #9aa0a6 (6.73:1) to clear AAA 7:1 on --bg */
+    --muted: #a8aeb4;
     --panel-strong: #3a3f4d;
     --panel-soft: #20232c;
 }
 
 :root[data-theme="light"] {
+    color-scheme: light;
     --accent: #87ae73;
     --accent-dark: #3d6529;
     --accent-text: #1a2d13;
     --bg: #fefefe;
     --fg: #0a0a0a;
-    --muted: #556270;
+    /* raised from #556270 (6.18:1) to clear AAA 7:1 on --bg */
+    --muted: #4a5560;
     --panel-strong: #ccc;
     --panel-soft: #eee;
+}
+
+/* WCAG 2.4.7 — there were no focus styles at all; the only rule was
+   a:focus{text-decoration:underline}, invisible on colour-only links. */
+:focus-visible {
+    outline: 2px solid var(--accent-dark);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }
 
 * {
@@ -457,16 +478,31 @@ section > .grid-x:not(:last-child) {
 }
 
 .column-profile > .links {
-    margin-top: 0.2em;
-    font-size: 1.5em;
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 0.4em;
 }
 
 .column-profile > .links > a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* 24px icon + padding keeps the tap target at the 44px WCAG 2.5.5 floor */
+    padding: 0.625rem;
+    border-radius: 6px;
     color: var(--muted);
 }
 
+.column-profile > .links svg {
+    width: 24px;
+    height: 24px;
+    display: block;
+}
+
 .column-profile > .links > a:hover {
-    color: var(--accent);
+    /* --accent is only 2.5:1 on the light background; --accent-dark passes AA in both themes */
+    color: var(--accent-dark);
 }
 
 .column-profile {
@@ -634,14 +670,78 @@ footer {
 }
 
 @media print {
-  .masthead,
-  .theme-toggle {
-    display: none;
+  /* Dark is the default theme, and browsers strip backgrounds but honour text
+     colour — so without these overrides the CV printed #e8e8e8 on white paper
+     (1.23:1), i.e. a blank sheet. Force a light palette regardless of theme. */
+  :root,
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #fff;
+    --fg: #000;
+    --muted: #333;
+    --accent: #000;
+    --accent-dark: #000;
+    --accent-text: #000;
+    --panel-strong: #fff;
+    --panel-soft: #fff;
   }
 
   body {
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 10.5pt;
     orphans: 3;
     widows: 3;
+  }
+
+  /* Used three times in index.html but was never defined in any stylesheet,
+     so [audio demo] / [source code] / [slides] all printed. */
+  .no-print {
+    display: none !important;
+  }
+
+  a {
+    color: #000 !important;
+    text-decoration: none;
+  }
+
+  /* Section headers rely on --panel-* backgrounds for hierarchy on screen;
+     backgrounds are stripped when printing, so substitute rules. */
+  .column-content h2 {
+    background: none;
+    border-bottom: 1.5pt solid #000;
+    border-radius: 0;
+    padding: 0 0 0.15em;
+    font-size: 12pt;
+  }
+
+  .column-content h3 {
+    background: none;
+    border-bottom: 0.5pt solid #999;
+    border-radius: 0;
+    padding: 0 0 0.1em;
+    font-size: 10.5pt;
+    font-weight: bold;
+  }
+
+  /* A printed CV's hyperlinks are dead ends; surface the target URL. */
+  .list-journals a[href^="http"]::after,
+  .list-conferences a[href^="http"]::after,
+  .list-preprints a[href^="http"]::after,
+  .list-workshops a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 8pt;
+    color: #555;
+    word-break: break-all;
+  }
+
+  @page {
+    margin: 0.6in;
+  }
+
+  .masthead,
+  .theme-toggle {
+    display: none;
   }
 
   .grid-margin-x {
@@ -667,7 +767,9 @@ footer {
     margin: 0 auto !important;
   }
 
-  .links {
+  /* Specificity must match `.column-profile > .links` (0,2,0), which sets
+     display:flex — a bare `.links` selector (0,1,0) loses to it. */
+  .column-profile > .links {
     display: none;
   }
 
@@ -689,4 +791,11 @@ footer {
     break-inside: avoid;
     display: block;
   }
+}
+
+.section-note {
+    color: var(--muted);
+    font-size: 0.8em;
+    font-style: italic;
+    margin: 0.35em 0 0;
 }
