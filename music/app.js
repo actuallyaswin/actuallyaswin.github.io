@@ -1,11 +1,8 @@
 let _db = null;
 let _currentView = null;
 
-// NOTE: the 'admin' route was removed deliberately. views/admin.js shipped to
-// every visitor of the public site, and its PIN gate compared a PBKDF2 hash
-// read from the same database the browser had already downloaded — bypassable
-// by setting one sessionStorage key. The editor now lives outside this repo and
-// is run against a local copy of the DB instead.
+// Don't add an 'admin' route: the editor lives outside this repo and runs
+// against a local DB. Shipping it puts its PIN gate in every visitor's hands.
 const VIEWS = {
     'home':            () => ViewHome,
     'year':            () => ViewYear,
@@ -57,10 +54,11 @@ function navigate(params, pushState = true) {
     if (pushState) {
         const qs = new URLSearchParams(params).toString();
         history.pushState(params, '', qs ? `?${qs}` : '?');
+        // Forward navigation only — popstate keeps the browser's restored position.
+        window.scrollTo(0, 0);
     }
 
-    // Unknown views used to silently fall through to home while leaving the
-    // bogus ?view= in the address bar, so reloading or sharing reproduced it.
+    // Don't fall through to home — that leaves a bogus ?view= in the URL.
     if (!VIEWS[viewName]) {
         renderErrorPage(container, 'Page not found', `There's no “${viewName}” view here.`);
         return;
@@ -69,7 +67,7 @@ function navigate(params, pushState = true) {
     _currentView = VIEWS[viewName]();
 
     // Error boundary: views run many synchronous queries with little internal
-    // handling, and a single schema drift used to white-screen the whole SPA.
+    // handling, and one bad query would otherwise white-screen the SPA.
     try {
         _currentView.mount(container, _db, params);
     } catch (err) {
@@ -90,7 +88,7 @@ function navigate(params, pushState = true) {
     container.style.animation = 'viewFadeIn 0.18s ease forwards';
 }
 
-// Search modal logic lives in search.js.
+// Search lives in search.js.
 document.addEventListener('DOMContentLoaded', () => {
     lucide.createIcons();
 });
