@@ -392,7 +392,7 @@ const ViewRecommendations = (() => {
     function mount(container, db) {
         _db   = db;
         _seed = _db.exec('SELECT COUNT(*) FROM listens')[0].values[0][0];
-        document.title = 'Recommendations | Aswin Sivaraman';
+        setPageTitle('Recommendations');
 
         container.innerHTML = `
             <header class="rec-header">

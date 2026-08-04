@@ -1,5 +1,13 @@
 // Shared utilities for music browser
 
+const SITE_NAME = 'Aswin Sivaraman';
+
+// Single source of the title suffix, so views don't each invent a format.
+function setPageTitle(...parts) {
+    const page = parts.filter(Boolean).join(' · ');
+    document.title = page ? `${page} | ${SITE_NAME}` : SITE_NAME;
+}
+
 function formatNumber(num) {
     return num.toLocaleString();
 }
@@ -93,8 +101,7 @@ function setupToggleGroup(selector, onChange) {
         document.querySelectorAll(selector).forEach(b => {
             const on = b === active;
             b.classList.toggle('active', on);
-            // Selected state used to be conveyed only by the `active` class, so
-            // screen readers announced every button in the group identically.
+            // The `active` class alone isn't announced by screen readers.
             b.setAttribute('aria-pressed', String(on));
         });
     };

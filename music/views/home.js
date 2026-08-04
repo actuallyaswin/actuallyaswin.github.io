@@ -5,7 +5,7 @@ const ViewHome = (() => {
     function mount(container, db, params) {
         _db = db;
         _abortController = new AbortController();
-        document.title = 'Music | Aswin Sivaraman';
+        setPageTitle('Music');
 
         container.innerHTML = `
             <header>

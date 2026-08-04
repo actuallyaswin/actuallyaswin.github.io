@@ -126,7 +126,7 @@ const ViewGenre = (() => {
         document.getElementById('genreName').textContent = name || 'Unknown Genre';
         document.getElementById('genreSubtitle').textContent =
             `${formatNumber(releaseCount)} releases · ${formatNumber(totalPlays)} plays`;
-        document.title = `${name} | Aswin Sivaraman`;
+        setPageTitle(name);
         loadGenreBreadcrumb(name || 'Unknown Genre', safeId);
         loadChildGenres(safeId);
     }

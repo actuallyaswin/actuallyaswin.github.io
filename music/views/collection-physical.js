@@ -323,7 +323,7 @@ const ViewCollectionPhysical = (() => {
 
     function mount(container, db, params) {
         _db = db;
-        document.title = 'aswin.db/collection – Physical';
+        setPageTitle('Collection', 'Physical');
 
         container.innerHTML = `
             <nav class="coll-nav">

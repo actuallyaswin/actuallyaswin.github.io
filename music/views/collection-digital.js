@@ -210,7 +210,7 @@ const ViewCollectionDigital = (() => {
 
     function mount(container, db, params) {
         _db = db;
-        document.title = 'aswin.db/collection – Digital';
+        setPageTitle('Collection', 'Digital');
 
         container.innerHTML = `
             <nav class="coll-nav">

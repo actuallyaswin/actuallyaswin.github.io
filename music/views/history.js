@@ -23,7 +23,7 @@ const ViewHistory = (() => {
 
     function mount(container, db, params) {
         _db = db;
-        document.title = 'History | Aswin Sivaraman';
+        setPageTitle('History');
 
         container.innerHTML = `
             <header><h1>History</h1></header>
