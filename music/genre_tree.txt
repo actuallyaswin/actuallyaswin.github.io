@@ -1,0 +1,1253 @@
+Ambient
+	Ambient Dub
+	Ambient Noise Wall
+	Dark Ambient
+	Space Ambient
+	Tribal Ambient
+Ambient Pop
+ASMR
+Blues
+	Acoustic Chicago Blues
+	Boogie-Woogie
+	Country Blues
+	Electric Blues
+	Jump Blues
+	New Orleans Blues
+	Piano Blues
+	Soul Blues
+	Vaudeville Blues
+CCM
+	Christian Hip Hop
+	Christian Rock
+	Praise & Worship
+	Urban Contemporary Gospel
+Chanson
+Children's Music
+	Fairy Tales
+	Lullabies
+Christmas
+Classical
+	Andalusian Classical Music
+	Burmese Classical Music
+	Carnatic Classical Music
+	East Asian Classical Music
+		Chinese Classical Music
+		Japanese Classical Music
+		Korean Classical Music
+		Sōkyoku
+	Gamelan
+	Hindustani Classical Music
+		Dhrupad
+		Khyal
+		Qawwali
+	Jeong-Ak
+	Middle Eastern Classical Music
+	Minyue
+	Western Classical Music
+		Ballet
+		Baroque Music
+		Chamber Music
+		Choral
+		Cinematic Classical
+			Epic Music
+		Classical Period
+		Light Music
+		Medieval Classical Music
+		Modern Classical
+			Expressionism
+			Impressionism
+			Minimalism
+				Holy Minimalism
+			Musique Concrète Instrumentale
+			Post-Minimalism
+			Serialism
+			Spectralism
+		Neoclassicism
+		Nocturne
+		Opera
+			Grand Opéra
+			Singspiel
+		Oratorio
+		Orchestral
+			Concerto
+			Symphony
+			Tone Poem
+		Renaissance Music
+		Romanticism
+			Grand Opéra
+Comedy
+	Break-In
+	Comedy Rap
+	Comedy Rock
+	Dutch Cabaret
+	Kabarett
+	Prank Calls
+	Sketch Comedy
+	Stand-Up Comedy
+Country
+	Alt-Country
+		Gothic Country
+	Bluegrass
+		Bluegrass Gospel
+		Progressive Bluegrass
+			Jamgrass
+	Bro-Country
+	Contemporary Country
+		Neo-Traditionalist Country
+	Country Pop
+		Countrypolitan
+		Urban Cowboy
+	Country Rock
+	Country Soul
+	Honky Tonk
+		Bakersfield Sound
+		Truck Driving Country
+	Nashville Sound
+	Old-Time
+	Outlaw Country
+	Progressive Country
+	Traditional Country
+		Country Gospel
+			Bluegrass Gospel
+Dance
+	Alternative Dance
+		Grebo
+		New Rave
+	Dance-Pop
+		Bubblegum Dance
+		Disco polo
+		Funk Melody
+		Romanian Popcorn
+		Tecnorumba
+		Township Bubblegum
+	Disco
+		Boogie
+		Electro-Disco
+		Euro-Disco
+		Latin Disco
+		Mutant Disco
+	Electronic Dance Music
+		Artcore
+		Bérite Club
+		Breakbeat
+			Acid Breaks
+			Baltimore Club
+			Big Beat
+			Breakbeat Hardcore
+				Darkside
+			Florida Breaks
+			Funky Breaks
+			Nu Skool Breaks
+			Progressive Breaks
+		Broken Beat
+		Bubblegum Bass
+		Coupé-Décalé
+		Dariacore
+		Drum and Bass
+			Atmospheric Drum and Bass
+			Dancefloor Drum and Bass
+			Darkstep
+				Crossbreed
+				Skullstep
+			Drumfunk
+			Drumstep
+			Halftime
+			Hardstep
+			Jazzstep
+			Jump-Up
+			Jungle
+				Ragga Jungle
+			Liquid Drum and Bass
+			Minimal Drum and Bass
+			Neurofunk
+			Techstep
+			Trancestep
+		Dubstep
+			Brostep
+				Briddim
+				Colour Bass
+				Deathstep
+				Drumstep
+				Riddim
+					Future Riddim
+			Chillstep
+			Dungeon Sound
+			Melodic Dubstep
+			Purple Sound
+			Tearout
+		East Coast Club
+		EBM
+		Electro Latino
+		Electro Swing
+		Electro-Disco
+		Eurodance
+		Footwork
+			Footwork Jungle
+		Freestyle
+		Funk Mandelão
+		Funkot
+		Future Rave
+		Ghettotech
+		Glitch Hop [EDM]
+		Grime
+			Neo-Grime
+			Weightless
+		Hard Dance
+		Hard Drum
+		Hardcore [EDM]
+			Acidcore
+			Belgian Techno
+			Breakbeat Hardcore
+				Darkside
+			Breakcore
+				Lolicore
+				Mashcore
+				Raggacore
+			Crossbreed
+			Deathchant Hardcore
+			Digital Hardcore
+			Doomcore
+			Extratone
+			Freeform Hardcore
+			Frenchcore
+			Happy Hardcore
+				Bouncy Techno
+				UK Hardcore
+			Hardtek
+			Industrial Hardcore
+			J-core
+			Speedcore
+				Splittercore
+			Terrorcore
+			Uptempo Hardcore
+		Hardvapour
+		Hardwave
+		House
+			Acid House
+			Afro House
+			Amapiano
+			Ambient House
+			Balearic Beat
+			Ballroom
+			Baltimore Club
+			Bass House
+				Speed House
+			Bassline
+			Big Room House
+			Brazilian Bass
+				Slap House
+			Changa Tuki
+			Chicago Hard House
+			Chicago House
+			Deep House
+				Lo-Fi House
+			Diva House
+				Hardbag
+			Electro House
+				Complextro
+				Dutch House
+				Fidget House
+				French Electro
+				Melbourne Bounce
+			Festival Progressive House
+			French House
+			Funky House
+			Future Funk
+			Future House
+				Future Bounce
+				Slap House
+			G-House
+			Garage House
+			Ghetto House
+				Juke
+			Gqom
+			Hip House
+			Italo House
+			Kwaito
+			Melodic House
+			Microhouse
+			Organic House
+			Outsider House
+				Lo-Fi House
+			Phonk House
+			Progressive House
+			Romanian Popcorn
+			Speed Garage
+			Tech House
+				Deep Tech
+				Rominimal
+			Tribal House
+			Tropical House
+			UK Hard House
+				Scouse House
+					Hardbass
+				Speed House
+		Jungle Terror
+		Kawaii Future Bass
+		Krushclub
+		Kuduro
+			Batida
+		Makina
+		Melodic Bass
+		Midtempo Bass
+		Moombahcore
+		Moombahton
+		Nerdcore Techno
+		Nu-Disco
+		Singeli
+		Skweee
+		Tearout [Brostep]
+		Techno
+			Acid Techno
+			Ambient Techno
+			Belgian Techno
+			Bleep Techno
+			Detroit Techno
+			Freetekno
+			Hard Techno
+				Schranz
+			Hardgroove Techno
+			Industrial Techno
+				Birmingham Sound
+			Melodic Techno
+			Minimal Techno
+				Dub Techno
+			Peak Time Techno
+			Wonky Techno
+		Techno Bass
+		Tecnorumba
+		Trance
+			Acid Trance
+			Big Room Trance
+			Dream Trance
+			Euro-Trance
+			Hard Trance
+			Ibiza Trance
+			NRG
+			Progressive Trance
+			Psytrance
+				Dark Psytrance
+					Hi-Tech Psytrance
+					Psycore
+				Forest Psytrance
+				Full-On Psytrance
+				Nitzhonot
+				Progressive Psytrance
+				Suomisaundi
+			Tech Trance
+			Uplifting Trance
+			Vocal Trance
+		Trap [EDM]
+			Heaven Trap
+			Hybrid Trap
+			Twerk
+		UK Bass
+		UK Garage
+			2-Step
+			Bassline
+			Breakstep
+			Speed Garage
+			UK Funky
+		Wonky
+Darkwave
+	Ethereal Wave
+	Neoclassical Darkwave
+Easy Listening
+	Cocktail Nation
+	Exotica
+	Light Music
+	Lounge
+	Space Age Pop
+Electronic
+	Acid Jazz
+	Binaural Beats
+	Bit Music
+		Chiptune
+		Sequencer & Tracker
+	Bitpop
+	Black Ambient
+	Chillout
+		Ambient Dub
+		Ambient House
+		Ambient Trance
+		Balearic Beat
+		Barber Beats
+		Downtempo
+		Psybient
+		Trip Hop
+	Deconstructed Club
+	Digital Fusion
+	Drift Phonk
+	Dungeon Synth
+	Electro
+	Electro Hop
+	Electro-Industrial
+	Electroacoustic
+	Electroclash
+	Electronic Dance Music
+	Flashcore
+	Future Bass
+		Kawaii Future Bass
+	Future Garage
+	Gabber
+		Nu Style Gabber
+	Glitch
+	Glitch Hop
+	Hardcore Breaks
+	HexD
+	Horror Synth
+	Hyperpop
+	IDM
+		Drill and Bass
+	Illbient
+	Indietronica
+		Chillwave
+		Folktronica
+	Latin Electronic
+	Livetronica
+	Microsound
+	Minimal Wave
+	Moogsploitation
+	Nightcore
+	Nu Jazz
+	Power Electronics
+	Progressive Electronic
+	Ritual Ambient
+	Synth Punk
+	Synthpop
+		Futurepop
+		Techno Kayō
+	Synthwave
+		Chillsynth
+		Darksynth
+	Tecnobrega
+	Turntablism
+	Utopian Virtual
+	Vaportrap
+	Vaporwave
+		Broken Transmission
+		Eccojams
+		Mallsoft
+		Slushwave
+	Wave
+	Witch House
+Experimental
+	Conducted Improvisation
+	Data Sonification
+	Drone
+	Electroacoustic
+	Free Improvisation
+		EAI
+	Hauntology
+	Indeterminacy
+	Microsound
+	Modern Creative
+	Musique Concrète Instrumentale
+	Noise
+		Ambient Noise Wall
+		Black Noise
+		Gorenoise
+		Harsh Noise
+		Power Electronics
+		Power Noise
+	Plunderphonics
+	Reductionism
+	Sound Art
+	Sound Collage
+		Epic Collage
+	Sound Poetry
+	Tape Music
+	Turntable Music
+Field Recordings
+	Nature Recordings
+		Animal Sounds
+			Birdsong
+	Radio Broadcast Recordings
+Flamenco
+	Flamenco Pop
+	Flamenco Jazz
+	Flamenco Nuevo
+Folk
+	Contemporary Folk
+		American Primitivism
+		Anti-Folk
+		Avant-Folk
+		Chamber Folk
+		Dark Folk
+		Folk Pop
+		Freak Folk
+		Free Folk
+		Indie Folk
+			Stomp and Holler
+		Neofolk
+		Progressive Folk
+		Psychedelic Folk
+	Folk Punk
+	Folk Rock
+	Kurdish Folk
+	Traditional Folk Music
+Funk
+	Afro-Funk
+	Britfunk
+	Go-Go
+	Jazz-Funk
+	P-Funk
+	Synth Funk
+		Minneapolis Sound
+Glitch Pop
+Gospel
+Hip Hop
+	Abstract Hip Hop
+	Afro Trap
+	Afroswing
+	Boom Bap
+	Bounce
+	Chipmunk Soul
+	Chopped and Screwed
+	Christian Hip Hop
+	Cloud Rap
+	Comedy Rap
+	Conscious Hip Hop
+	Country Rap
+	Crunk
+		Crunkcore
+	Digicore
+	Dirty South
+	Disco Rap
+	Drumless
+	East Coast Hip Hop
+	Emo Rap
+	Experimental Hip Hop
+	French Hip Hop
+	G-Funk
+	Gangsta Rap
+	Genge
+	Hardcore Hip Hop
+		Britcore
+		Horrorcore
+		Memphis Rap
+			Dungeon Rap
+		Mid-School Hip Hop
+		Trap Metal
+	Hyphy
+		Jerk Rap
+	Industrial Hip Hop
+	Instrumental Hip Hop
+		Phonk
+		Rare Phonk
+	Japanese Hip Hop
+	Jazz Rap
+	Jerk
+	Jersey Club Rap
+		Jersey Drill
+	Jook
+	Latin Rap
+		Chicano Rap
+	Lo-Fi Hip Hop
+	Lowend
+	Miami Bass
+		Atlanta Bass
+		Tamborzão
+		Techno Bass
+	Mobb Music
+	Nerdcore Hip Hop
+	Nervous Music
+	Political Hip Hop
+	Pop Rap
+		Futuristic Swag
+	Ratchet Music
+	Snap
+	Southern Hip Hop
+	Trap
+		Detroit Trap
+		Drill
+		Futuristic Swag
+		New Jazz
+		No Melody
+		Phonk
+		Plugg
+		Rage
+		Rare Phonk
+		Regalia
+		Sigilkore
+		Trap Latino
+		Trap Metal
+		Trap Soul
+		Tread
+	UK Hip Hop
+	West Coast Hip Hop
+Hymns
+Hypnagogic Pop
+Industrial
+	Industrial Metal
+	Industrial Rock
+	Post-Industrial
+		Dark Ambient
+		Dark Electro
+			Aggrotech
+		Industrial Hardcore
+		Industrial Techno
+		Martial Industrial
+		Power Noise
+	Power Electronics
+Jazz
+	Afro-Cuban Jazz
+	Afro-Jazz
+	Arabic Jazz
+	Avant-Garde Jazz
+		Free Jazz
+	Bebop
+	Big Band
+		Progressive Big Band
+	British Dance Band
+	Cape Jazz
+	Chamber Jazz
+	Cool Jazz
+	Crime Jazz
+	Dark Jazz
+	Dixieland
+	ECM Style Jazz
+	Ethio-Jazz
+	Flamenco Jazz
+	Hard Bop
+	Indo Jazz
+	Jazz Fusion
+	Jazz manouche
+	Jazz Poetry
+	Jazz-Funk
+	Latin Jazz
+	Marabi
+	Modal Jazz
+	Post-Bop
+	Samba-Jazz
+	Smooth Jazz
+	Soul Jazz
+	Spiritual Jazz
+	Spy Music
+	Stride
+	Swing
+		Swing Revival
+	Third Stream
+	Vocal Jazz
+	Yass
+Marching Band
+Mashup
+Metal
+	Alternative Metal
+		Neue Deutsche Härte
+		Nu Metal
+		Rap Metal
+	Avant-Garde Metal
+	Black Metal
+		Atmospheric Black Metal
+		Black 'n' Roll
+		Black Noise
+		Cosmic Black Metal
+		Depressive Black Metal
+		Dissonant Black Metal
+		Melodic Black Metal
+		Pagan Black Metal
+		Post-Black Metal
+		Raw Black Metal
+		Symphonic Black Metal
+		War Metal
+	Death Metal
+		Blackened Death Metal
+		Brutal Death Metal
+		Death 'n' Roll
+		Death-Thrash
+		Deathgrind
+		Melodic Death Metal
+		Progressive Death Metal
+		Technical Death Metal
+	Doom Metal
+		Death Doom Metal
+		Epic Doom Metal
+		Funeral Doom Metal
+		Traditional Doom Metal
+	Doomgaze
+	Drone Metal
+	Folk Metal
+		Celtic Metal
+		Mittelalter-Metal
+	Funk Metal
+	Glam Metal
+	Gothic Metal
+	Grindcore
+		Cybergrind
+		Deathgrind
+		Goregrind
+		Mincecore
+		Noisegrind
+	Groove Metal
+	Heavy Metal
+		NWOBHM
+		Speed Metal
+		US Power Metal
+	Industrial Metal
+		Cyber Metal
+		Neue Deutsche Härte
+	Kawaii Metal
+	Metalcore
+		Deathcore
+			Downtempo Deathcore
+		Mathcore
+		Melodic Metalcore
+		Nu-Metalcore
+		Progressive Metalcore
+		Thall
+	Neoclassical Metal
+	Pagan Metal
+	Post-Metal
+		Blackgaze
+		Post-Black Metal
+	Power Metal
+	Progressive Metal
+		Djent
+			Thall
+	Sludge Metal
+		Atmospheric Sludge Metal
+	Southern Metal
+	Stoner Metal
+	Symphonic Metal
+	Thrash Metal
+		Crossover Thrash
+		Technical Thrash Metal
+	Trance Metal
+	Viking Metal
+MPB
+Musical Parody
+Musical Theatre & Entertainment
+New Age
+Polka
+Pop
+	Adult Contemporary
+	Afrobeats
+	Alt-Pop
+	Arabic Pop
+	Art Pop
+	Balkan Pop-Folk
+	Baroque Pop
+	Boy Band
+	Brill Building
+	Bubblegum Pop
+	C-Pop
+	Canción Melódica
+	City Pop
+	Classical Crossover
+	Country Pop
+	Dance-Pop
+	Dansbandsmusik
+	Denpa
+	Electropop
+	Europop
+	Flamenco Pop
+	Folk Pop
+	French Pop
+	Girl Group
+	Hyperpop
+	Indie Pop
+		Bedroom Pop
+		C86
+		Chamber Pop
+		Neo-Acoustic
+		Twee Pop
+	Italo Pop
+	J-Pop
+		Akishibu-kei
+		Yakousei
+	Jazz Pop
+	K-Pop
+	Kayōkyoku
+	Korean Ballad
+	Latin Pop
+	Nederpop
+	New Music
+	OPM
+	Pop Raï
+	Pop Rock
+		Beat
+		Big Music
+		Britpop
+		Freakbeat
+		Group Sounds
+		Jangle Pop
+		Piano Rock
+		Post-Britpop
+		Power Pop
+		Soft Rock
+		Stereo
+		Twee Pop
+		Vocal Surf
+		Yacht Rock
+	Progressive Pop
+	Rumba catalana
+	Russian Chanson
+	Schlager
+	Sertanejo Romântico
+	Shibuya-kei
+	Sophisti-Pop
+	Soviet Estrada
+	Stomp and Holler
+	Sunshine Pop
+	Synthpop
+	Teen Pop
+	Traditional Pop
+		British Dance Band
+		Mood Kayō
+	Turkish Pop
+	V-Pop
+	Yé-yé
+Psychedelia
+	Neo-Psychedelia
+		Paisley Underground
+	Psichedelia occulta italiana
+	Psychedelic Folk
+	Psychedelic Pop
+	Psychedelic Rock
+		Acid Rock
+		Heavy Psych
+		Raga Rock
+		Space Rock
+			Space Rock Revival
+		Zamrock
+	Psychedelic Soul
+Punk
+	Art Punk
+		Egg Punk
+	Celtic Punk
+	Cowpunk
+	Digital Hardcore
+	Emo
+		Emo-Pop
+		Emocore
+		Mall Screamo
+		Midwest Emo
+		Screamo
+			Emoviolence
+	Folk Punk
+	Hardcore Punk
+		Beatdown Hardcore
+		Burning Spirits
+		Crack Rock Steady
+		Crossover Thrash
+		Crust Punk
+		D-Beat
+		Easycore
+		Emoviolence
+		Grindcore
+		Melodic Hardcore
+		Metalcore
+		Nintendocore
+		Noisecore
+		Post-Hardcore
+		Powerviolence
+		Sasscore
+		Thrashcore
+		Trancecore
+	Pop Punk
+		Easycore
+	Post-Punk
+		Coldwave
+		Dance-Punk
+		No Wave
+		Post-Punk Revival
+	Proto-Punk
+	Punk Blues
+	Punk Rock
+		Anarcho-Punk
+		Deathrock
+		Egg Punk
+		Garage Punk
+		Glam Punk
+		Horror Punk
+		Oi!
+		Psychobilly
+		Queercore
+		Riot Grrrl
+		Ska Punk
+			Crack Rock Steady
+			Skacore
+		Surf Punk
+		Vikingarock
+	Skate Punk
+	Synth Punk
+R&B
+	Alternative R&B
+	Boogie
+	British Rhythm & Blues
+	Contemporary R&B
+		Hip Hop Soul
+		Neo-Soul
+		Trap Soul
+		UK Street Soul
+	Doo-Wop
+	New Jack Swing
+	New Orleans R&B
+	Rhythm and Blues
+		Twist
+	Soul
+		Blue-Eyed Soul
+		Chicago Soul
+		Country Soul
+		Deep Soul
+		Latin Soul
+		Neo-Soul
+		Philly Soul
+		Pop Soul
+			Motown Sound
+		Progressive Soul
+		Psychedelic Soul
+		Smooth Soul
+		Southern Soul
+	Soul Blues
+Ragtime
+	Stride
+Reggae
+	Dancehall
+	Deejay
+	Dub
+	Pop Reggae
+	Roots Reggae
+		Dub Poetry
+Regional
+	Afro-Jazz
+	Afrobeat
+	Americana
+	Andalusian Classical Music
+	Arabesk
+	Arabic Jazz
+	Arabic Pop
+	Avtorskaya pesnya
+	Axé
+	Baião
+	Balkan Brass Band
+	Banda Sinaloense
+	Brega
+	British Folk Rock
+	Burmese Classical Music
+	Cajun Music
+	Calypso
+	Canción Melódica
+	Canzone D'autore
+	Canzone Napoletana
+	Cape Jazz
+	Celtic Metal
+	Central Asian Overtone Singing
+	Chalga
+	Chimurenga
+	Chinese Classical Music
+	Chinese Opera
+	Choro
+	Christian Liturgical Music
+	Chutney
+	Corrido
+	Coupé-Décalé
+	Cuplé
+	Dabke
+	Dancehall
+	Disco polo
+	Dutch Cabaret
+	Electric Texas Blues
+	Eleki
+	Enka
+	Euskal Kantagintza Berria
+	Fanfare
+	Flamenco Pop
+	Forró
+	Frevo
+	Fuji
+	Funk Brasileiro
+		Funk Carioca
+			Funk 150 bpm
+			Funk Proibidão
+			Mega funk
+			Tamborzão
+		Funk de BH
+		Funk Mandelão
+			Funk 150 bpm
+			Funk Proibidão
+			Mega funk
+			Tamborzão
+		Funk Melody
+		Funk Ostentação
+		Rasteirinha
+	Gamelan
+	Ghazal
+	Gnawa
+	Grand Opéra
+	Highlife
+	Hyang-Ak
+	Indo Jazz
+	Irish Folk Music
+	Israeli Folk Music
+	Jaipongan
+	Jamaican Ska
+	Japanese Folk Music
+	Jùjú
+	Jeong-Ak
+	Jewish Music
+	Jongo
+	Joropo
+	Kabarett
+	Kizomba
+	Kleinkunst
+	Korean Classical Music
+	Kurdish Folk
+	Kwaito
+	Latin American Music
+		Afro-Cuban Jazz
+		Bachata
+		Bolero
+			Bolero Son
+		Boogaloo
+		Candombe
+		Chachachá
+		Cumbia
+			Cumbia Argentina
+			Cumbia Colombiana
+			Cumbia Mexicana
+			Cumbia Peruana
+		Dembow
+		Guajira
+		Guaracha
+		Huayno
+		Latin Alternative
+		Latin Disco
+		Latin Electronic
+			Changa Tuki
+			Electro Latino
+		Latin Pop
+		Latin Rock
+		Latin Soul
+		Merengue
+		Milonga
+		Reggaetón
+			Neoperreo
+		Rumba Afro-Cubana
+		Salsa
+			Salsa Dura
+			Salsa Romántica
+		Son Cubano
+		Trova
+			Nueva Trova
+		Zamba
+	Lied
+	Liedermacher
+	Lithuanian Folk Music
+	Mambo
+	Mande Music
+	Manele
+	Manguebeat
+	Manila Sound
+	Marabi
+	Maracatu
+	Marchinha
+	Mariachi
+	Middle Eastern Folk
+	Minyue
+	Minyō
+	Mittelalter-Rock
+	Moda de viola
+	Modern Laika
+	Mono
+	Moroccan Chaabi
+	Musette
+	Musica De Intervençao
+	Muzică De Mahala
+	Muzică Lăutărească
+	Neo-Medieval Folk
+	Neo-Pagan Folk
+	Nordic Folk Rock
+	Norteño
+	Nova Cançó
+	Peking Opera
+	Pimba
+	Plainsong
+		Gregorian Chant
+	Poezja śpiewana
+	Portuguese Folk Music
+	Psichedelia occulta italiana
+	Raï
+	Ranchera
+	Rock Andaluz
+	Rock Andino
+	Rock Rural
+	Rocksteady
+	Rumba catalana
+	Russian Chanson
+	Samba
+	Schlager
+	Sertanejo
+	Shidaiqu
+	Singeli
+	Singspiel
+	Soukous
+	Stereo
+	Sōkyoku
+	Tango
+	Tecnorumba
+	Tejano Music
+	Tex-Mex
+	Tishoumaren
+	Tizita
+	Township Bubblegum
+	Tropicanibalismo
+	Turbo-Folk
+	Turkish Pop
+	Vallenato
+	Vanguarda Paulista
+	Volkstümliche Musik
+	Waltz
+	White Voice
+	Xote
+	Yiddish Folksong
+	Zamrock
+Rock
+	Acoustic Rock
+	Alternative Rock
+		Alternative Dance
+		Baggy
+		Britpop
+		Dream Pop
+		Geek Rock
+		Grunge
+		J-Rock
+		Jangle Pop
+		Mall Screamo
+		Post-Britpop
+		Post-Grunge
+		Shoegaze
+	Anatolian Rock
+	AOR
+	Art Rock
+	Bard Rock
+	Blues Rock
+	British Rhythm & Blues
+	Christian Rock
+	Country Rock
+	Cowpunk
+	Dark Cabaret
+	Emo
+	Experimental Rock
+	Folk Rock
+	Funk Rock
+	Garage Rock
+	Glam Rock
+	Gothic Rock
+	Hard Rock
+	Heartland Rock
+	Indie Rock
+		C86
+		Dunedin Sound
+		Garage Rock Revival
+		Indie Surf
+		Math Pop
+		New Rave
+		Noise Pop
+		Post-Punk Revival
+		Slacker Rock
+			Shitgaze
+		Slowcore
+		Twee Pop
+			Cuddlecore
+	Industrial Rock
+	Jam Band
+	Jazz-Rock
+	Krautrock
+	Latin Rock
+	Manguebeat
+	Math Rock
+		Math Pop
+	New Wave
+	Noise Rock
+		Pigfuck
+	Pop Rock
+	Post-Punk
+		Coldwave
+		Dance-Punk
+		No Wave
+		Post-Punk Revival
+	Post-Rock
+	Progressive Rock
+		Avant-Prog
+		Brutal Prog
+		Canterbury Scene
+		Neo-Prog
+		Symphonic Prog
+	Psychedelic Rock
+		Acid Rock
+		Heavy Psych
+		Raga Rock
+		Space Rock
+			Space Rock Revival
+		Zamrock
+	Pub Rock
+	Punk Blues
+	Punk Rock
+		Anarcho-Punk
+		Deathrock
+		Egg Punk
+		Garage Punk
+		Glam Punk
+		Horror Punk
+		Oi!
+		Psychobilly
+		Queercore
+		Riot Grrrl
+		Ska Punk
+		Surf Punk
+		Vikingarock
+	Rap Rock
+		Rap Metal
+	Rock & Roll
+		Rockabilly
+		Twist
+	Rock Andaluz
+	Rock Andino
+	Rock Opera
+	Roots Rock
+		Swamp Rock
+		Tex-Mex
+	Southern Rock
+		Red Dirt
+	Stoner Rock
+	Surf Rock
+	Symphonic Rock
+	Visual kei
+	Zolo
+Sampledelia
+Singer-Songwriter
+	Avtorskaya pesnya
+	Canzone D'autore
+	Chanson à texte
+	Euskal Kantagintza Berria
+	Kleinkunst
+	Liedermacher
+	Musica De Intervençao
+	Nova Cançó
+	Poezja śpiewana
+	Trova
+Ska
+	2 Tone
+	Jamaican Ska
+	New Tone
+	Rocksteady
+	Third Wave Ska
+		Ska Punk
+			Crack Rock Steady
+			Skacore
+Sound Effects
+Spoken Word
+	Fairy Tales
+	Guided Meditation
+	Interview
+	Lectures
+	Poetry
+	Radio Drama
+	Speeches
+	Stand-Up Comedy
+Standards
+Totalism
+Toypop
+Vapor

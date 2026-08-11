@@ -2,6 +2,7 @@
 // Expects globals `_db` (sql.js), `escapeHtml` (utils.js), `navigate` (app.js).
 
 let _searchDebounce = null;
+let _listsIndex = null;
 
 function _showResults(show) {
     document.getElementById('searchResults').toggleAttribute('hidden', !show);
@@ -34,6 +35,7 @@ function _searchQuery(q) {
             { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
             { label: 'History',         view: 'history',         icon: 'history' },
             { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },
+            { label: 'Genres',          view: 'genres',          icon: 'tags' },
             { label: 'Top Albums',      view: 'top', params: '&type=albums',  icon: 'disc-album' },
             { label: 'Top Artists',     view: 'top', params: '&type=artists', icon: 'mic-vocal' },
             { label: 'Top Tracks',      view: 'top', params: '&type=tracks',  icon: 'music' },
@@ -50,6 +52,30 @@ function _searchQuery(q) {
                     </div>
                     <div class="search-result-text">
                         <div class="search-result-name">${escapeHtml(v.label)}</div>
+                    </div></a>`;
+            });
+        }
+
+        // Canonical lists (RS500, Apple Music 100, etc.) — metadata only, so a
+        // 260-entry list's full entries aren't re-parsed on every keystroke.
+        if (_listsIndex === null) {
+            const res = _db.exec("SELECT value_json FROM stats_cache WHERE key = 'canonicalLists'")[0];
+            const lists = res ? JSON.parse(res.values[0][0]) : [];
+            _listsIndex = lists.map(l => ({ id: l.id, name: l.name, short_name: l.short_name }));
+        }
+        const matchedLists = _listsIndex.filter(l =>
+            l.name.toLowerCase().includes(q.toLowerCase()) ||
+            (l.short_name && l.short_name.toLowerCase().includes(q.toLowerCase()))
+        );
+        if (matchedLists.length) {
+            html += `<div class="search-section-label">Lists</div>`;
+            matchedLists.forEach(l => {
+                html += `<a class="search-result-row" href="index.html?view=list&id=${encodeURIComponent(l.id)}">
+                    <div class="search-result-thumb" style="background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center">
+                        <i data-lucide="list-ordered" style="width:16px;height:16px;color:var(--text-tertiary)"></i>
+                    </div>
+                    <div class="search-result-text">
+                        <div class="search-result-name">${escapeHtml(l.short_name || l.name)}</div>
                     </div></a>`;
             });
         }

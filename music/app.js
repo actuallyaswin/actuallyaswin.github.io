@@ -10,9 +10,11 @@ const VIEWS = {
     'artist':          () => ViewArtist,
     'release':         () => ViewRelease,
     'genre':           () => ViewGenre,
+    'genres':          () => ViewGenres,
     'recommendations': () => ViewRecommendations,
     'history':         () => ViewHistory,
     'stats':           () => ViewStats,
+    'list':            () => ViewList,
 };
 
 function getParams() {
