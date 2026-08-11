@@ -51,7 +51,7 @@ jobs:
       - name: Lint and test Python
         run: |
           set -euo pipefail
-          python -m pip install --quiet pytest ruff
+          python -m pip install --quiet -r music/requirements.txt pytest ruff
           # F811 redefinition (catches the duplicate-function class), F821
           # undefined name (catches leaked/renamed variables), E9 syntax errors.
           # Deliberately not the whole F ruleset — unused imports are cosmetic
