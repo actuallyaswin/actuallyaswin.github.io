@@ -2,43 +2,43 @@ const ViewHome = (() => {
     let _db = null;
     let _abortController = null;
 
+    // Home intro prose. Every ${...} is a value or link built by loadIntro();
+    // everything else is plain text and safe to reword in place.
+    const INTRO = ({ since, listens, artists, releases, tracks, listeningTime, find }) => `
+        <p>
+            I have been actively logging (almost) all the music I have listened to
+            ${since}. I enjoy browsing the history to see who my most-played artists
+            and albums were, and are: it lets me revisit old gems and keep track of
+            whatever I am currently obsessed with. Scrobbles come from
+            <a href="https://www.last.fm" target="_blank" rel="noopener noreferrer">Last.fm</a>,
+            and album metadata from
+            <a href="https://musicbrainz.org" target="_blank" rel="noopener noreferrer">MusicBrainz</a>.
+        </p>
+        <p>
+            As of today: ${listens} across ${artists}, ${releases}, and ${tracks}${
+                listeningTime ? `, adding up to roughly ${listeningTime} of music` : ''}.
+            ${find ? `My latest find was ${find}.` : ''}
+        </p>
+    `;
+
     function mount(container, db, params) {
         _db = db;
         _abortController = new AbortController();
         setPageTitle('Music');
 
         container.innerHTML = `
-            <header>
+            <header class="home-header">
                 <h1>Music</h1>
-                <p class="subtitle">
-                    Explore data through the years:
-                    <a href="?view=year" class="year-link" id="yearRange">Loading...</a>
-                </p>
             </header>
 
-            <div class="stats" id="stats">
-                <div class="stat-card">
-                    <div class="stat-value" id="statListens">-</div>
-                    <div class="stat-label">Total Listens</div>
-                </div>
-                <a href="?view=top&type=artists" class="stat-card">
-                    <div class="stat-value" id="statArtists">-</div>
-                    <div class="stat-label">Artists</div>
-                </a>
-                <a href="?view=top&type=albums" class="stat-card">
-                    <div class="stat-value" id="statReleases">-</div>
-                    <div class="stat-label">Releases</div>
-                </a>
-                <a href="?view=top&type=tracks" class="stat-card">
-                    <div class="stat-value" id="statTracks">-</div>
-                    <div class="stat-label">Tracks</div>
-                </a>
-            </div>
+            <section class="home-intro" id="homeIntro"></section>
 
 
             <div class="stats-row">
                 <section id="weeklyReleasesSection" hidden>
-                    <h2>Top Releases This Month</h2>
+                    <div class="section-header">
+                        <h2>Top Releases This Month</h2>
+                    </div>
                     <div id="weeklyReleasesCollage"></div>
                 </section>
                 <section id="homeRecentPlaysSection" hidden>
@@ -113,8 +113,7 @@ const ViewHome = (() => {
             </footer>
         `;
 
-        loadYearRange();
-        loadStats();
+        loadIntro();
         loadNerdsStats();
         loadWeeklyReleases();
         loadHomeRecentPlays();
@@ -129,24 +128,11 @@ const ViewHome = (() => {
         }
     }
 
-    function loadYearRange() {
-        const yearRange = _db.exec(`
-            SELECT MIN(year) as min_year, MAX(year) as max_year
-            FROM listens WHERE year IS NOT NULL
-        `)[0];
+    function loadIntro() {
+        const el = document.getElementById('homeIntro');
+        if (!el) return;
 
-        if (yearRange && yearRange.values[0][0] !== null) {
-            const [minYear, maxYear] = yearRange.values[0];
-            const el = document.getElementById('yearRange');
-            if (el) {
-                el.textContent = `${minYear} – ${maxYear}`;
-                el.href = `?view=year&year=${maxYear}`;
-            }
-        }
-    }
-
-    function loadStats() {
-        const stats = _db.exec(`
+        const counts = _db.exec(`
             SELECT
                 (SELECT COUNT(*) FROM listens l
                  JOIN tracks t ON l.track_id = t.id
@@ -155,12 +141,59 @@ const ViewHome = (() => {
                 (SELECT COUNT(*) FROM releases WHERE hidden = 0) as total_releases,
                 (SELECT COUNT(*) FROM tracks WHERE hidden = 0) as total_tracks
         `)[0];
+        if (!counts) return;
+        const [listens, artists, releases, tracks] = counts.values[0];
 
-        const [totalListens, totalArtists, totalReleases, totalTracks] = stats.values[0];
-        document.getElementById('statListens').textContent = formatNumber(totalListens);
-        document.getElementById('statArtists').textContent = formatNumber(totalArtists);
-        document.getElementById('statReleases').textContent = formatNumber(totalReleases);
-        document.getElementById('statTracks').textContent = formatNumber(totalTracks);
+        const stat = (href, n, noun) =>
+            `<a href="${href}"><strong>${formatNumber(n)}</strong> ${noun}</a>`;
+
+        const years = _db.exec(
+            'SELECT MIN(year), MAX(year) FROM listens WHERE year IS NOT NULL'
+        )[0];
+        let since = 'for years';
+        if (years && years.values[0][0] !== null) {
+            const [first, latest] = years.values[0];
+            since = `<a href="?view=year&year=${latest}">since ${first}</a>`;
+        }
+
+        const nerd = _db.exec('SELECT value_json FROM stats_cache WHERE key = ?', ['nerd'])[0];
+        let listeningTime = null;
+        if (nerd) {
+            const days = Math.round(JSON.parse(nerd.values[0][0]).total_hours / 24);
+            listeningTime = `<strong>${formatNumber(days)} days</strong>`;
+        }
+
+        // Singles and one-off compilations aren't "discoveries", and a release
+        // needs a few plays before it counts as one.
+        const found = _db.exec(`
+            SELECT r.id, r.title, a.id, a.name
+            FROM releases r
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
+            WHERE r.hidden = 0
+              AND lower(r.type) IN ('album', 'ep')
+              AND r.stat_total_plays >= 5
+              AND r.stat_first_listen_ts IS NOT NULL
+            ORDER BY r.stat_first_listen_ts DESC
+            LIMIT 1
+        `)[0];
+        let find = null;
+        if (found) {
+            const [rid, rtitle, aid, aname] = found.values[0];
+            find = `<a href="?view=release&id=${encodeURIComponent(rid)}">${escapeHtml(rtitle)}</a>`;
+            if (aname) {
+                find += ` by <a href="?view=artist&id=${encodeURIComponent(aid)}">${escapeHtml(aname)}</a>`;
+            }
+        }
+
+        el.innerHTML = INTRO({
+            since,
+            listens:  stat('?view=history', listens, 'listens'),
+            artists:  stat('?view=top&type=artists', artists, 'artists'),
+            releases: stat('?view=top&type=albums', releases, 'releases'),
+            tracks:   stat('?view=top&type=tracks', tracks, 'tracks'),
+            listeningTime,
+            find,
+        });
     }
 
 
@@ -246,12 +279,8 @@ const ViewHome = (() => {
         container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
 
         result.values.forEach(([id, title, albumArtUrl, artistName]) => {
-            const card = document.createElement('a');
-            card.className = 'image-card';
-            card.href = `?view=release&id=${encodeURIComponent(id)}`;
+            const card = createImageCard({ href: `?view=release&id=${encodeURIComponent(id)}`, imageUrl: albumArtUrl });
             card.title = title + (artistName ? ` · ${artistName}` : '');
-            const imgSrc = albumArtUrl || getFallbackImageUrl();
-            card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>`;
             container.appendChild(card);
         });
 
@@ -273,38 +302,52 @@ const ViewHome = (() => {
             LEFT JOIN artists a ON r.primary_artist_id = a.id
             WHERE t.hidden = 0
             ORDER BY l.timestamp DESC
-            LIMIT 10
+            LIMIT 40
         `)[0];
 
         const section = document.getElementById('homeRecentPlaysSection');
         const list = document.getElementById('homeRecentPlaysList');
         if (!section || !list || !result || result.values.length === 0) return;
 
-        const now = Date.now() / 1000;
-        list.innerHTML = result.values.map(([trackTitle, albumArtUrl, artistName, timestamp, releaseId, releaseTitle]) => {
-            const imgSrc = albumArtUrl || getFallbackImageUrl();
-            let dateStr;
-            const diff = now - timestamp;
-            if (diff < 3600)        dateStr = `${Math.floor(diff / 60)}m ago`;
-            else if (diff < 86400)  dateStr = `${Math.floor(diff / 3600)}h ago`;
-            else if (diff < 604800) dateStr = `${Math.floor(diff / 86400)}d ago`;
-            else {
-                const d = new Date(timestamp * 1000);
-                dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        // Collapse consecutive plays from the same release into one row —
+        // otherwise an album played straight through reads as a stuck/glitched
+        // list rather than genuine recent activity.
+        const groups = [];
+        result.values.forEach(([trackTitle, albumArtUrl, artistName, timestamp, releaseId, releaseTitle]) => {
+            const last = groups[groups.length - 1];
+            const key = releaseId || `track:${trackTitle}`;
+            if (last && last.key === key) {
+                last.count += 1;
+                last.tracks.push(trackTitle);
+            } else {
+                groups.push({
+                    key, trackTitle, albumArtUrl, artistName, timestamp,
+                    releaseId, releaseTitle, count: 1, tracks: [trackTitle],
+                });
             }
+        });
+
+        list.innerHTML = groups.slice(0, 10).map(g => {
+            const imgSrc = g.albumArtUrl || getFallbackImageUrl();
+            const dateStr = formatTimeAgo(g.timestamp);
+            const nameHtml = g.count > 1
+                ? `${g.count} tracks from ${escapeHtml(g.releaseTitle || 'this release')}`
+                : escapeHtml(g.trackTitle);
             const subtitleParts = [
-                artistName   ? `<i data-lucide="user" style="width: 12px; height: 12px;"></i> ${escapeHtml(artistName)}` : null,
-                releaseTitle ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(releaseTitle)}` : null,
+                g.artistName ? `<i data-lucide="user" style="width: 12px; height: 12px;"></i> ${escapeHtml(g.artistName)}` : null,
+                (g.releaseTitle && g.count === 1) ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(g.releaseTitle)}` : null,
             ].filter(Boolean).join(' · ');
+            const tag = g.releaseId ? 'a' : 'div';
+            const hrefAttr = g.releaseId ? ` href="?view=release&id=${encodeURIComponent(g.releaseId)}"` : '';
             return `
-                <div class="recent-play-row">
+                <${tag} class="recent-play-row"${hrefAttr}>
                     <div class="recent-play-thumb" style="background-image: url('${cssUrl(imgSrc)}')"></div>
                     <div class="recent-play-info">
-                        <div class="recent-play-name">${escapeHtml(trackTitle)}</div>
+                        <div class="recent-play-name">${nameHtml}</div>
                         ${subtitleParts ? `<div class="recent-play-album">${subtitleParts}</div>` : ''}
                     </div>
                     <span class="recent-play-date">${dateStr}</span>
-                </div>
+                </${tag}>
             `;
         }).join('');
 

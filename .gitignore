@@ -61,3 +61,6 @@ mockups/
 _site/
 .jekyll-cache/
 .jekyll-metadata
+
+# Local automation script, not part of the published site
+music/run_rs500_batch.sh

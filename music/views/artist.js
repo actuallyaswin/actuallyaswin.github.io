@@ -7,6 +7,8 @@ const ViewArtist = (() => {
     let _discSort = 'date'; // 'date' | 'listens'
     let _discData = { own: null, collabs: null };
     let _themeObserver = null;
+    let _artistName = null;
+    let _hasListens = false;
 
     const CHART_ENABLED = false;
 
@@ -16,6 +18,8 @@ const ViewArtist = (() => {
         _currentChart = null;
         _chartData = { monthly: null, yearly: null, monthlyRaw: null };
         _discData = { own: null, collabs: null };
+        _artistName = null;
+        _hasListens = false;
 
         if (!_artistId) {
             navigate({ view: 'home' });
@@ -23,9 +27,15 @@ const ViewArtist = (() => {
         }
 
         container.innerHTML = `
+            <nav class="genre-breadcrumb" id="artistBreadcrumb">
+                <a href="?" class="bc-home"><i data-lucide="home"></i></a>
+                <i data-lucide="chevron-right" class="bc-sep"></i>
+                <span class="bc-current" id="artistBreadcrumbName">Loading…</span>
+            </nav>
+
             <div id="artistHero" class="artist-hero" hidden></div>
 
-            <header id="artistHeader" class="artist-header-layout release-header-grid">
+            <header id="artistHeader" class="entity-header entity-header-grid">
                 <div class="artist-photo-container">
                     <div class="artist-photo" id="artistPhoto">
                         <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -64,7 +74,7 @@ const ViewArtist = (() => {
                     </div>
                 </div>
                 <div id="discographyContainer">
-                    <div class="loading">Loading discography…</div>
+                    ${renderLoading("Loading discography…")}
                 </div>
             </section>
 
@@ -148,6 +158,12 @@ const ViewArtist = (() => {
         const nativeScript    = aliases.find(([, t]) => t === 'native_script');
         const transliteration = aliases.find(([, t, l]) => t === 'transliteration' && l === 'en');
         const pastNames       = aliases.filter(([, t]) => t === 'past_name').map(([a]) => a);
+
+        _artistName = name;
+        _hasListens = totalPlays > 0;
+
+        const breadcrumbNameEl = document.getElementById('artistBreadcrumbName');
+        if (breadcrumbNameEl) breadcrumbNameEl.textContent = name;
 
         const nameEl = document.getElementById('artistName');
         const isNonLatin = s => /[^ -]/.test(s);
@@ -281,31 +297,21 @@ const ViewArtist = (() => {
         }
 
         // ── Link pills ────────────────────────────────────────────────────────
-        const SVG_EXT = `<svg class="pill-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
-        const pill = (svc, href, pname, sub) => {
-            const icon = svc === 'aoty'
-                ? `<img src="images/links/aoty-icon.png" class="pill-aoty-img">`
-                : `<span class="pill-mask"></span>`;
-            return `<a href="${href}" target="_blank" rel="noopener" class="release-link-pill pill-${svc}">` +
-                `<span class="pill-icon">${icon}</span>` +
-                `<span class="pill-text"><span class="pill-service-name">${pname}</span>` +
-                (sub ? `<span class="pill-sub">${sub}</span>` : '') +
-                `</span>${SVG_EXT}</a>`;
-        };
-
         const pillsEl = document.getElementById('artistLinkPills');
         if (pillsEl) {
             let phtml = '';
-            if (spotifyId)          phtml += pill('spotify',     `https://open.spotify.com/artist/${spotifyId}`, 'Spotify');
-            if (extLinks.get(4))    phtml += pill('deezer',      `https://www.deezer.com/artist/${extLinks.get(4)}`, 'Deezer');
-            if (extLinks.get(5))    phtml += pill('tidal',       `https://tidal.com/browse/artist/${extLinks.get(5)}`, 'Tidal');
-            if (extLinks.get(7))    phtml += pill('beatport',    `https://www.beatport.com/artist/-/${extLinks.get(7)}`, 'Beatport');
-            if (extLinks.get(6))    phtml += pill('bandcamp',    extLinks.get(6), 'Bandcamp');
-            if (mbid)               phtml += pill('musicbrainz', `https://musicbrainz.org/artist/${mbid}`, 'MusicBrainz');
-            if (wikiPageId)         phtml += pill('wikipedia',   `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'Wikipedia');
+            if (spotifyId)          phtml += renderLinkPill('spotify',     `https://open.spotify.com/artist/${spotifyId}`, 'Spotify');
+            if (extLinks.get(4))    phtml += renderLinkPill('deezer',      `https://www.deezer.com/artist/${extLinks.get(4)}`, 'Deezer');
+            if (extLinks.get(5))    phtml += renderLinkPill('tidal',       `https://tidal.com/browse/artist/${extLinks.get(5)}`, 'Tidal');
+            if (extLinks.get(7))    phtml += renderLinkPill('beatport',    `https://www.beatport.com/artist/-/${extLinks.get(7)}`, 'Beatport');
+            if (extLinks.get(6))    phtml += renderLinkPill('bandcamp',    extLinks.get(6), 'Bandcamp');
+            if (mbid)               phtml += renderLinkPill('musicbrainz', `https://musicbrainz.org/artist/${mbid}`, 'MusicBrainz');
+            if (wikiPageId)         phtml += renderLinkPill('wikipedia',   `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'Wikipedia');
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/artist/${aotyId}/` : null);
-            if (resolvedAotyUrl)    phtml += pill('aoty',        resolvedAotyUrl, 'AOTY');
-            if (extLinks.get(8))    phtml += pill('genius',      `https://genius.com/artists/${extLinks.get(8)}`, 'Genius');
+            if (resolvedAotyUrl)    phtml += renderLinkPill('aoty',        resolvedAotyUrl, 'AOTY');
+            if (extLinks.get(8))    phtml += renderLinkPill('genius',      `https://genius.com/artists/${extLinks.get(8)}`, 'Genius');
+            if (extLinks.get(11))   phtml += renderLinkPill('rym',             extLinks.get(11), 'RateYourMusic');
+            if (extLinks.get(12))   phtml += renderLinkPill('residentadvisor', extLinks.get(12), 'Resident Advisor');
             if (phtml) pillsEl.innerHTML = phtml;
             else pillsEl.style.display = 'none';
         }
@@ -322,17 +328,10 @@ const ViewArtist = (() => {
                 r.type,
                 r.type_secondary,
                 COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
-                (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
-                 AND t.variant_section IS NULL
-                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks,
-                (SELECT COUNT(DISTINCT t.id) FROM tracks t
-                 WHERE t.release_id = r.id AND t.hidden = 0
-                 AND t.variant_section IS NULL
-                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
-                 AND EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id)) as listened_tracks,
                 (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
                  WHERE t.release_id = r.id AND t.hidden = 0
-                 AND t.variant_section IS NULL) as total_listens
+                 AND t.variant_section IS NULL) as total_listens,
+                NULL as primary_artist_name
             FROM releases r
             WHERE r.primary_artist_id = '${safeId}'
             AND r.hidden = 0        `)[0];
@@ -345,14 +344,6 @@ const ViewArtist = (() => {
                 r.type,
                 r.type_secondary,
                 COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
-                (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
-                 AND t.variant_section IS NULL
-                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks,
-                (SELECT COUNT(DISTINCT t.id) FROM tracks t
-                 WHERE t.release_id = r.id AND t.hidden = 0
-                 AND t.variant_section IS NULL
-                 AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
-                 AND EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id)) as listened_tracks,
                 (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
                  WHERE t.release_id = r.id AND t.hidden = 0
                  AND t.variant_section IS NULL) as total_listens,
@@ -363,8 +354,46 @@ const ViewArtist = (() => {
             AND r.primary_artist_id != '${safeId}'
             AND r.hidden = 0        `)[0];
 
-        _discData.own = ownResult ? ownResult.values : [];
-        _discData.collabs = collabResult ? collabResult.values : [];
+        // Group edit/length variants (radio edit, extended mix, ...) of the
+        // same recording per release — hearing any one counts as heard.
+        const releaseIds = [
+            ...(ownResult ? ownResult.values.map(r => r[0]) : []),
+            ...(collabResult ? collabResult.values.map(r => r[0]) : []),
+        ];
+        const completionByRelease = new Map();
+        if (releaseIds.length > 0) {
+            const idList = releaseIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+            const trackRowsResult = _db.exec(`
+                SELECT t.release_id, t.title,
+                       EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id) as heard
+                FROM tracks t
+                WHERE t.release_id IN (${idList}) AND t.hidden = 0
+                  AND t.variant_section IS NULL
+                  AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+            `)[0];
+            if (trackRowsResult) {
+                const groupsByRelease = new Map();
+                trackRowsResult.values.forEach(([releaseId, trackTitle, heard]) => {
+                    if (!groupsByRelease.has(releaseId)) groupsByRelease.set(releaseId, new Map());
+                    const groups = groupsByRelease.get(releaseId);
+                    const key = sameSongKey(trackTitle);
+                    groups.set(key, groups.get(key) || !!heard);
+                });
+                groupsByRelease.forEach((groups, releaseId) => {
+                    completionByRelease.set(releaseId, {
+                        total: groups.size,
+                        heard: [...groups.values()].filter(Boolean).length,
+                    });
+                });
+            }
+        }
+        const withCompletion = row => {
+            const c = completionByRelease.get(row[0]) || { total: 0, heard: 0 };
+            return [...row, c.total, c.heard];
+        };
+
+        _discData.own = ownResult ? ownResult.values.map(withCompletion) : [];
+        _discData.collabs = collabResult ? collabResult.values.map(withCompletion) : [];
 
         renderDiscography();
     }
@@ -391,7 +420,7 @@ const ViewArtist = (() => {
 
     function _makeDiscCard(row, collab) {
         const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
-               totalTracks, listenedTracks, totalListens, primaryArtistName] = row;
+               totalListens, primaryArtistName, totalTracks, listenedTracks] = row;
 
         const pct   = totalTracks > 0 ? listenedTracks / totalTracks : 0;
         const pctInt = Math.round(pct * 100);
@@ -447,14 +476,29 @@ const ViewArtist = (() => {
         container.innerHTML = '';
 
         const sortFn = _discSort === 'listens'
-            ? (a, b) => b[8] - a[8]
+            ? (a, b) => b[6] - a[6]
             : (a, b) => (b[2] || '').localeCompare(a[2] || '');
 
         const own = [...(_discData.own || [])].sort(sortFn);
         const collabs = [...(_discData.collabs || [])].sort(sortFn);
 
         if (own.length === 0 && collabs.length === 0) {
-            container.innerHTML = '<div class="loading">No releases found</div>';
+            const name = _artistName || 'This artist';
+            container.innerHTML = _hasListens
+                ? `<div class="empty-state">
+                       <i data-lucide="disc-3" class="app-error-icon"></i>
+                       <div class="empty-state-title">No album data yet for ${escapeHtml(name)}</div>
+                       <p class="empty-state-hint">Scrobbles exist, but no release metadata has been matched
+                           to this artist yet. Their raw listens still show up in History.</p>
+                       <a class="back-button" href="?view=history&amp;q=${encodeURIComponent(name)}">
+                           View in History</a>
+                   </div>`
+                : `<div class="empty-state">
+                       <i data-lucide="disc-3" class="app-error-icon"></i>
+                       <div class="empty-state-title">No releases catalogued for ${escapeHtml(name)}</div>
+                       <p class="empty-state-hint">This artist is tracked (e.g. from a canonical list) but has
+                           no album data or listens on file yet.</p>
+                   </div>`;
             return;
         }
 
@@ -487,7 +531,8 @@ const ViewArtist = (() => {
                 t.title,
                 COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 r.title as release_title,
-                l.timestamp
+                l.timestamp,
+                r.id as release_id
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             LEFT JOIN releases r ON t.release_id = r.id
@@ -500,37 +545,48 @@ const ViewArtist = (() => {
             )
             AND t.hidden = 0
             ORDER BY l.timestamp DESC
-            LIMIT 10
+            LIMIT 40
         `)[0];
 
         const section = document.getElementById('recentPlaysSection');
         const list = document.getElementById('recentPlaysList');
         if (!section || !list || !result || result.values.length === 0) return;
 
-        const now = Date.now() / 1000;
-        list.innerHTML = result.values.map(([trackTitle, albumArtUrl, releaseTitle, timestamp]) => {
-            const imgSrc = albumArtUrl || getFallbackImageUrl();
-            let dateStr;
-            const diff = now - timestamp;
-            if (diff < 3600)        dateStr = `${Math.floor(diff / 60)}m ago`;
-            else if (diff < 86400)  dateStr = `${Math.floor(diff / 3600)}h ago`;
-            else if (diff < 604800) dateStr = `${Math.floor(diff / 86400)}d ago`;
-            else {
-                const d = new Date(timestamp * 1000);
-                dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        // Collapse consecutive plays from the same release into one row —
+        // otherwise an album played straight through reads as a stuck/glitched
+        // list rather than genuine recent activity.
+        const groups = [];
+        result.values.forEach(([trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId]) => {
+            const last = groups[groups.length - 1];
+            const key = releaseId || `track:${trackTitle}`;
+            if (last && last.key === key) {
+                last.count += 1;
+                last.tracks.push(trackTitle);
+            } else {
+                groups.push({ key, trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, count: 1, tracks: [trackTitle] });
             }
-            const subtitle = releaseTitle
-                ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(releaseTitle)}`
+        });
+
+        list.innerHTML = groups.slice(0, 10).map(g => {
+            const imgSrc = g.albumArtUrl || getFallbackImageUrl();
+            const dateStr = formatTimeAgo(g.timestamp);
+            const nameHtml = g.count > 1
+                ? `${g.count} tracks from ${escapeHtml(g.releaseTitle || 'this release')}`
+                : escapeHtml(g.trackTitle);
+            const subtitle = (g.releaseTitle && g.count === 1)
+                ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(g.releaseTitle)}`
                 : null;
+            const tag = g.releaseId ? 'a' : 'div';
+            const hrefAttr = g.releaseId ? ` href="?view=release&id=${encodeURIComponent(g.releaseId)}"` : '';
             return `
-                <div class="recent-play-row">
+                <${tag} class="recent-play-row"${hrefAttr}>
                     <div class="recent-play-thumb" style="background-image: url('${cssUrl(imgSrc)}')"></div>
                     <div class="recent-play-info">
-                        <div class="recent-play-name">${escapeHtml(trackTitle)}</div>
+                        <div class="recent-play-name">${nameHtml}</div>
                         ${subtitle ? `<div class="recent-play-album">${subtitle}</div>` : ''}
                     </div>
                     <span class="recent-play-date">${dateStr}</span>
-                </div>
+                </${tag}>
             `;
         }).join('');
 
@@ -550,15 +606,18 @@ const ViewArtist = (() => {
         const secondaryType = certResult ? certResult.values[0][1] : null;
 
         const certLabels = { gold: 'Gold — 250+ plays', platinum: 'Platinum — 500+ plays', diamond: 'Diamond — 1,000+ plays' };
-        const typeLabels = { supergroup: 'Supergroup — members are established artists in their own right', virtual: 'Virtual — an animated, synthetic, or fictional performer' };
+        // Full tooltip text vs. the short word shown on the badge itself.
+        const typeLabels = { supergroup: 'Supergroup — members are established artists in their own right', virtual: 'Virtual — an animated, synthetic, or fictional performer', standup: 'Stand-up comic — comedy albums/specials, not music' };
+        const typeDisplay = { standup: 'stand-up' };
         const typeIcons = {
             supergroup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
             virtual: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>',
+            standup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>',
         };
 
         let badgesHtml = '';
         if (secondaryType && typeLabels[secondaryType]) {
-            badgesHtml += `<span class="badge-type badge-type-${secondaryType}" title="${typeLabels[secondaryType]}">${typeIcons[secondaryType]}${secondaryType}</span>`;
+            badgesHtml += `<span class="badge-type badge-type-${secondaryType}" title="${typeLabels[secondaryType]}">${typeIcons[secondaryType]}${typeDisplay[secondaryType] || secondaryType}</span>`;
         }
         if (certTier) badgesHtml += `<span class="badge-cert badge-cert-${certTier}" title="${certLabels[certTier]}">${certTier}</span>`;
         badgesEl.innerHTML = badgesHtml;

@@ -7,6 +7,7 @@ const ViewTop = (() => {
     let viewMode = 'list';         // 'list' | 'tiles' | 'collage'
     let gridShape = { rows: 3, cols: 3 };  // Collage mode only
     let releaseYear = 'all';       // albums/tracks only (existing Released filter)
+    let genreFilter = 'all';       // aoty_id as string, or 'all'
     let cachedResults = [];
 
     // Collage-mode theme: 'quilt' (plain grid), 'captioned' (grid + bottom-
@@ -40,6 +41,14 @@ const ViewTop = (() => {
         return null;
     }
 
+    // Genre filter — shared by all three entity types. `releaseIdExpr` is the
+    // SQL expression for "this row's release_id" (differs per entity).
+    function _genreFilterSql(releaseIdExpr) {
+        const gid = parseInt(genreFilter);
+        if (genreFilter === 'all' || isNaN(gid)) return '';
+        return `AND ${releaseIdExpr} IN (SELECT release_id FROM release_genres WHERE aoty_genre_id = ${gid})`;
+    }
+
     // Each entry: { title, sortOptions, hasRange, hasYearFilter, query(),
     // cardHref(id), buildCardFields(row) }
     const ENTITY_CONFIG = {
@@ -53,6 +62,7 @@ const ViewTop = (() => {
             ],
             hasRange: true,
             hasYearFilter: false,
+            hasGenreFilter: true,
             query() {
                 const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
                 const startTs = isTemporalSort ? null : _rangeStartTs();
@@ -64,6 +74,7 @@ const ViewTop = (() => {
                 else if (sortBy === 'discoveries') orderClause = 'avg_ts DESC';
                 else if (sortBy === 'oldies')      orderClause = 'avg_ts ASC';
                 else                               orderClause = 'total_listens DESC';
+                const genreClause = _genreFilterSql('t.release_id');
 
                 return _db.exec(`
                     SELECT
@@ -76,7 +87,7 @@ const ViewTop = (() => {
                         CAST(AVG(CASE WHEN t.hidden = 0 THEN l.timestamp END) AS INTEGER) as avg_ts
                     FROM artists a
                     LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role IN (${PRIMARY_ROLES_SQL})
-                    LEFT JOIN tracks t ON ta.track_id = t.id
+                    LEFT JOIN tracks t ON ta.track_id = t.id ${genreClause}
                     LEFT JOIN listens l ON t.id = l.track_id ${tsFilter}
                     WHERE a.hidden = 0
                     GROUP BY a.id
@@ -101,6 +112,7 @@ const ViewTop = (() => {
             ],
             hasRange: false,
             hasYearFilter: true,
+            hasGenreFilter: true,
             query() {
                 let orderClause;
                 if (sortBy === 'minutes')          orderClause = 'total_minutes DESC';
@@ -109,6 +121,7 @@ const ViewTop = (() => {
                 else                                orderClause = 'total_listens DESC';
                 const yearInt = parseInt(releaseYear);
                 const yearFilter = releaseYear !== 'all' && !isNaN(yearInt) ? `AND r.release_year = ${yearInt}` : '';
+                const genreClause = _genreFilterSql('r.id');
 
                 return _db.exec(`
                     SELECT
@@ -123,7 +136,7 @@ const ViewTop = (() => {
                     LEFT JOIN artists a ON a.id = r.primary_artist_id
                     LEFT JOIN tracks t ON t.release_id = r.id
                     LEFT JOIN listens l ON l.track_id = t.id
-                    WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) ${yearFilter}
+                    WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) ${yearFilter} ${genreClause}
                     GROUP BY r.id
                     HAVING total_listens > 0
                     ORDER BY ${orderClause}
@@ -150,6 +163,7 @@ const ViewTop = (() => {
             ],
             hasRange: false,
             hasYearFilter: true,
+            hasGenreFilter: true,
             query() {
                 let orderClause;
                 if (sortBy === 'minutes')          orderClause = 'total_minutes DESC';
@@ -158,6 +172,7 @@ const ViewTop = (() => {
                 else                                orderClause = 'total_listens DESC';
                 const yearInt = parseInt(releaseYear);
                 const yf = releaseYear !== 'all' && !isNaN(yearInt) ? `AND r.release_year = ${yearInt}` : '';
+                const genreClause = _genreFilterSql('t.release_id');
 
                 return _db.exec(`
                     SELECT t.id, t.title,
@@ -175,7 +190,7 @@ const ViewTop = (() => {
                     FROM tracks t
                     LEFT JOIN releases r ON t.release_id = r.id
                     LEFT JOIN listens l ON t.id = l.track_id
-                    WHERE t.hidden = 0 ${yf}
+                    WHERE t.hidden = 0 ${yf} ${genreClause}
                     GROUP BY t.id
                     HAVING total_listens > 0
                     ORDER BY ${orderClause}
@@ -203,6 +218,7 @@ const ViewTop = (() => {
         if (params.count && [10,20,50,100].includes(+params.count)) countLimit = +params.count;
         if (params.display && ['list','tiles','collage'].includes(params.display)) viewMode = params.display;
         if (params.year) releaseYear = params.year;
+        if (params.genre) genreFilter = params.genre;
         if (params.grid && /^\d+x\d+$/.test(params.grid)) {
             const [rows, cols] = params.grid.split('x').map(Number);
             if (rows >= 1 && rows <= 10 && cols >= 1 && cols <= 10) gridShape = { rows, cols };
@@ -214,6 +230,7 @@ const ViewTop = (() => {
         container.innerHTML = _renderShell();
         _setupControls();
         if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
+        if (ENTITY_CONFIG[entityType].hasGenreFilter) _populateGenreFilter();
         _load();
     }
 
@@ -233,6 +250,7 @@ const ViewTop = (() => {
             ${ENTITY_CONFIG[entityType]?.hasRange ? _rangeControlsHtml() : ''}
             ${viewMode !== 'collage' ? _countControlsHtml() : ''}
             ${ENTITY_CONFIG[entityType]?.hasYearFilter ? _yearFilterHtml() : ''}
+            ${ENTITY_CONFIG[entityType]?.hasGenreFilter ? _genreFilterHtml() : ''}
             ${_displayControlsHtml()}
         `;
         return `
@@ -240,7 +258,7 @@ const ViewTop = (() => {
             <div class="page-controls">${primaryControls}</div>
             ${viewMode === 'collage' ? `<div class="page-controls" id="collageControlsRow">${_collageControlsHtml()}</div>` : ''}
             <div id="topContainer" class="image-grid">
-                <div class="loading">Loading...</div>
+                ${renderLoading()}
             </div>
             <footer>
                 <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
@@ -402,6 +420,18 @@ const ViewTop = (() => {
             </div>`;
     }
 
+    function _genreFilterHtml() {
+        return `
+            <div class="control-block">
+                <span class="control-block-label">Genre</span>
+                <div class="sort-controls">
+                    <select id="genreFilter" class="year-filter-select">
+                        <option value="all">All genres</option>
+                    </select>
+                </div>
+            </div>`;
+    }
+
     function _displayControlsHtml() {
         return `
             <div class="control-block">
@@ -418,6 +448,7 @@ const ViewTop = (() => {
         const p = new URLSearchParams({ view: 'top', type: entityType, sort: sortBy, count: countLimit, display: viewMode });
         if (ENTITY_CONFIG[entityType]?.hasRange) p.set('range', range);
         if (ENTITY_CONFIG[entityType]?.hasYearFilter) p.set('year', releaseYear);
+        if (ENTITY_CONFIG[entityType]?.hasGenreFilter) p.set('genre', genreFilter);
         if (viewMode === 'collage') {
             p.set('theme', collageTheme);
             if (collageTheme === 'topster') p.set('topsterCount', topsterCount);
@@ -431,6 +462,7 @@ const ViewTop = (() => {
             entityType = btn.dataset.type;
             sortBy = 'listens';
             releaseYear = 'all';
+            genreFilter = 'all';
             _syncUrl();
             unmount();  // tear down tracks' virtualized-scroll listener/RAF before switching away
             mount(document.getElementById('view-container'), _db, Object.fromEntries(new URLSearchParams(location.search)));
@@ -442,6 +474,9 @@ const ViewTop = (() => {
 
         const yearSel = document.getElementById('yearFilter');
         if (yearSel) yearSel.addEventListener('change', () => { releaseYear = yearSel.value; _syncUrl(); _load(); });
+
+        const genreSel = document.getElementById('genreFilter');
+        if (genreSel) genreSel.addEventListener('change', () => { genreFilter = genreSel.value; _syncUrl(); _load(); });
 
         document.querySelectorAll('[data-collage-theme]').forEach(btn => btn.addEventListener('click', () => {
             collageTheme = btn.dataset.collageTheme;
@@ -548,6 +583,7 @@ const ViewTop = (() => {
             container.innerHTML = _renderShell();
             _setupControls();
             if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
+        if (ENTITY_CONFIG[entityType].hasGenreFilter) _populateGenreFilter();
             _load();
         }
     }
@@ -564,6 +600,22 @@ const ViewTop = (() => {
             const opt = document.createElement('option');
             opt.value = yr; opt.textContent = yr;
             if (String(yr) === String(releaseYear)) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    }
+
+    // Genres index is precomputed by `mdb.py stats refresh` (see views/genres.js) —
+    // reuse it here rather than re-running the release_genres/tracks/listens join.
+    function _populateGenreFilter() {
+        const sel = document.getElementById('genreFilter');
+        if (!sel) return;
+        const res = _db.exec("SELECT value_json FROM stats_cache WHERE key = 'genresIndex'")[0];
+        const rows = res ? JSON.parse(res.values[0][0]) : [];
+        rows.sort((a, b) => b.plays - a.plays);
+        rows.forEach(({ id, name }) => {
+            const opt = document.createElement('option');
+            opt.value = id; opt.textContent = name;
+            if (String(id) === String(genreFilter)) opt.selected = true;
             sel.appendChild(opt);
         });
     }
@@ -589,7 +641,7 @@ const ViewTop = (() => {
 
         if (cachedResults.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = `<div class="loading">No ${entityType} found</div>`;
+            container.innerHTML = renderLoading(`No ${entityType} found`);
             return;
         }
 
@@ -622,20 +674,14 @@ const ViewTop = (() => {
         } else {
             container.className = 'image-grid';
             cachedResults.forEach((f, i) => {
-                const card = document.createElement('a');
-                card.className = 'image-card';
-                card.href = cfg.cardHref(f);
-                const imgSrc = f.imageUrl || getFallbackImageUrl();
-                card.innerHTML = `
-                    <div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
-                    <div class="image-card-overlay">
-                        <div class="image-card-name">${escapeHtml(f.name || f.title || '')}</div>
-                        ${f.artistName ? `<div class="image-card-artist">${escapeHtml(f.artistName)}</div>` : ''}
-                        <div class="image-card-stats">
-                            <span class="stat-item"><i data-lucide="headphones" style="width:14px;height:14px;"></i>${formatNumber(f.totalListens)}</span>
-                            <span class="stat-item"><i data-lucide="clock" style="width:14px;height:14px;"></i>${formatNumber(f.totalMinutes)} min</span>
-                        </div>
-                    </div>`;
+                const card = createImageCard({
+                    href: cfg.cardHref(f),
+                    imageUrl: f.imageUrl,
+                    title: f.name || f.title || '',
+                    subtitle: f.artistName || null,
+                    totalListens: f.totalListens,
+                    totalMinutes: f.totalMinutes
+                });
                 if (i >= countLimit) card.style.display = 'none';
                 container.appendChild(card);
             });
@@ -655,13 +701,11 @@ const ViewTop = (() => {
         const show = gridShape.rows * gridShape.cols;
         const cfg = ENTITY_CONFIG[entityType];
         cachedResults.forEach((f, i) => {
-            const card = document.createElement('a');
-            card.className = 'image-card';
-            card.href = cfg.cardHref(f);
-            const label = collageTheme === 'captioned'
-                ? `<div class="image-card-collage-label">${escapeHtml(f.label || f.name || f.title || '')}</div>`
-                : '';
-            card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(f.imageUrl || getFallbackImageUrl())}')"></div>${label}`;
+            const card = createImageCard({
+                href: cfg.cardHref(f),
+                imageUrl: f.imageUrl,
+                collageLabel: collageTheme === 'captioned' ? (f.label || f.name || f.title || '') : null
+            });
             if (i >= show) card.style.display = 'none';
             container.appendChild(card);
         });
@@ -696,10 +740,7 @@ const ViewTop = (() => {
             listBlock.className = 'topster-list-block';
             for (let i = 0; i < tier.count && idx < items.length; i++, idx++) {
                 const f = items[idx];
-                const card = document.createElement('a');
-                card.className = 'image-card topster-cell';
-                card.href = cfg.cardHref(f);
-                card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(f.imageUrl || getFallbackImageUrl())}')"></div>`;
+                const card = createImageCard({ href: cfg.cardHref(f), imageUrl: f.imageUrl, extraClass: 'topster-cell' });
                 tierEl.appendChild(card);
 
                 const line = document.createElement('div');

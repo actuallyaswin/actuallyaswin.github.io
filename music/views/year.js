@@ -95,21 +95,21 @@ const ViewYear = (() => {
             <section class="year-section">
                 <h2>Releases</h2>
                 <div id="releasesContainer" class="image-grid">
-                    <div class="loading">Loading releases...</div>
+                    ${renderLoading("Loading releases...")}
                 </div>
             </section>
 
             <section class="year-section">
                 <h2>Artists</h2>
                 <div id="artistsContainer" class="image-grid">
-                    <div class="loading">Loading artists...</div>
+                    ${renderLoading("Loading artists...")}
                 </div>
             </section>
 
             <section class="year-section" id="genresSection">
                 <h2>Genres</h2>
                 <div id="genresContainer" class="genre-list">
-                    <div class="loading">Loading...</div>
+                    ${renderLoading()}
                 </div>
             </section>
 
@@ -267,7 +267,7 @@ const ViewYear = (() => {
 
         if (cachedReleases.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = '<div class="loading">No releases found</div>';
+            container.innerHTML = renderLoading('No releases found');
             return;
         }
 
@@ -278,11 +278,7 @@ const ViewYear = (() => {
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedReleases.forEach((row, i) => {
                 const [id, title, year, albumArtUrl] = row;
-                const card = document.createElement('a');
-                card.className = 'image-card';
-                card.href = `?view=release&id=${encodeURIComponent(id)}`;
-                const imgSrc = albumArtUrl || getFallbackImageUrl();
-                card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>`;
+                const card = createImageCard({ href: `?view=release&id=${encodeURIComponent(id)}`, imageUrl: albumArtUrl });
                 if (i >= show) card.style.display = 'none';
                 container.appendChild(card);
             });
@@ -306,27 +302,14 @@ const ViewYear = (() => {
             container.className = 'image-grid';
             cachedReleases.forEach((row, i) => {
                 const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes] = row;
-                const card = document.createElement('a');
-                card.className = 'image-card';
-                card.href = `?view=release&id=${encodeURIComponent(id)}`;
-                const imgSrc = albumArtUrl || getFallbackImageUrl();
-                card.innerHTML = `
-                    <div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
-                    <div class="image-card-overlay">
-                        <div class="image-card-name">${escapeHtml(title)}</div>
-                        <div class="image-card-artist">${escapeHtml(artistName || 'Various Artists')}</div>
-                        <div class="image-card-stats">
-                            <span class="stat-item">
-                                <i data-lucide="headphones" style="width: 14px; height: 14px;"></i>
-                                ${formatNumber(totalListens)}
-                            </span>
-                            <span class="stat-item">
-                                <i data-lucide="clock" style="width: 14px; height: 14px;"></i>
-                                ${formatNumber(totalMinutes)} min
-                            </span>
-                        </div>
-                    </div>
-                `;
+                const card = createImageCard({
+                    href: `?view=release&id=${encodeURIComponent(id)}`,
+                    imageUrl: albumArtUrl,
+                    title,
+                    subtitle: artistName || 'Various Artists',
+                    totalListens,
+                    totalMinutes
+                });
                 if (i >= countLimit) card.style.display = 'none';
                 container.appendChild(card);
             });
@@ -342,7 +325,7 @@ const ViewYear = (() => {
 
         if (cachedArtists.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = '<div class="loading">No artists found</div>';
+            container.innerHTML = renderLoading('No artists found');
             return;
         }
 
@@ -353,11 +336,7 @@ const ViewYear = (() => {
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedArtists.forEach((row, i) => {
                 const [id, name, imageUrl] = row;
-                const card = document.createElement('a');
-                card.className = 'image-card';
-                card.href = `?view=artist&id=${encodeURIComponent(id)}`;
-                const imgSrc = imageUrl || getFallbackImageUrl();
-                card.innerHTML = `<div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>`;
+                const card = createImageCard({ href: `?view=artist&id=${encodeURIComponent(id)}`, imageUrl });
                 if (i >= show) card.style.display = 'none';
                 container.appendChild(card);
             });
@@ -381,26 +360,13 @@ const ViewYear = (() => {
             container.className = 'image-grid';
             cachedArtists.forEach((row, i) => {
                 const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
-                const card = document.createElement('a');
-                card.className = 'image-card';
-                card.href = `?view=artist&id=${encodeURIComponent(id)}`;
-                const imgSrc = imageUrl || getFallbackImageUrl();
-                card.innerHTML = `
-                    <div class="image-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
-                    <div class="image-card-overlay">
-                        <div class="image-card-name">${escapeHtml(name)}</div>
-                        <div class="image-card-stats">
-                            <span class="stat-item">
-                                <i data-lucide="headphones" style="width: 14px; height: 14px;"></i>
-                                ${formatNumber(totalListens)}
-                            </span>
-                            <span class="stat-item">
-                                <i data-lucide="clock" style="width: 14px; height: 14px;"></i>
-                                ${formatNumber(totalMinutes)} min
-                            </span>
-                        </div>
-                    </div>
-                `;
+                const card = createImageCard({
+                    href: `?view=artist&id=${encodeURIComponent(id)}`,
+                    imageUrl,
+                    title: name,
+                    totalListens,
+                    totalMinutes
+                });
                 if (i >= countLimit) card.style.display = 'none';
                 container.appendChild(card);
             });

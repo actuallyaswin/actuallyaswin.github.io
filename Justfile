@@ -56,22 +56,32 @@ verify-build:
     (cd "$tmp_worktree" && bundle exec jekyll build --destination /tmp/_site_verify)
     echo "Build OK — output at /tmp/_site_verify"
 
-# Checkpoint the music DB: push master.sqlite to Turso (the durable off-repo
-# copy), then regenerate master_prod.sqlite.gz (the stripped copy the SPA
-# fetches) and rebuild _site/ so the served copy never goes
+# Checkpoint the music DB: regenerate master_prod.sqlite.gz (the stripped
+# copy the SPA fetches) and rebuild _site/ so the served copy never goes
 # stale relative to it. A stale or truncated _site/ copy produces a cryptic
 # sql.js "Extra bytes past the end" error in the browser with no other
 # symptom. Run this after any music/master.sqlite write before the change is
 # visible on the frontend (dev server or deployed site).
+#
+# Does NOT push to Turso — that used to run every checkpoint and dominated
+# the wall time (tracks + listens alone: ~3 minutes). Turso is a durable
+# off-repo backup, not something the SPA reads from, so it doesn't need to
+# be current every checkpoint. Run `just turso-push` separately, ~monthly.
 db-checkpoint:
     cd music && {{mdb_python}} mdb.py certs refresh
     cd music && {{mdb_python}} mdb.py stats refresh
     cd music && sqlite3 master.sqlite "PRAGMA wal_checkpoint(TRUNCATE);"
-    cd music && {{mdb_python}} turso_push.py
     cd music && {{mdb_python}} make_prod_db.py
     cd music && gzip -k -f -9 master_prod.sqlite
     bundle exec jekyll build --destination _site
-    @echo "Checkpointed to Turso, regenerated music/master_prod.sqlite.gz, and rebuilt _site/"
+    @echo "Regenerated music/master_prod.sqlite.gz and rebuilt _site/"
+
+# Push master.sqlite to Turso (the durable off-repo backup copy). Not part of
+# db-checkpoint — run this manually on its own cadence (~monthly), since it's
+# the slowest step by far and Turso isn't in the SPA's serving path.
+turso-push:
+    cd music && sqlite3 master.sqlite "PRAGMA wal_checkpoint(TRUNCATE);"
+    cd music && {{mdb_python}} turso_push.py
 
 # Open an interactive sqlite3 shell on the music DB.
 db-shell:

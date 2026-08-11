@@ -336,7 +336,7 @@ const ViewCollectionPhysical = (() => {
                 </div>
             </nav>
             <div class="coll-page" id="collPhysicalPage">
-                <div class="loading">Building shelf...</div>
+                ${renderLoading("Building shelf...")}
             </div>
         `;
         lucide.createIcons();

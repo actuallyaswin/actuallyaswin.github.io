@@ -15,18 +15,19 @@ const ViewRelease = (() => {
     const AUDIO_FEATURES_ENABLED = true;
     const HIDE_DUPES = true;
 
-    const _SVG_EXT = `<svg class="pill-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
     const _SVG_CHEVRON = `<svg class="pill-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
 
-    function _buildPill(svc, href, name, sub) {
-        const icon = svc === 'aoty'
-            ? `<img src="images/links/aoty-icon.png" class="pill-aoty-img">`
-            : `<span class="pill-mask"></span>`;
-        return `<a href="${href}" target="_blank" rel="noopener" class="release-link-pill pill-${svc}">` +
-            `<span class="pill-icon">${icon}</span>` +
-            `<span class="pill-text"><span class="pill-service-name">${name}</span>` +
-            (sub ? `<span class="pill-sub">${sub}</span>` : '') +
-            `</span>${_SVG_EXT}</a>`;
+    // Edition-tag-info (ETI) suffixes — "(Remastered 2022)", "(Deluxe Edition)", etc. —
+    // stripped from display everywhere a title is shown (release header, tracklist).
+    const _ETI_CONTENT = 'original\\s+(?:motion\\s+picture\\s+)?(?:soundtrack|score)(?:\\s+from\\s+[^()\\[\\]]+)?|music\\s+from\\s+(?:the\\s+)?(?:original\\s+)?(?:motion\\s+picture|film|movie)(?:\\s+soundtrack)?|soundtrack\\s+from\\s+(?:the\\s+)?[^()\\[\\]]*|(?:original\\s+)?(?:game|video\\s+game)\\s+soundtrack|deluxe(?:\\s+edition)?|anniversary\\s+edition|(?:\\d{4}\\s+)?remaster(?:ed)?(?:\\s+\\d{4})?|special\\s+edition|expanded\\s+edition|complete\\s+edition|soundtrack';
+    const _ETI_RE = new RegExp(
+        `(?:(\\s*:\\s*|\\s+[\\-–—]\\s*|\\s+)(?:${_ETI_CONTENT})|\\s*\\((?:${_ETI_CONTENT})\\)|\\s*\\[(?:${_ETI_CONTENT})\\])\\s*$`,
+        'i'
+    );
+    // Splits a title into {base, eti} — eti is null when no edition-tag suffix matches.
+    function _splitEti(title) {
+        const m = (title || '').match(_ETI_RE);
+        return m ? { base: title.slice(0, m.index), eti: m[0].trim() } : { base: title, eti: null };
     }
 
     function mount(container, db, params) {
@@ -43,7 +44,13 @@ const ViewRelease = (() => {
             return;
         }
 
-        container.innerHTML = `            <header id="releaseHeader" class="artist-header-layout release-header-grid">
+        container.innerHTML = `            <nav class="genre-breadcrumb" id="releaseBreadcrumb">
+                <a href="?" class="bc-home"><i data-lucide="home"></i></a>
+                <i data-lucide="chevron-right" class="bc-sep"></i>
+                <span class="bc-current" id="releaseBreadcrumbName">Loading…</span>
+            </nav>
+
+            <header id="releaseHeader" class="entity-header entity-header-grid">
                 <div class="artist-photo-container">
                     <div class="artist-photo" id="albumArt">
                         <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -87,7 +94,7 @@ const ViewRelease = (() => {
                 <section class="tracks-section">
                     <h2>Tracks</h2>
                     <div class="tracklist" id="trackList">
-                        <div class="loading">Loading tracks...</div>
+                        ${renderLoading("Loading tracks...")}
                     </div>
                     <div id="variantsSection"></div>
                 </section>
@@ -116,6 +123,7 @@ const ViewRelease = (() => {
         loadVariants();
         loadSources();
         loadCanonicalBacklink();
+        loadListRankings();
         if (CHART_ENABLED) setupChartControls();
     }
 
@@ -140,9 +148,6 @@ const ViewRelease = (() => {
                 r.type,
                 r.type_secondary,
                 r.album_art_url,
-                (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
-                 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)) as total_tracks_in_db,
-                r.stat_tracks_heard,
                 r.stat_total_plays,
                 r.spotify_id,
                 r.release_group_mbid,
@@ -154,6 +159,7 @@ const ViewRelease = (() => {
                 r.aoty_ratings_critic,
                 r.aoty_ratings_user,
                 r.primary_artist_id,
+                r.credited_as,
                 r.label,
                 r.stat_album_total_ms,
                 r.stat_first_listen_ts,
@@ -171,13 +177,32 @@ const ViewRelease = (() => {
         }
 
         const [title, releaseDate, type, typeSecondary, albumArtUrl,
-               totalTracksInDb, tracksHeardRaw, totalPlaysRaw,
+               totalPlaysRaw,
                spotifyId, releaseGroupMbid, mbid, aotyUrl, aotyId,
                aotyScoreCritic, aotyScoreUser, aotyRatingsCritic, aotyRatingsUser,
-               primaryArtistId, label, albumTotalMs, firstListenTs, lastListenTs, driftDays,
+               primaryArtistId, creditedAs, label, albumTotalMs, firstListenTs, lastListenTs, driftDays,
                appleMusicIdCol] = result.values[0];
-        const tracksHeard = tracksHeardRaw || 0;
         const totalPlays  = totalPlaysRaw || 0;
+
+        // Group edit/length variants (radio edit, extended mix, ...) of the
+        // same recording — hearing any one counts as having heard the song.
+        const trackRowsResult = _db.exec(`
+            SELECT t.title,
+                   EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id) as heard
+            FROM tracks t
+            WHERE t.release_id = '${safeId}' AND t.hidden = 0
+              AND t.variant_section IS NULL
+              AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+        `)[0];
+        const songGroups = new Map();
+        if (trackRowsResult) {
+            trackRowsResult.values.forEach(([trackTitle, heard]) => {
+                const key = sameSongKey(trackTitle);
+                songGroups.set(key, songGroups.get(key) || !!heard);
+            });
+        }
+        const totalTracksInDb = songGroups.size;
+        const tracksHeard     = [...songGroups.values()].filter(Boolean).length;
 
 
         const extLinks = new Map();
@@ -221,15 +246,7 @@ const ViewRelease = (() => {
         `)[0];
         const titleAlias = titleAliasResult && titleAliasResult.values[0]?.[0];
 
-        const ETI_CONTENT = 'original\\s+(?:motion\\s+picture\\s+)?(?:soundtrack|score)(?:\\s+from\\s+[^()\\[\\]]+)?|music\\s+from\\s+(?:the\\s+)?(?:original\\s+)?(?:motion\\s+picture|film|movie)(?:\\s+soundtrack)?|soundtrack\\s+from\\s+(?:the\\s+)?[^()\\[\\]]*|(?:original\\s+)?(?:game|video\\s+game)\\s+soundtrack|deluxe(?:\\s+edition)?|anniversary\\s+edition|remastered|special\\s+edition|expanded\\s+edition|complete\\s+edition|soundtrack';
-        // Handles suffixes both bare (colon/dash-separated) and wrapped in (parens) or [brackets]
-        const ETI_RE = new RegExp(
-            `(?:(\\s*:\\s*|\\s+[\\-–—]\\s*|\\s+)(?:${ETI_CONTENT})|\\s*\\((?:${ETI_CONTENT})\\)|\\s*\\[(?:${ETI_CONTENT})\\])\\s*$`,
-            'i'
-        );
-        const etiMatch = (title || '').match(ETI_RE);
-        const baseTitle = etiMatch ? title.slice(0, etiMatch.index) : title;
-        const etiPart   = etiMatch ? etiMatch[0].trim() : null;
+        const { base: baseTitle, eti: etiPart } = _splitEti(title);
 
         const nameEl = document.getElementById('releaseName');
         if (isNonLatin(baseTitle) && titleAlias) {
@@ -240,9 +257,20 @@ const ViewRelease = (() => {
         // artistResult is ordered primary-artist-first.
         const titleEdition = [baseTitle || title || 'Release', etiPart].filter(Boolean).join(' ');
         const titleArtist  = artistResult?.values?.length
-            ? artistResult.values[0][0]
+            ? (creditedAs && artistResult.values[0][1] === primaryArtistId ? creditedAs : artistResult.values[0][0])
             : 'Various Artists';
         setPageTitle(`“${titleEdition}” by ${titleArtist}`);
+
+        const breadcrumbEl = document.getElementById('releaseBreadcrumb');
+        if (breadcrumbEl) {
+            const home = `<a href="?" class="bc-home"><i data-lucide="home"></i></a>`;
+            const sep  = `<i data-lucide="chevron-right" class="bc-sep"></i>`;
+            const cur  = `<span class="bc-current">${escapeHtml(baseTitle || title || 'Release')}</span>`;
+            const artistCrumb = primaryArtistId
+                ? `<a href="?view=artist&id=${encodeURIComponent(primaryArtistId)}" class="bc-link">${escapeHtml(titleArtist)}</a>`
+                : `<span class="bc-link">${escapeHtml(titleArtist)}</span>`;
+            breadcrumbEl.innerHTML = `${home}${sep}${artistCrumb}${sep}${cur}`;
+        }
 
         const metaParts = [];
         if (releaseDate) metaParts.push(_formatReleaseDate(releaseDate));
@@ -310,10 +338,13 @@ const ViewRelease = (() => {
                 _artistsWithReleases.has(i)
                     ? `<a href="?view=artist&id=${encodeURIComponent(i)}" class="release-artist-link">${escapeHtml(n)}</a>`
                     : escapeHtml(n);
+            // credited_as shows the name this release was actually put out under
+            // (e.g. a pseudonym) while still linking to the canonical artist page.
+            const displayName = (n, i) => (creditedAs && i === primaryArtistId) ? creditedAs : n;
 
             let html;
             if (allArtists.length === 1) {
-                html = makeLink(allArtists[0][0], allArtists[0][1]);
+                html = makeLink(displayName(allArtists[0][0], allArtists[0][1]), allArtists[0][1]);
             } else {
                 const idList = allArtists.map(([, id]) => `'${id}'`).join(',');
                 const suppressedIds = new Set();
@@ -359,9 +390,9 @@ const ViewRelease = (() => {
                     if (suppressedIds.has(id)) continue;
                     if (groupMemberMap.has(id)) {
                         const memberLinks = groupMemberMap.get(id).map(m => makeLink(m.name, m.id));
-                        parts.push(`${makeLink(name, id)} (${joinLinks(memberLinks)})`);
+                        parts.push(`${makeLink(displayName(name, id), id)} (${joinLinks(memberLinks)})`);
                     } else {
-                        parts.push(makeLink(name, id));
+                        parts.push(makeLink(displayName(name, id), id));
                     }
                 }
 
@@ -425,48 +456,48 @@ const ViewRelease = (() => {
                         `${_SVG_CHEVRON}</button>` +
                         `<div class="pill-variant-group pill-spotify" id="${groupId}">` +
                         `<a href="https://open.spotify.com/album/${effectiveSpotifyId}" target="_blank" rel="noopener" class="pill-variant-row pill-spotify">` +
-                        `<span class="pill-variant-name">Canonical pressing</span>${_SVG_EXT}</a>`;
+                        `<span class="pill-variant-name">Canonical pressing</span>${_PILL_SVG_EXT}</a>`;
                     for (const [vspId, vLabel] of variantSpotify) {
                         html += `<a href="https://open.spotify.com/album/${vspId}" target="_blank" rel="noopener" class="pill-variant-row pill-spotify">` +
-                            `<span class="pill-variant-name">${escapeHtml(vLabel)}</span>${_SVG_EXT}</a>`;
+                            `<span class="pill-variant-name">${escapeHtml(vLabel)}</span>${_PILL_SVG_EXT}</a>`;
                     }
                     html += `</div>`;
                 } else {
-                    html += _buildPill('spotify', `https://open.spotify.com/album/${effectiveSpotifyId}`, 'Spotify');
+                    html += renderLinkPill('spotify', `https://open.spotify.com/album/${effectiveSpotifyId}`, 'Spotify');
                 }
             }
             if (amId)
-                html += _buildPill('apple', `https://music.apple.com/album/${amId}`, 'Apple Music');
+                html += renderLinkPill('apple', `https://music.apple.com/album/${amId}`, 'Apple Music');
             if (extLinks.get(4))
-                html += _buildPill('deezer', `https://www.deezer.com/album/${extLinks.get(4)}`, 'Deezer');
+                html += renderLinkPill('deezer', `https://www.deezer.com/album/${extLinks.get(4)}`, 'Deezer');
             if (extLinks.get(5))
-                html += _buildPill('tidal', `https://tidal.com/browse/album/${extLinks.get(5)}`, 'Tidal');
+                html += renderLinkPill('tidal', `https://tidal.com/browse/album/${extLinks.get(5)}`, 'Tidal');
             if (extLinks.get(7))
-                html += _buildPill('beatport', `https://www.beatport.com/release/-/${extLinks.get(7)}`, 'Beatport');
+                html += renderLinkPill('beatport', `https://www.beatport.com/release/-/${extLinks.get(7)}`, 'Beatport');
 
             // ── Purchase ─────────────────────────────────────────────────
             if (extLinks.get(6))
-                html += _buildPill('bandcamp', extLinks.get(6), 'Bandcamp');
+                html += renderLinkPill('bandcamp', extLinks.get(6), 'Bandcamp');
 
             // ── Metadata / editorial ─────────────────────────────────────
             if (releaseGroupMbid)
-                html += _buildPill('musicbrainz', `https://musicbrainz.org/release-group/${releaseGroupMbid}`, 'MusicBrainz');
+                html += renderLinkPill('musicbrainz', `https://musicbrainz.org/release-group/${releaseGroupMbid}`, 'MusicBrainz');
             else if (mbid)
-                html += _buildPill('musicbrainz', `https://musicbrainz.org/release/${mbid}`, 'MusicBrainz');
+                html += renderLinkPill('musicbrainz', `https://musicbrainz.org/release/${mbid}`, 'MusicBrainz');
             if (wikiPageId)
-                html += _buildPill('wikipedia', `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'Wikipedia');
+                html += renderLinkPill('wikipedia', `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'Wikipedia');
             if (resolvedAotyUrl) {
                 const aotyScore = aotyScoreCritic != null && aotyScoreUser != null
                     ? `C ${aotyScoreCritic} · U ${Math.round(aotyScoreUser)}`
                     : aotyScoreCritic != null ? `Critic ${aotyScoreCritic}`
                     : aotyScoreUser  != null ? `User ${Math.round(aotyScoreUser)}`
                     : null;
-                html += _buildPill('aoty', resolvedAotyUrl, 'AOTY', aotyScore);
+                html += renderLinkPill('aoty', resolvedAotyUrl, 'AOTY', aotyScore);
             }
             if (extLinks.get(8))
-                html += _buildPill('genius', `https://genius.com/artists/${extLinks.get(8)}`, 'Genius');
+                html += renderLinkPill('genius', `https://genius.com/artists/${extLinks.get(8)}`, 'Genius');
             if (extLinks.get(10))
-                html += _buildPill('discogs', `https://www.discogs.com/release/${extLinks.get(10)}`, 'Discogs');
+                html += renderLinkPill('discogs', `https://www.discogs.com/release/${extLinks.get(10)}`, 'Discogs');
 
             if (html) {
                 pillsEl.innerHTML = html;
@@ -555,16 +586,23 @@ const ViewRelease = (() => {
         return (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
     }
 
-    // Render a track title, optionally dimming the ETI when mix_name is present.
-    // Uses lastIndexOf(' (') to split so it works regardless of casing differences
-    // between tracks.title and tracks.mix_name.
+    // Render a track title, dimming the trailing edition/mix tag.
+    // When mix_name is present, split on the last '(' so tracks.title and
+    // tracks.mix_name casing differences don't matter. Otherwise fall back to
+    // the shared ETI regex so bare edition suffixes ("(Remastered 2022)") are
+    // still dimmed even when no mix_name was captured for the track.
     function _renderTrackName(title, mixName) {
-        if (!mixName) return escapeHtml(title);
-        const split = title.lastIndexOf(' (');
-        if (split === -1) return escapeHtml(title);
-        const base = title.slice(0, split);
-        const eti  = title.slice(split);          // includes the leading space
-        return `${escapeHtml(base)}<span class="tracklist-eti">${escapeHtml(eti)}</span>`;
+        if (mixName) {
+            const split = title.lastIndexOf(' (');
+            if (split !== -1) {
+                const base = title.slice(0, split);
+                const eti  = title.slice(split);          // includes the leading space
+                return `${escapeHtml(base)}<span class="tracklist-eti">${escapeHtml(eti)}</span>`;
+            }
+        }
+        const { base, eti } = _splitEti(title);
+        if (!eti) return escapeHtml(title);
+        return `${escapeHtml(base)}<span class="tracklist-eti"> ${escapeHtml(eti)}</span>`;
     }
 
     // ── Shared tracklist renderer ───────────────────────────────────────────────
@@ -587,7 +625,7 @@ const ViewRelease = (() => {
                 <span class="tracklist-num"></span>
                 <div class="tracklist-info"></div>
                 ${showBpm ? `<div class="tracklist-bpm" title="BPM (Beats per Minute)"><i data-lucide="metronome"></i></div>` : ''}
-                <div class="tracklist-plays"><i data-lucide="headphones"></i></div>
+                <div class="tracklist-plays" title="Your play count for this track"><i data-lucide="headphones"></i></div>
             `;
             container.appendChild(colHeader);
         }
@@ -1036,6 +1074,35 @@ const ViewRelease = (() => {
         artistContainer.insertAdjacentElement('afterend', p);
     }
 
+    // Row appended after Genre in the stats table (same rst-genres-row pattern) —
+    // shows every canonical list (RS500, NME AOTY, etc.) this release appears on.
+    function loadListRankings() {
+        const safeId = _releaseId.replace(/'/g, "''");
+
+        const result = _db.exec(`
+            SELECT cl.id, cl.short_name, cl.name, cle.rank, cle.position_label
+            FROM canonical_list_entries cle
+            JOIN canonical_lists cl ON cl.id = cle.list_id
+            WHERE cle.release_id = '${safeId}'
+            ORDER BY cle.rank
+        `)[0];
+
+        if (!result || result.values.length === 0) return;
+
+        const statsEl = document.getElementById('releaseStatsTable');
+        if (!statsEl) return;
+
+        const pills = result.values.map(([listId, shortName, name, rank, posLabel]) => {
+            const label = posLabel || `#${rank}`;
+            return `<a href="?view=list&id=${encodeURIComponent(listId)}" class="stat-genre-tag" title="${escapeHtml(name)}">${escapeHtml(shortName || name)} ${escapeHtml(label)}</a>`;
+        }).join('');
+
+        statsEl.insertAdjacentHTML('beforeend',
+            `<div class="rst-row rst-genres-row"><span class="rst-label">Lists</span><span class="rst-value">${pills}</span></div>`
+        );
+        statsEl.removeAttribute('hidden');
+    }
+
     // ── Listening history ───────────────────────────────────────────────────────
 
     function loadListeningHistory() {
@@ -1064,7 +1131,7 @@ const ViewRelease = (() => {
             const rowsEl = document.getElementById('pulseRows');
             if (rowsEl) rowsEl.innerHTML = '<p class="no-data">No listening history yet.</p>';
             const el = document.querySelector('.chart-container');
-            if (el) el.innerHTML = '<div class="loading">No listening history found</div>';
+            if (el) el.innerHTML = renderLoading('No listening history found');
             return;
         }
 

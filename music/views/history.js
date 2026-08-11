@@ -25,6 +25,11 @@ const ViewHistory = (() => {
         _db = db;
         setPageTitle('History');
 
+        if (params.q) {
+            _query = params.q;
+            _window = 'all'; // a deep link with a query cares about all-time matches, not the last 30 days
+        }
+
         container.innerHTML = `
             <header><h1>History</h1></header>
             <div class="page-controls">
@@ -47,8 +52,11 @@ const ViewHistory = (() => {
                     </div>
                 </div>
                 <div class="control-block" style="flex:1;max-width:260px">
-                    <input id="historySearch" class="admin-filter-input" placeholder="Search track, artist…"
-                           style="width:100%" autocomplete="off">
+                    <div class="filter-search" style="width:100%">
+                        <i data-lucide="search" class="filter-search-icon"></i>
+                        <input id="historySearch" class="filter-search-input" placeholder="Search track, artist…"
+                               autocomplete="off" value="${escapeHtml(_query)}">
+                    </div>
                 </div>
                 <span id="historyCount" style="font-size:0.75rem;color:var(--text-tertiary);margin-left:auto;white-space:nowrap"></span>
             </div>
@@ -124,7 +132,7 @@ const ViewHistory = (() => {
             ? `<div class="recent-play-thumb" style="background-image:url('${cssUrl(art)}')"></div>`
             : `<div class="recent-play-thumb history-thumb-empty"></div>`;
         const srcBadge = `<span class="history-source history-source-${source}">${source === 'spotify' ? 'SP' : 'LFM'}</span>`;
-        const timeStr  = _relTime(ts);
+        const timeStr  = formatTimeAgo(ts);
         const durStr   = ms ? ` · ${Math.round(ms/1000/60)}m${Math.round((ms/1000)%60).toString().padStart(2,'0')}s` : '';
 
         el.innerHTML = `
@@ -136,16 +144,6 @@ const ViewHistory = (() => {
             ${srcBadge}
             <span class="recent-play-date">${timeStr}</span>`;
         return el;
-    }
-
-    function _relTime(ts) {
-        const diff = Math.floor(Date.now()/1000) - ts;
-        if (diff < 60)     return `${diff}s ago`;
-        if (diff < 3600)   return `${Math.floor(diff/60)}m ago`;
-        if (diff < 86400)  return `${Math.floor(diff/3600)}h ago`;
-        if (diff < 604800) return `${Math.floor(diff/86400)}d ago`;
-        const d = new Date(ts * 1000);
-        return d.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
     }
 
     function _load() {
@@ -172,6 +170,7 @@ const ViewHistory = (() => {
             LEFT JOIN releases r ON r.id = t.release_id
             LEFT JOIN artists a  ON a.id = r.primary_artist_id
             WHERE 1=1 ${timeClause} ${srcClause} ${matchClause}
+              AND (t.id IS NULL OR (t.hidden = 0 AND (r.id IS NULL OR r.hidden = 0)))
             ORDER BY l.timestamp DESC
         `)[0];
 

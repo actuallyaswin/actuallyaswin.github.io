@@ -40,6 +40,22 @@ def _strip(conn):
     conn.execute('DROP INDEX IF EXISTS listens_ts_src')
     conn.execute('ALTER TABLE listens DROP COLUMN raw_source_id')
 
+    # Enrichment-pipeline columns no frontend view reads.
+    conn.execute('DROP INDEX IF EXISTS artists_slug')
+    for col in ('bio', 'disambiguation', 'formed_year', 'disbanded_year', 'image_source', 'wikipedia_url',
+                'slug', 'is_supergroup', 'mb_attempted', 'spotify_followers', 'spotify_popularity'):
+        conn.execute(f'ALTER TABLE artists DROP COLUMN {col}')
+    for col in ('date_source', 'album_art_source', 'wikipedia_url', 'stat_tracks_heard', 'upc',
+                'album_art_height', 'album_art_width', 'album_art_thumb_height', 'album_art_thumb_width',
+                'spotify_popularity'):
+        conn.execute(f'ALTER TABLE releases DROP COLUMN {col}')
+    conn.execute('DROP INDEX IF EXISTS idx_tracks_canonical')
+    for col in ('musical_key', 'beatport_genre', 'beatport_sub_genre', 'is_explicit',
+                'track_variant_type', 'canonical_track_id', 'spotify_popularity'):
+        conn.execute(f'ALTER TABLE tracks DROP COLUMN {col}')
+    conn.execute('ALTER TABLE collection_items DROP COLUMN discogs_genres')
+    conn.execute('ALTER TABLE listens DROP COLUMN skipped')
+
     # The admin editor is local-only; its PBKDF2 salt+hash must not ship inside
     # a file every visitor downloads.
     try:

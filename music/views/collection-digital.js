@@ -223,7 +223,7 @@ const ViewCollectionDigital = (() => {
                 </div>
             </nav>
             <div class="coll-page" id="collDigitalPage">
-                <div class="loading">Loading...</div>
+                ${renderLoading()}
             </div>
         `;
         lucide.createIcons();

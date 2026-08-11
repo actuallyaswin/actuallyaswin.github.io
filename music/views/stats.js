@@ -128,9 +128,8 @@ const ViewStats = (() => {
         }).join('');
     }
 
-    // Renders [label, value] pairs as big-number stat-card tiles (reuses the
-    // existing .stats/.stat-card pattern from the home/top-* views) — used
-    // when a section is a handful of headline numbers, not a distribution.
+    // Renders [label, value] pairs as big-number stat-card tiles, for sections
+    // that are a handful of headline numbers rather than a distribution.
     function _statCards(items) {
         const cards = items.map(([label, value]) => `
             <div class="stat-card">
@@ -197,6 +196,10 @@ const ViewStats = (() => {
         completion: {
             title: 'Album Completion',
             desc: 'Albums you keep coming back to but have never finished.',
+        },
+        canonicalLists: {
+            title: 'Canonical Lists',
+            desc: 'Progress against curated all-time album rankings.',
         },
         relistened: {
             title: 'Most Relistened Tracks',
@@ -311,6 +314,39 @@ const ViewStats = (() => {
         return _section('completion', rowsHtml);
     }
 
+    // ── Canonical Lists (RS500, etc.) ───────────────────────────────────────
+    // One donut card per list, Letterboxd list-progress-graph style. Each
+    // links straight to its own ?view=list page (views/list.js) rather than
+    // a modal — a 260-entry list doesn't fit a modal well, and a body-level
+    // modal has no way to close itself when the SPA router navigates away
+    // from under it (a real bug this replaced: clicking an album inside the
+    // old modal left it stuck open over the newly-rendered release page).
+    function _canonicalListsSection() {
+        const lists = _cache('canonicalLists');
+        if (!lists || !lists.length) return '';
+
+        const cards = lists.map(lst => {
+            const pct = lst.total ? Math.round((lst.heard / lst.total) * 100) : 0;
+            const label = lst.short_name || lst.name;
+            return `
+                <a class="canon-list-graph-wrap" href="?view=list&id=${encodeURIComponent(lst.id)}"
+                   aria-label="View all ${escapeHtml(label)} albums" title="${escapeHtml(lst.name)}">
+                    <div class="canon-list-graph" style="--p:${pct}">
+                        <div class="canon-list-graph-inner">
+                            <div class="canon-list-title">${escapeHtml(label)}</div>
+                            <div class="canon-list-pct">${pct}%</div>
+                            <div class="canon-list-count">${lst.heard} of ${lst.total}</div>
+                        </div>
+                    </div>
+                </a>`;
+        }).join('');
+
+        return `<section class="stat-section">
+            ${_sectionHeader('canonicalLists')}
+            <div class="canon-list-grid">${cards}</div>
+        </section>`;
+    }
+
     function _relistenedSection() {
         const rows = _cache('relistened');
         if (!rows || !rows.length) return _emptySection('relistened', 'No data yet — run `mdb stats refresh`.');
@@ -399,6 +435,10 @@ const ViewStats = (() => {
         if (!el) return;
 
         el.innerHTML = `
+            <div class="insights-group">
+                ${_canonicalListsSection()}
+            </div>
+
             <div class="insights-group">
                 <div class="insights-grid insights-grid--thirds">
                     ${_genderSection()}

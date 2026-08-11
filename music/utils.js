@@ -8,8 +8,66 @@ function setPageTitle(...parts) {
     document.title = page ? `${page} | ${SITE_NAME}` : SITE_NAME;
 }
 
+const _PILL_SVG_EXT = `<svg class="pill-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
+
+function renderLinkPill(svc, href, name, sub) {
+    const icon = svc === 'aoty'
+        ? `<img src="images/links/aoty-icon.png" class="pill-aoty-img">`
+        : `<span class="pill-mask"></span>`;
+    return `<a href="${href}" target="_blank" rel="noopener" class="release-link-pill pill-${svc}">` +
+        `<span class="pill-icon">${icon}</span>` +
+        `<span class="pill-text"><span class="pill-service-name">${name}</span>` +
+        (sub ? `<span class="pill-sub">${sub}</span>` : '') +
+        `</span>${_PILL_SVG_EXT}</a>`;
+}
+
+// Fine-grained "Xs/Xm/Xh/Xd ago" — for activity lists (Recent Plays, History).
+// Distinct from formatRelativeTime() below, which is coarser (today/yesterday/
+// weeks/months/years) and used for single "Last played" stat fields.
+function formatTimeAgo(ts) {
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 60)     return `${diff}s ago`;
+    if (diff < 3600)   return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)  return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function renderLoading(text = 'Loading...') {
+    return `<div class="loading">${escapeHtml(text)}</div>`;
+}
+
 function formatNumber(num) {
     return num.toLocaleString();
+}
+
+// Mirrors mdb_strings.py's same_song_key() — groups track titles that are
+// just edit/length cuts of one recording (radio edit, extended mix,
+// original mix, club mix, ...) so hearing any one variant counts as having
+// heard the song for completion purposes. A remix or edit credited to a
+// specific artist/DJ is a distinct musical work and is never folded in.
+const GENERIC_EDIT_TERMS = new Set([
+    'radio edit', 'radio version', 'radio mix',
+    'extended mix', 'extended', 'extended version',
+    'original mix', 'original version', 'original',
+    'club mix', 'dub mix', 'album mix', 'album version',
+    'single version', 'single mix',
+]);
+const EDIT_SUFFIX_RE = /\s*[\(\[]([^\(\)\[\]]+)[\)\]]\s*$/;
+
+function _isGenericEdit(inner) {
+    if (GENERIC_EDIT_TERMS.has(inner)) return true;
+    const stripped = inner.replace(/^original\s+/, '');
+    return stripped !== inner && GENERIC_EDIT_TERMS.has(stripped);
+}
+
+function sameSongKey(title) {
+    const m = EDIT_SUFFIX_RE.exec(title);
+    if (!m || !_isGenericEdit(m[1].trim().toLowerCase())) {
+        return title.trim().toLowerCase();
+    }
+    return title.slice(0, m.index).trim().toLowerCase();
 }
 
 function formatRelativeTime(ts) {
@@ -158,5 +216,39 @@ function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes
             ${metaHtml || viaHtml ? `<div class="release-meta">${metaHtml}${viaHtml}</div>` : ''}
         </div>
     `;
+    return card;
+}
+
+function createImageCard({ href, imageUrl, title = null, subtitle = null,
+                            totalListens = null, totalMinutes = null,
+                            collageLabel = null, extraClass = '' }) {
+    const card = document.createElement('a');
+    card.className = extraClass ? `image-card ${extraClass}` : 'image-card';
+    card.href = href;
+
+    const imgHtml = `<div class="image-card-img" style="background-image: url('${cssUrl(imageUrl || getFallbackImageUrl())}')"></div>`;
+
+    if (collageLabel != null) {
+        card.innerHTML = `${imgHtml}<div class="image-card-collage-label">${escapeHtml(collageLabel)}</div>`;
+        return card;
+    }
+    if (title == null) {
+        card.innerHTML = imgHtml;
+        return card;
+    }
+
+    const statsHtml = totalListens != null ? `
+        <div class="image-card-stats">
+            <span class="stat-item"><i data-lucide="headphones" style="width:14px;height:14px;"></i>${formatNumber(totalListens)}</span>
+            <span class="stat-item"><i data-lucide="clock" style="width:14px;height:14px;"></i>${formatNumber(totalMinutes)} min</span>
+        </div>` : '';
+
+    card.innerHTML = `
+        ${imgHtml}
+        <div class="image-card-overlay">
+            <div class="image-card-name">${escapeHtml(title)}</div>
+            ${subtitle ? `<div class="image-card-artist">${escapeHtml(subtitle)}</div>` : ''}
+            ${statsHtml}
+        </div>`;
     return card;
 }
