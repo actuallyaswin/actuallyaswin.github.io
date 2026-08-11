@@ -43,6 +43,8 @@ EL_SVC_BEATPORT    = 7
 EL_SVC_GENIUS      = 8   # link_value = slug (e.g. 'Bad-bunny'), used for hrefs
 EL_SVC_GENIUS_ID   = 9   # link_value = integer ID (e.g. '690350'), used for API calls
 EL_SVC_DISCOGS     = 10  # link_value = Discogs release/artist integer ID
+EL_SVC_RYM              = 11  # link_value = full RateYourMusic artist/release URL
+EL_SVC_RESIDENT_ADVISOR = 12  # link_value = full ra.co dj/artist URL
 
 # ── ULID / slug ────────────────────────────────────────────────────────────────
 
@@ -352,6 +354,31 @@ CREATE TABLE IF NOT EXISTS artist_year_medals (
     PRIMARY KEY (artist_id, year)
 );
 CREATE INDEX IF NOT EXISTS idx_artist_year_medals_artist ON artist_year_medals(artist_id);
+CREATE TABLE IF NOT EXISTS canonical_lists (
+    id           TEXT PRIMARY KEY,   -- slug, e.g. 'rs500-2020'
+    name         TEXT NOT NULL,      -- "Rolling Stone's 500 Greatest Albums of All Time (2020)"
+    short_name   TEXT,               -- "RS 500" — compact label for tight UI
+    source_url   TEXT,
+    total_count  INTEGER NOT NULL,
+    created_at   INTEGER,
+    updated_at   INTEGER
+);
+CREATE TABLE IF NOT EXISTS canonical_list_entries (
+    list_id        TEXT NOT NULL REFERENCES canonical_lists(id) ON DELETE CASCADE,
+    rank           INTEGER NOT NULL,   -- internal sort key; always dense/unique per list, not necessarily user-facing
+    release_id     TEXT REFERENCES releases(id),  -- NULL until matched/imported
+    artist_name    TEXT NOT NULL,   -- raw list data — kept even once matched, for display/rematching
+    album_title    TEXT NOT NULL,
+    year           INTEGER,
+    position_label TEXT,   -- optional display string ("2025 #1") for lists with no single global ranking
+    PRIMARY KEY (list_id, rank)
+);
+CREATE INDEX IF NOT EXISTS idx_cle_release ON canonical_list_entries(release_id);
+CREATE TABLE IF NOT EXISTS apple_match_status (
+    release_id   TEXT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
+    status       TEXT NOT NULL,   -- 'verified' | 'needs_review' | 'unmatched' | 'no_match_available'
+    checked_at   INTEGER
+);
 """
 
 
@@ -467,6 +494,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tracks ADD COLUMN stat_first_listen_ts INTEGER",
         "ALTER TABLE tracks ADD COLUMN stat_last_listen_ts INTEGER",
         "ALTER TABLE tracks ADD COLUMN stat_drift_days REAL",
+        "ALTER TABLE releases ADD COLUMN credited_as TEXT",
+        "ALTER TABLE canonical_list_entries ADD COLUMN position_label TEXT",
+        "ALTER TABLE releases ADD COLUMN album_art_width INTEGER",
+        "ALTER TABLE releases ADD COLUMN album_art_height INTEGER",
+        "ALTER TABLE releases ADD COLUMN album_art_thumb_width INTEGER",
+        "ALTER TABLE releases ADD COLUMN album_art_thumb_height INTEGER",
     ]:
         try:
             conn.execute(ddl)

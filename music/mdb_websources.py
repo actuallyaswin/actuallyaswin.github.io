@@ -67,12 +67,15 @@ def _clean_aoty_title(title: str) -> str:
 
 def _aoty_get(url: str, **kw):
     _aoty_lim.wait()
-    r = requests.get(url, headers={'User-Agent': AOTY_UA}, timeout=15, **kw)
+    # This environment's urllib3/brotli combo can't decode AOTY's br-encoded
+    # responses (BrotliDecoderDecompressStream failure) — identity sidesteps it.
+    headers = {'User-Agent': AOTY_UA, 'Accept-Encoding': 'identity'}
+    r = requests.get(url, headers=headers, timeout=15, **kw)
     if r.status_code == 403:
         log.warning('AOTY returned 403 (rate limited or blocked) — waiting %.0fs', AOTY_RETRY)
         time.sleep(AOTY_RETRY)
         _aoty_lim.wait()
-        r = requests.get(url, headers={'User-Agent': AOTY_UA}, timeout=15, **kw)
+        r = requests.get(url, headers=headers, timeout=15, **kw)
     r.raise_for_status()
     return r
 
@@ -119,6 +122,36 @@ def _parse_aoty_date(text: str) -> 'str | None':
         return f'{m.group(2)}-{MONTHS[m.group(1).lower()]}'
     m = re.fullmatch(r'(\d{4})', t)
     return m.group(1) if m else None
+
+
+def scrape_aoty_genre_relations(aoty_id: int, slug: str) -> dict:
+    """Scrape a genre's AOTY page for its real Parent/Child Genres sidebar.
+
+    Returns {'parents': [(id, name, slug), ...], 'children': [(id, name, slug), ...]}.
+    AOTY genres can have multiple parents (a DAG, not a tree) — e.g. Mambo is
+    filed under both "Latin American Music" and "Spanish Caribbean Music".
+    Some parents/children referenced here may not exist yet in the local
+    `genres` table; the caller is responsible for inserting them.
+    """
+    url = f'https://www.albumoftheyear.org/genre/{aoty_id}-{slug}/'
+    r = _aoty_get(url)
+    soup = BeautifulSoup(r.text, 'html.parser')
+
+    result = {'parents': [], 'children': []}
+    for h2 in soup.find_all('h2'):
+        heading = h2.get_text(strip=True)
+        key = {'Parent Genres': 'parents', 'Child Genres': 'children'}.get(heading)
+        if not key:
+            continue
+        box = h2.find_parent('div', class_='rightBox')
+        if not box:
+            continue
+        for a in box.find_all('a', href=re.compile(r'^/genre/\d+-')):
+            m = re.match(r'^/genre/(\d+)-([^/]+)/', a['href'])
+            if not m:
+                continue
+            result[key].append((int(m.group(1)), a.get_text(strip=True), m.group(2)))
+    return result
 
 
 def scrape_aoty_page(url: str) -> dict:

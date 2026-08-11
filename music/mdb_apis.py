@@ -977,7 +977,8 @@ def mb_find_release_group(title: str, artist: str, year: int = 0) -> 'str | None
     try:
         query = f'releasegroup:"{title}"'
         if artist:
-            query += f' AND artist:"{artist}"'
+            # quoting a multi-word artist here makes MB's Lucene parser return 0 hits when ANDed with another quoted field
+            query += f' AND artist:({artist})'
         data = _mb_get('/release-group', {'query': query, 'limit': 10})
     except Exception:
         return None
@@ -989,11 +990,12 @@ def mb_find_release_group(title: str, artist: str, year: int = 0) -> 'str | None
         # Verify artist credit when one is provided
         if norm_artist:
             credits = rg.get('artist-credit') or []
-            rg_artist = ' '.join(
-                (c.get('artist') or {}).get('name', '') if isinstance(c, dict) else ''
+            # credited-as name (e.g. an alias) can differ from the underlying artist entity's name
+            rg_names = ' '.join(
+                f"{c.get('name', '')} {(c.get('artist') or {}).get('name', '')}" if isinstance(c, dict) else ''
                 for c in credits
             )
-            if norm_artist not in normalize_text(rg_artist):
+            if norm_artist not in normalize_text(rg_names):
                 continue
         # Verify year (with tolerance)
         if year:
@@ -1188,6 +1190,7 @@ def mb_release_reasons(candidates: list, canonical: dict) -> dict:
 # ── iTunes / Apple Music ───────────────────────────────────────────────────────
 
 ITUNES_LOOKUP = 'https://itunes.apple.com/lookup'
+ITUNES_SEARCH = 'https://itunes.apple.com/search'
 ITUNES_INTERVAL = 3.0
 _itunes_lim = RateLimiter(ITUNES_INTERVAL)
 _ITUNES_ID_RE = re.compile(
@@ -1245,6 +1248,25 @@ def itunes_lookup_by_upc(upc: str, timeout: int = 8) -> 'str | None':
         return None
     cid = album.get('collectionId')
     return str(cid) if cid else None
+
+
+def itunes_search_by_title(title: str, artist: str, timeout: int = 8) -> 'str | None':
+    """Search iTunes for an album by title + artist, for when the UPC on file
+    doesn't match Apple's pressing (common for older catalogs redistributed
+    under a different barcode). Returns the first exact-title match's
+    collection ID, or None.
+    """
+    from mdb_strings import normalize_text
+    term = urllib.parse.quote(f'{artist} {title}')
+    url  = f'{ITUNES_SEARCH}?term={term}&entity=album&country=US&limit=10'
+    raw  = _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=timeout)
+    target = normalize_text(title)
+    for r in raw.get('results') or []:
+        if r.get('wrapperType') == 'collection' and normalize_text(r.get('collectionName', '')) == target:
+            cid = r.get('collectionId')
+            if cid:
+                return str(cid)
+    return None
 
 
 def itunes_fetch_artwork_url(itunes_id: str, timeout: int = 8) -> 'str | None':
@@ -1936,7 +1958,7 @@ class DiscogsClient:
     def from_env(cls) -> 'DiscogsClient':
         from mdb_ops import load_dotenv
         load_dotenv()
-        return cls(token=os.environ.get('DISCOGS_TOKEN'))
+        return cls(token=os.environ.get('DISCOGS_TOKEN') or os.environ.get('DISCOGS_USER_TOKEN'))
 
     def _get(self, path: str, params: 'dict | None' = None) -> dict:
         url = DISCOGS_BASE + path

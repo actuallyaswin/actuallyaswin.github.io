@@ -14,3 +14,5 @@ rapidfuzz>=3.14
 lingua-language-detector>=2.1
 lyricsgenius>=3.0
 google-genai>=1.72
+imagehash>=4.3
+Pillow>=12.0

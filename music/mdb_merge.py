@@ -235,6 +235,9 @@ class ReleaseMerge:
             return []
         return bp.tracks if hasattr(bp, 'tracks') else []
 
+    def _bc_tracks(self) -> list:
+        return self._bc_data().get('_track_list') or []
+
     # -- Public API -------------------------------------------------------------
 
     def release(self) -> MDBRelease:
@@ -313,8 +316,8 @@ class ReleaseMerge:
             (str(am.get('collectionId')) if am.get('collectionId') else None)
         )
 
-        # Cover art: Apple Music (3000px) > Bandcamp (3000px) > Beatport (1400px) > Deezer (1000px) > Spotify
-        album_art_url, album_art_source = self._merge_art(am, bc, bp, dz, sp, source_map)
+        # Cover art: Apple Music (3000px) > Bandcamp (3000px) > Beatport (1400px) > CAA > Deezer (1000px) > Spotify
+        album_art_url, album_art_source = self._merge_art(am, bc, bp, dz, sp, source_map, mb)
 
         # Popularity
         spotify_popularity = sp.get('popularity')
@@ -483,8 +486,8 @@ class ReleaseMerge:
             return MDBLabel(name=bp_lbl, catalog_number=cat)
         return None
 
-    def _merge_art(self, am, bc, bp, dz, sp, source_map):
-        """Priority: Apple Music (3000px) > Bandcamp (3000px) > Beatport (1400px) > Deezer (1000px) > Spotify."""
+    def _merge_art(self, am, bc, bp, dz, sp, source_map, mb=None):
+        """Priority: Apple Music (3000px) > Bandcamp (3000px) > Beatport (1400px) > CAA > Deezer (1000px) > Spotify."""
         am_obj = self._sources.get('am')
         if am_obj is not None:
             am_url = am_obj.image_url if hasattr(am_obj, 'image_url') else None
@@ -507,6 +510,13 @@ class ReleaseMerge:
             if uri:
                 source_map['album_art_url'] = 'bp'
                 return uri, 'beatport'
+        mb_release_id = (mb or {}).get('id')
+        if mb_release_id:
+            from mdb_apis import caa_fetch_front_image_url
+            caa_url = caa_fetch_front_image_url(mb_release_id)
+            if caa_url:
+                source_map['album_art_url'] = 'mb'
+                return caa_url, 'coverartarchive'
         dz_obj = self._sources.get('dz')
         if dz_obj is not None:
             dz_url = dz_obj.image_url if hasattr(dz_obj, 'image_url') else None
@@ -553,6 +563,12 @@ class ReleaseMerge:
                 )
         for a in (sp.get('artists') or []):
             return MDBArtistCredit(name=a.get('name', ''), spotify_id=a.get('id'), role='main')
+        am = self._am_data()
+        if am.get('artistName'):
+            return MDBArtistCredit(name=am['artistName'], role='main')
+        bc = self._bc_data()
+        if bc.get('artist'):
+            return MDBArtistCredit(name=bc['artist'], role='main')
         return None
 
     # -- Track merge -----------------------------------------------------------
@@ -607,11 +623,12 @@ class ReleaseMerge:
         all_isrcs = (set(mb_by_isrc) | set(sp_by_isrc) | set(bp_by_isrc) | set(dz_by_isrc)) - {'', None}
 
         # Fallback for releases where no source has ISRCs (e.g. self-released mixtapes
-        # on MusicBrainz).  Build tracks positionally from MB, supplemented by Spotify
-        # duration data matched on normalised title.
+        # on MusicBrainz, or Bandcamp-only releases with no MB/Spotify match at all).
+        # Build tracks positionally from MB (or Bandcamp when MB has none), supplemented
+        # by Spotify duration data matched on normalised title.
         if not all_isrcs:
             merged = self._build_tracks_positional(
-                mb_tracks, sp_tracks, bp_tracks, conflicts
+                mb_tracks, sp_tracks, bp_tracks, self._bc_tracks(), conflicts
             )
             merged.sort(key=lambda t: (t.disc_number, t.track_number))
             return merged
@@ -735,13 +752,15 @@ class ReleaseMerge:
         return merged
 
     def _build_tracks_positional(
-        self, mb_tracks: list, sp_tracks: list, bp_tracks: list, conflicts: list
+        self, mb_tracks: list, sp_tracks: list, bp_tracks: list, bc_tracks: list, conflicts: list
     ) -> list[MDBTrack]:
         """Fallback when no source has ISRCs — build tracks by position from MB.
 
         Matches Spotify tracks by normalised title to fill in duration_ms and
         spotify_id; Beatport by position for BPM/key.  Used for releases like
-        self-released mixtapes that lack ISRC registration.
+        self-released mixtapes that lack ISRC registration.  When MB has no
+        tracklist at all (e.g. a Bandcamp-only import), Bandcamp's own track
+        list is used as the anchor instead.
         """
         # Spotify title lookup (normalised) for duration/id supplementation
         sp_by_title: dict = {}
@@ -756,8 +775,11 @@ class ReleaseMerge:
         for t in bp_tracks:
             bp_by_pos[(t.get('_disc_number', 1), t.get('_track_number', 0))] = t
 
+        anchor_tracks = mb_tracks or bc_tracks
+        anchor_source = 'mb' if mb_tracks else 'bc'
+
         tracks: list[MDBTrack] = []
-        for mb_t in sorted(mb_tracks, key=lambda t: (t.get('_disc_number', 1), t.get('_track_number', 0))):
+        for mb_t in sorted(anchor_tracks, key=lambda t: (t.get('_disc_number', 1), t.get('_track_number', 0))):
             title     = mb_t.get('name', '')
             mix_name  = None
             track_num = mb_t.get('_track_number', 0)
@@ -782,7 +804,7 @@ class ReleaseMerge:
             key_camelot = bp_t.get('_key_camelot') if bp_t else None
             is_explicit = bool((sp_full_t or {}).get('explicit', False))
 
-            sources: set = {'mb'}
+            sources: set = {anchor_source}
             if sp_t:
                 sources.add('sp')
             if bp_t:
@@ -982,6 +1004,11 @@ def _resolve_artist_credit(cur: sqlite3.Cursor, credit: MDBArtistCredit) -> str 
     if credit.name:
         row = cur.execute('SELECT id FROM artists WHERE lower(name) = lower(?)',
                           (credit.name,)).fetchone()
+        if not row:
+            row = cur.execute(
+                'SELECT artist_id FROM artist_aliases WHERE alias_norm = lower(?)',
+                (credit.name,)
+            ).fetchone()
         if row:
             aid = row[0]
             if credit.mbid:
@@ -1016,11 +1043,14 @@ def _resolve_artist_credit(cur: sqlite3.Cursor, credit: MDBArtistCredit) -> str 
 
 def upsert_release_mdb(cur: sqlite3.Cursor,
                        release: MDBRelease,
-                       primary_artist_id: str) -> tuple[str, bool]:
+                       primary_artist_id: str,
+                       credited_as: str | None = None) -> tuple[str, bool]:
     """Insert or update a release from an MDBRelease. Returns (release_id, created).
 
     Respects existing manual/wikipedia dates via _should_update_date().
     Stores Beatport ID in external_links when present.
+    credited_as is the display name to show instead of the artist's canonical
+    name (e.g. a pseudonym this specific release was put out under).
     """
     now = int(time.time())
 
@@ -1070,11 +1100,12 @@ def upsert_release_mdb(cur: sqlite3.Cursor,
             f' type_secondary=COALESCE(type_secondary, ?){date_fields},'
             f' label=?, mbid=COALESCE(mbid, ?), release_group_mbid=COALESCE(release_group_mbid, ?),'
             f' apple_music_id=COALESCE(apple_music_id, ?), upc=COALESCE(upc, ?),'
+            f' credited_as=COALESCE(credited_as, ?),'
             f' total_tracks=?, spotify_popularity=?, updated_at=? WHERE id=?',
             (release.title, primary_artist_id, release.primary_type,
              release.type_secondary, *date_vals,
              label_str, release.mbid, release.release_group_mbid,
-             release.apple_music_id, release.upc,
+             release.apple_music_id, release.upc, credited_as,
              release.total_tracks, release.spotify_popularity, now, release_id),
         )
         if release.album_art_url and not row['album_art_url']:
@@ -1095,15 +1126,15 @@ def upsert_release_mdb(cur: sqlite3.Cursor,
             'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
             ' release_date, release_year, date_source, label, spotify_id, mbid,'
             ' release_group_mbid, apple_music_id, upc, album_art_url, album_art_source,'
-            ' total_tracks, spotify_popularity, created_at, updated_at)'
-            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' total_tracks, spotify_popularity, credited_as, created_at, updated_at)'
+            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (release_id, slug, release.title, primary_artist_id,
              release.primary_type, release.type_secondary,
              release.release_date, rel_year, release.date_source or None,
              label_str, release.spotify_id, release.mbid,
              release.release_group_mbid, release.apple_music_id, release.upc,
              release.album_art_url, release.album_art_source,
-             release.total_tracks, release.spotify_popularity,
+             release.total_tracks, release.spotify_popularity, credited_as,
              now, now),
         )
         created = True

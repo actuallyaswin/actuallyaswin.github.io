@@ -587,6 +587,41 @@ def detect_variant_label(title: str) -> str:
     return title
 
 
+_GENERIC_EDIT_TERMS = frozenset({
+    'radio edit', 'radio version', 'radio mix',
+    'extended mix', 'extended', 'extended version',
+    'original mix', 'original version', 'original',
+    'club mix', 'dub mix', 'album mix', 'album version',
+    'single version', 'single mix',
+})
+
+_EDIT_SUFFIX_RE = re.compile(r'\s*[\(\[]([^\(\)\[\]]+)[\)\]]\s*$')
+
+
+def _is_generic_edit(inner: str) -> bool:
+    if inner in _GENERIC_EDIT_TERMS:
+        return True
+    # 'original club mix' / 'original dub mix' etc. — 'original' as a plain
+    # prefix on another generic term, not a compound term of its own.
+    stripped = re.sub(r'^original\s+', '', inner)
+    return stripped != inner and stripped in _GENERIC_EDIT_TERMS
+
+
+def same_song_key(title: str) -> str:
+    """Group track titles that are just edit/length cuts of one recording
+    (radio edit, extended mix, original mix, club mix, ...) so hearing any
+    one variant counts as having heard the song for completion purposes.
+
+    A remix or edit credited to a specific artist/DJ — '(X Remix)',
+    '(Simmons & Christopher Extended)' — is a distinct musical work and is
+    never folded in here, even if it also carries a length qualifier.
+    """
+    m = _EDIT_SUFFIX_RE.search(title)
+    if not m or not _is_generic_edit(m.group(1).strip().lower()):
+        return title.strip().lower()
+    return title[:m.start()].strip().lower()
+
+
 def _base_title(title: str) -> str:
     """Strip edition/variant qualifiers for grouping similar releases/tracks.
 
@@ -611,7 +646,7 @@ def _base_title(title: str) -> str:
         r'explicit|clean|instrumental|reissue|anniversary|special|limited|'
         r'box\s*set|regional|mono|stereo|sound\s*tracks?|\bost\b|radio.?\s*edit|'
         r'score\b|'
-        r'music\s+from\s+(?:the\s+)?(?:motion\s+picture|film|movie))'
+        r'music\s+(?:from|for)\s+(?:the\s+)?(?:motion\s+picture|film|movie))'
         r'[^\)\]]*[\)\]]',
         '', title, flags=re.I)
     # Live performance qualifiers: (live), (live at X), (Album live), etc.
@@ -634,11 +669,15 @@ def _base_title(title: str) -> str:
     # The trailing colon left behind is cleaned up by the punctuation strip below.
     t = re.sub(
         r'\s*:\s*(?:'
-        r'music\s+from\s+(?:the\s+)?(?:original\s+)?(?:motion\s+picture|film|movie)(?:\s+sound\s*tracks?)?'
+        r'music\s+(?:from|for)\s+(?:the\s+)?(?:original\s+)?(?:motion\s+picture|film|movie)(?:\s+sound\s*tracks?)?'
         r'|original\s+(?:motion\s+picture\s+)?(?:sound\s*tracks?|score)(?:\s+from\s+.*)?'
         r'|sound\s*tracks?'   # bare ": Soundtrack" (e.g. "UNDERTALE: Soundtrack")
         r').*$',
         '', t, flags=re.I)
+    # Bare trailing "Soundtrack", e.g. "Sonic The Hedgehog 1&2 Soundtrack" ->
+    # "Sonic The Hedgehog 1&2". Official/Records/CD name a specific release
+    # rather than a bare tag, so those are excluded.
+    t = re.sub(r'(?<!\bofficial)(?<!\brecords)(?<!\bcd)\s+sound\s*tracks?$', '', t, flags=re.I)
     # Strip colon-separated general edition qualifiers (e.g. "Settle: Special Edition")
     t = re.sub(
         r'\s*:\s*(?!.*\bremix\b)'
@@ -659,7 +698,7 @@ def _base_title(title: str) -> str:
 
 _SOUNDTRACK_PAT = re.compile(
     r'(?:original\s+(?:motion\s+picture\s+)?sound\s*tracks?'
-    r'|music\s+from\s+(?:the\s+)?(?:motion\s+picture|film|movie)'
+    r'|music\s+(?:from|for)\s+(?:the\s+)?(?:motion\s+picture|film|movie)'
     r'|[\(\[]\s*(?:ost|sound\s*tracks?)\s*[\)\]])',
     re.I,
 )
@@ -844,3 +883,122 @@ def extract_spotify_id(s: str) -> 'str | None':
     if re.fullmatch(r'[A-Za-z0-9]+', stripped):
         return stripped
     return None
+
+
+# -- Wikipedia discography wikitext -------------------------------------------
+
+_WIKI_HEADING_RE   = re.compile(r'^(=+)\s*(.*?)\s*=+$')
+_WIKI_REF_RE       = re.compile(r'<ref[^>]*/>|<ref[^>]*>.*?</ref>', re.S)
+_WIKI_COMMENT_RE   = re.compile(r'<!--.*?-->', re.S)
+_WIKI_BR_RE        = re.compile(r'<br\s*/?>', re.I)
+_WIKI_ROW_RE       = re.compile(r'^!\s*(scope="row"|\{\{nobold\|)')
+_WIKI_LINK_PIPE_RE = re.compile(r'\[\[([^\]|]+)\|([^\]]+)\]\]')
+_WIKI_LINK_RE      = re.compile(r'\[\[([^\]]+)\]\]')
+_WIKI_ITALIC_RE    = re.compile(r"''+([^']+?)''+")
+_WIKI_MEMBER_OF_RE = re.compile(r'as an?\s+(?:member|part)\s+of\s+\[\[([^\]|]+)', re.I)
+_WIKI_RELEASED_RE  = re.compile(r'^\*\s*Released:\s*(.+)$', re.I)
+
+
+def parse_wikitext_discographies(
+    text: str, sections: 'tuple[str, ...]' = ('studio albums', 'extended plays', 'eps'),
+) -> list:
+    """Parse one or more Wikipedia "Discography" sections into import entries.
+
+    Input is plain wikitext, one artist per block, each block introduced by a
+    line of the form `%%% Artist Name`. Within each block, only the row
+    headers (`! scope="row"| ...`) under headings matching *sections* are
+    read — chart data, citations, and prose are ignored.
+
+    A nested heading like `===Studio albums as a member of [[Tin Machine]]===`
+    reassigns those rows to the named artist instead of the block's own name,
+    so band credits land on the band rather than the member.
+
+    Returns a list of dicts shaped like `cmd_discography`'s YAML entries:
+    `{'artist': str, 'album_title': str, 'article': wikipedia_url, 'release_date': str|None}`.
+    release_date is the raw "Released: ..." bullet text from the same table
+    cell (e.g. "April 7, 1978") — this lets the MB title-search fallback
+    filter by year instead of grabbing the first same-titled release it
+    finds, which for a prolific artist is often the wrong one.
+    """
+    entries = []
+    artist_blocks = re.split(r'^%%%\s*(.+)$', text, flags=re.M)[1:]
+
+    for i in range(0, len(artist_blocks), 2):
+        artist = artist_blocks[i].strip()
+        body   = artist_blocks[i + 1]
+        lines  = body.split('\n')
+
+        capturing = False
+        cap_level = None
+        override_artist = None
+        override_level  = None
+
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            m = _WIKI_HEADING_RE.match(line.strip())
+            if m:
+                level, heading = len(m.group(1)), m.group(2)
+                if capturing and level <= cap_level:
+                    capturing = False
+                if not capturing:
+                    if heading.lower() in sections:
+                        capturing, cap_level = True, level
+                        override_artist = override_level = None
+                    idx += 1
+                    continue
+                member = _WIKI_MEMBER_OF_RE.search(heading)
+                if member:
+                    override_artist, override_level = member.group(1).strip(), level
+                elif override_artist and level <= override_level:
+                    override_artist = override_level = None
+                idx += 1
+                continue
+
+            if not capturing or not _WIKI_ROW_RE.match(line):
+                idx += 1
+                continue
+
+            clean = _WIKI_BR_RE.sub(' ', _WIKI_REF_RE.sub('', _WIKI_COMMENT_RE.sub('', line)))
+            m = _WIKI_LINK_PIPE_RE.search(clean)
+            if m:
+                target, display = m.group(1).strip(), m.group(2).strip()
+            else:
+                m = _WIKI_LINK_RE.search(clean)
+                if m:
+                    target = display = m.group(1).strip()
+                else:
+                    m = _WIKI_ITALIC_RE.search(clean)
+                    if not m:
+                        idx += 1
+                        continue
+                    target = display = m.group(1).strip()
+
+            # Display text can itself carry markup, e.g. [[X|''X'' ("nickname")]]
+            display = display.replace("''", '').strip()
+            display = re.sub(r'\s*\("[^"]*"\)\s*$', '', display).strip()
+
+            # The "Released: ..." bullet lives in the same table cell, on one
+            # of the lines between this row header and the next one.
+            release_date = None
+            j = idx + 1
+            while j < len(lines):
+                nxt = lines[j]
+                if _WIKI_ROW_RE.match(nxt) or _WIKI_HEADING_RE.match(nxt.strip()) or nxt.strip() == '|-':
+                    break
+                rm = _WIKI_RELEASED_RE.match(_WIKI_REF_RE.sub('', _WIKI_COMMENT_RE.sub('', nxt)).strip())
+                if rm:
+                    release_date = rm.group(1).strip().rstrip('.')
+                    break
+                j += 1
+
+            wiki_url = 'https://en.wikipedia.org/wiki/' + target.replace(' ', '_')
+            entries.append({
+                'artist':      override_artist or artist,
+                'album_title': display,
+                'article':     wiki_url,
+                'release_date': release_date,
+            })
+            idx += 1
+
+    return entries

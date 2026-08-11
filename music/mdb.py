@@ -32,6 +32,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import struct
 import sys
 import tempfile
 import time
@@ -50,7 +51,7 @@ from mdb_strings import (
     resolve_title,
     is_valid_mbid,
     detect_variant_type, detect_variant_types, detect_variant_label,
-    _base_title, VARIANT_TYPES,
+    _base_title, VARIANT_TYPES, same_song_key,
     _PRIMARY_TYPES, _SECONDARY_TYPES, _EDITION_TYPES,
     ascii_key as _norm,
     MONTHS, _SOURCE_PRIORITY, _date_prec, _should_update_date, _parse_user_date,
@@ -82,12 +83,14 @@ from mdb_apis import (
     MusicBrainzRelease,
     BeatportRelease, ItunesRelease, BandcampRelease, DeezerRelease,
     MB_API, MB_UA, SP_TOKEN,
+    ITUNES_LOOKUP, ITUNES_SEARCH,
     AOTY_AHEAD, DATES_AHEAD,
     caa_fetch_front_image_url,
     itunes_fetch_artwork_url,
     itunes_lookup_by_upc,
+    itunes_search_by_title,
     apple_music_fetch_editorial_note,
-    _mb_get, _mb_get_safe,
+    _mb_get, _mb_get_safe, _http_get_json, _itunes_lim,
     mb_find_release, mb_fetch_recording_ids, mb_fetch_artist_data,
     mb_fetch_release_group_releases,
     mb_canonical_score,
@@ -105,6 +108,7 @@ from mdb_merge import (
 from mdb_websources import (
     AOTY_TYPE_MAP,
     find_aoty_url, scrape_aoty_page, fetch_aoty_data,
+    scrape_aoty_genre_relations,
     _has_aoty, _fmt_aoty,
     fetch_wikipedia_date, fetch_date_candidates,
     _wiki_url_to_id,
@@ -864,7 +868,7 @@ def _discover_sources(
     return source_data, sp_full
 
 
-def _find_existing_release_mdb(cur, mdb_r: MDBRelease) -> 'str | None':
+def _find_existing_release_mdb(cur, mdb_r: MDBRelease, primary_artist_id: 'str | None' = None) -> 'str | None':
     """Return release_id if a matching non-hidden release already exists in the DB."""
     if mdb_r.spotify_id:
         row = cur.execute('SELECT id FROM releases WHERE spotify_id = ? AND (hidden IS NULL OR hidden = 0)',
@@ -891,13 +895,39 @@ def _find_existing_release_mdb(cur, mdb_r: MDBRelease) -> 'str | None':
                           (mdb_r.apple_music_id,)).fetchone()
         if row:
             return row[0]
+    # No platform ID at all (e.g. a Bandcamp-only release) — fall back to
+    # title + primary artist, the only signal left to avoid re-import duplicates.
+    if not any((mdb_r.spotify_id, mdb_r.mbid, mdb_r.beatport_id, mdb_r.apple_music_id)) and primary_artist_id and mdb_r.title:
+        row = cur.execute(
+            'SELECT id FROM releases WHERE primary_artist_id = ? AND lower(title) = lower(?)'
+            '   AND (hidden IS NULL OR hidden = 0)',
+            (primary_artist_id, mdb_r.title),
+        ).fetchone()
+        if row:
+            return row[0]
     return None
 
 
-def _upsert_primary_artist_mdb(cur, mdb_r: MDBRelease) -> 'str | None':
-    if mdb_r.primary_artist is None:
-        return None
-    return _resolve_artist_credit(cur, mdb_r.primary_artist)
+def _upsert_primary_artist_mdb(cur, mdb_r: MDBRelease) -> 'tuple[str, str] | tuple[None, None]':
+    """Resolve the release's primary artist. Returns (artist_id, credited_as).
+
+    credited_as is the display name to show on this release when it differs
+    from the artist's canonical name (e.g. a pseudonym/alias credit) — None
+    when the credited name matches the canonical name.
+    """
+    credit = mdb_r.primary_artist
+    if credit is None:
+        return None, None
+    aid = _resolve_artist_credit(cur, credit)
+    if aid is None:
+        return None, None
+    credited_as = credit.credited_name
+    if not credited_as and credit.name:
+        row = cur.execute('SELECT name FROM artists WHERE id = ?', (aid,)).fetchone()
+        canonical_name = row[0] if row else None
+        if canonical_name and canonical_name.lower() != credit.name.lower():
+            credited_as = credit.name
+    return aid, credited_as
 
 
 def _build_enrich_diff(cur, release_id: str, mdb_r: MDBRelease, mdb_tracks: list) -> list:
@@ -1413,8 +1443,8 @@ def import_album_unified(
     release_id: str = ''
     with managed_db(db_path) as conn:
         cur = conn.cursor()
-        primary_artist_id = _upsert_primary_artist_mdb(cur, mdb_r)
-        existing_id = _find_existing_release_mdb(cur, mdb_r)
+        primary_artist_id, credited_as = _upsert_primary_artist_mdb(cur, mdb_r)
+        existing_id = _find_existing_release_mdb(cur, mdb_r, primary_artist_id)
 
         if existing_id:
             # ── Variant guard on the update path ─────────────────────────────
@@ -1474,7 +1504,7 @@ def import_album_unified(
                         raw = console.input('  Apply these changes? [Y/n]: ').strip().lower()
                         apply = raw in ('', 'y', 'yes')
                     if apply:
-                        upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                        upsert_release_mdb(cur, mdb_r, primary_artist_id, credited_as)
                         upsert_tracks_mdb(cur, existing_id, mdb_tracks)
                         conn.commit()
                         _store_external_links_mdb(conn, existing_id, source_data)
@@ -1595,12 +1625,12 @@ def import_album_unified(
                         release_id = canon_id
                     except Exception as _e:
                         console.print(f'[yellow]⚠ MB canonical import failed ({_e}); importing as standalone[/yellow]')
-                        release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                        release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id, credited_as)
                         upsert_tracks_mdb(cur, release_id, mdb_tracks)
                         conn.commit()
                         _store_external_links_mdb(conn, release_id, source_data)
                 else:
-                    release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                    release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id, credited_as)
                     upsert_tracks_mdb(cur, release_id, mdb_tracks)
                     conn.commit()
                     _store_external_links_mdb(conn, release_id, source_data)
@@ -1610,7 +1640,7 @@ def import_album_unified(
                         f'[dim]{src_tok}[/dim]  [green]→ imported[/green]'
                     )
             else:
-                release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id)
+                release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id, credited_as)
                 upsert_tracks_mdb(cur, release_id, mdb_tracks)
                 conn.commit()
                 _store_external_links_mdb(conn, release_id, source_data)
@@ -1772,7 +1802,7 @@ def cmd_import(args):
 # ── cmd: discography ──────────────────────────────────────────────────────────
 
 def cmd_discography(args):
-    """Import a full discography from a YAML file.
+    """Import a full discography from a YAML file, or a wikitext dump with --wikitext.
 
     Each entry must have `album_title` and at least one of:
       - `article`  — Wikipedia URL (most reliable; resolved to MB release group)
@@ -1785,23 +1815,41 @@ def cmd_discography(args):
       1. `article` Wikipedia URL → MB release group → canonical release MBID
       2. Any explicit `url` field → passed straight to import_album_unified
       3. MB title+artist search fallback via mb_find_release
+
+    --wikitext parses `parse_wikitext_discographies` entries into this same
+    shape instead of reading YAML, so both formats share this one resolution
+    path — re-running either is safe: entries already in the catalog are
+    absorbed rather than duplicated (see import_album_unified).
     """
-    import yaml as _yaml
-
     path = args.discography
-    try:
-        with open(path, encoding='utf-8') as f:
-            entries = _yaml.safe_load(f)
-    except FileNotFoundError:
-        console.print(f'[red]File not found:[/red] {path}')
-        return
-    except Exception as e:
-        console.print(f'[red]YAML parse error:[/red] {e}')
-        return
 
-    if not isinstance(entries, list):
-        console.print('[red]YAML must be a list of album entries[/red]')
-        return
+    if getattr(args, 'wikitext', False):
+        from mdb_strings import parse_wikitext_discographies
+        sections = tuple(s.strip().lower() for s in args.sections.split(','))
+        try:
+            with open(path, encoding='utf-8') as f:
+                text = f.read()
+        except FileNotFoundError:
+            console.print(f'[red]File not found:[/red] {path}')
+            return
+        entries = parse_wikitext_discographies(text, sections=sections)
+        if not entries:
+            console.print('[yellow]No `%%% Artist` blocks or matching sections found[/yellow]')
+            return
+    else:
+        import yaml as _yaml
+        try:
+            with open(path, encoding='utf-8') as f:
+                entries = _yaml.safe_load(f)
+        except FileNotFoundError:
+            console.print(f'[red]File not found:[/red] {path}')
+            return
+        except Exception as e:
+            console.print(f'[red]YAML parse error:[/red] {e}')
+            return
+        if not isinstance(entries, list):
+            console.print('[red]YAML must be a list of album entries[/red]')
+            return
 
     db_path = args.db or DB_PATH
     use_aoty = not args.no_aoty and _AOTY_AVAILABLE
@@ -1928,12 +1976,71 @@ def _chafa_available() -> bool:
     return shutil.which('chafa') is not None
 
 
-def _preview_art(url: str, label: str) -> None:
-    """Print a labeled URL and, if chafa is installed, render the image
-    inline in the terminal below it. Never raises — a failed download or
-    render just falls back to the printed label + URL."""
+def _image_dims(data: bytes) -> 'tuple | None':
+    """Parse (width, height) from raw JPEG or PNG bytes without any imaging
+    library — album art URLs here are always one or the other."""
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        if len(data) < 24:
+            return None
+        w, h = struct.unpack('>II', data[16:24])
+        return (w, h)
+    if data[:2] == b'\xff\xd8':  # JPEG
+        i = 2
+        while i + 4 <= len(data):
+            if data[i] != 0xFF:
+                return None
+            marker = data[i + 1]
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                if i + 9 > len(data):
+                    return None
+                h, w = struct.unpack('>HH', data[i + 5:i + 9])
+                return (w, h)
+            elif marker == 0xD8 or 0xD0 <= marker <= 0xD7:
+                i += 2
+            else:
+                seglen = struct.unpack('>H', data[i + 2:i + 4])[0]
+                i += 2 + seglen
+        return None
+    return None
+
+
+def _fetch_image_dims(url: str, timeout: int = 15) -> 'tuple | None':
+    """Download just enough of the image to read its dimensions. Never
+    raises — a failed fetch just means dims stay unknown for this release."""
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'actuallyaswin-music/1.0'})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+        return _image_dims(data)
+    except Exception:
+        return None
+
+
+def _fetch_image_phash(url: str, timeout: int = 15):
+    """Download an image and return its perceptual hash (imagehash.phash),
+    or None on any failure. Robust to resizing/recompression — this is what
+    lets a 600px thumbnail and a 3000px large image be compared directly
+    despite being completely different files."""
+    try:
+        import imagehash
+        from PIL import Image
+        import io
+        req = urllib.request.Request(url, headers={'User-Agent': 'actuallyaswin-music/1.0'})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+        return imagehash.phash(Image.open(io.BytesIO(data)))
+    except Exception:
+        return None
+
+
+def _preview_art(url: str, label: str, render: bool = True) -> None:
+    """Print a labeled URL and, if chafa is installed and rendering wasn't
+    disabled, render the image inline in the terminal below it. Never
+    raises — a failed download or render just falls back to the printed
+    label + URL."""
     console.print(f'  [bold]{label}[/bold]  [dim]{url[:80]}[/dim]')
-    if not _chafa_available():
+    if not render or not _chafa_available():
         return
     tmp_path = None
     try:
@@ -2035,8 +2142,8 @@ def cmd_enrich_art(args):
                     if not row:
                         console.print(f'[red]Artist not found:[/red] {args.artist}')
                         return
-                    artist_clause = 'AND ra.artist_id = ?'
-                    params        = [row['id']]
+                    artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+                    params        = [row['id'], row['id']]
                 where = f'WHERE r.hidden = 0 {art_clause} {artist_clause}'
 
             rows = conn.execute(f'''
@@ -2044,7 +2151,7 @@ def cmd_enrich_art(args):
                        r.apple_music_id, r.album_art_url, a.name AS artist_name
                 FROM releases r
                 LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
-                LEFT JOIN artists a ON ra.artist_id = a.id
+                LEFT JOIN artists a ON a.id = COALESCE(ra.artist_id, r.primary_artist_id)
                 {where}
                 ORDER BY r.release_year DESC NULLS LAST, r.title
             ''', params).fetchall()
@@ -2090,10 +2197,18 @@ def cmd_enrich_art(args):
                     candidates = {}
                 am_url = candidates.get('apple_music')
                 sp_url = candidates.get('spotify')
+                caa_url = None
+                if not am_url and not sp_url and row['mbid']:
+                    try:
+                        caa_url = caa_fetch_front_image_url(row['mbid'])
+                    except Exception as e:
+                        console.print(f'  [yellow]caa error:[/yellow] {e}')
 
-                # Apple Music preferred over Spotify
-                auto_url    = am_url or sp_url
-                auto_source = ('apple_music' if am_url else 'spotify') if auto_url else None
+                # Apple Music preferred over Spotify; CAA is the last resort
+                # when neither has an ID or an image (e.g. compilations that
+                # never made it to streaming but do have a MusicBrainz entry).
+                auto_url    = am_url or sp_url or caa_url
+                auto_source = ('apple_music' if am_url else 'spotify' if sp_url else 'caa') if auto_url else None
 
                 if not args.interactive:
                     # ── Auto mode ──────────────────────────────────────────────
@@ -2110,7 +2225,7 @@ def cmd_enrich_art(args):
                         skipped += 1
                 else:
                     # ── Interactive mode: sequential preview walk-through ───────
-                    ordered = [('apple_music', am_url), ('spotify', sp_url)]
+                    ordered = [('apple_music', am_url), ('spotify', sp_url), ('caa', caa_url)]
                     ordered = [(src, url) for src, url in ordered if url]
                     if current_url:
                         console.print(f'  [dim]current:[/dim] {current_url[:70]}')
@@ -2799,9 +2914,10 @@ def cmd_enrich_apple_links(args):
             params.append(args.release_id)
 
         rows = conn.execute(f'''
-            SELECT DISTINCT r.id, r.title, r.spotify_id, r.mbid, r.upc
+            SELECT DISTINCT r.id, r.title, r.spotify_id, r.mbid, r.upc, a.name AS artist_name
             FROM   releases r
             LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
             WHERE  r.hidden = 0
               AND  r.apple_music_id IS NULL
               {artist_clause} {release_clause}
@@ -2866,12 +2982,14 @@ def cmd_enrich_apple_links(args):
                 except Exception:
                     pass
 
-            if not upc:
+            if not upc and not r['artist_name']:
                 skipped += 1
                 continue
 
             try:
-                am_id = itunes_lookup_by_upc(upc)
+                am_id = itunes_lookup_by_upc(upc) if upc else None
+                if not am_id and r['artist_name']:
+                    am_id = itunes_search_by_title(title, r['artist_name'])
                 if am_id:
                     conn.execute('UPDATE releases SET apple_music_id=? WHERE id=?', (am_id, rel_id))
                     conn.commit()
@@ -2886,6 +3004,844 @@ def cmd_enrich_apple_links(args):
 
         console.rule(style='dim')
         console.print(f'  [dim]Found: {found} · No UPC/match: {skipped} · Errors: {errors}[/dim]')
+
+
+# ── cmd: enrich apple-verify ─────────────────────────────────────────────────
+
+def cmd_enrich_apple_verify(args):
+    """Strictly re-check every release's apple_music_id against Apple's own
+    title + artist for that ID — no fuzzy scoring, no track-count heuristics.
+
+    A prior ad hoc pass tried to auto-fix mismatches by picking the search
+    result with the closest track count, which silently swapped in a handful
+    of wrong albums entirely (different artist, same rough track count). This
+    command only *flags*; it never rewrites apple_music_id itself. Results
+    land in apple_match_status for `enrich apple-review` to resolve by hand.
+    """
+    with managed_db(args.db or DB_PATH) as conn:
+        artist_clause  = ''
+        release_clause = ''
+        params: list   = []
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            release_clause = 'AND r.id = ?'
+            params.append(args.release_id)
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.apple_music_id, r.upc, a.name AS artist_name
+            FROM   releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            LEFT JOIN artists a ON a.id = COALESCE(ra.artist_id, r.primary_artist_id)
+            WHERE  r.hidden = 0
+              {artist_clause} {release_clause}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        rows = rows[args.skip:]
+        if args.limit:
+            rows = rows[:args.limit]
+
+        now = int(time.time())
+        verified = needs_review = unmatched = 0
+
+        with_id    = [r for r in rows if r['apple_music_id']]
+        without_id = [r for r in rows if not r['apple_music_id']]
+
+        for r in without_id:
+            conn.execute(
+                'INSERT INTO apple_match_status (release_id, status, checked_at) VALUES (?,?,?) '
+                'ON CONFLICT(release_id) DO UPDATE SET status=excluded.status, checked_at=excluded.checked_at',
+                (r['id'], 'unmatched', now)
+            )
+            unmatched += 1
+        conn.commit()
+
+        flagged = []  # (row, status) needing the UPC pass below
+
+        for chunk_start in range(0, len(with_id), 100):
+            chunk = with_id[chunk_start:chunk_start + 100]
+            ids = ','.join(r['apple_music_id'] for r in chunk)
+            try:
+                raw = _http_get_json(f'{ITUNES_LOOKUP}?id={ids}&entity=album&country=US',
+                                      headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=15)
+            except Exception as e:
+                console.print(f'  [red]✗[/red]  batch {chunk_start//100+1}  [dim]{e}[/dim]')
+                continue
+            by_id = {}
+            for res in raw.get('results') or []:
+                if res.get('wrapperType') == 'collection':
+                    by_id[str(res.get('collectionId'))] = (
+                        res.get('collectionName') or '', res.get('artistName') or ''
+                    )
+            for r in chunk:
+                info = by_id.get(str(r['apple_music_id']))
+                if not info:
+                    status = 'needs_review'  # ID no longer resolves — dead/delisted
+                else:
+                    apple_title, apple_artist = info
+                    match = (_norm(r['title']) == _norm(apple_title) and
+                             _norm(r['artist_name'] or '') == _norm(apple_artist))
+                    status = 'verified' if match else 'needs_review'
+                conn.execute(
+                    'INSERT INTO apple_match_status (release_id, status, checked_at) VALUES (?,?,?) '
+                    'ON CONFLICT(release_id) DO UPDATE SET status=excluded.status, checked_at=excluded.checked_at',
+                    (r['id'], status, now)
+                )
+                if status == 'verified':
+                    verified += 1
+                else:
+                    needs_review += 1
+                    flagged.append(r)
+            conn.commit()
+            console.print(f'  [dim]batch {chunk_start//100+1}/{(len(with_id)-1)//100+1} checked[/dim]')
+
+        # ── UPC pass ──────────────────────────────────────────────────────
+        # A barcode identifies the exact pressing, which is a much stronger
+        # signal than title+artist text — resolves most reissue/remaster
+        # mismatches automatically, before anyone has to look at a candidate
+        # list by hand. Runs for everything flagged above plus every
+        # never-matched release, wherever a UPC is on file.
+        upc_queue = [r for r in flagged + without_id if r['upc']]
+        if upc_queue:
+            console.print(f'\n  [dim]UPC pass: {len(upc_queue)} flagged/unmatched releases have a barcode on file[/dim]')
+            upc_fixed = 0
+            for n, r in enumerate(upc_queue, start=1):
+                try:
+                    raw = _http_get_json(f'{ITUNES_LOOKUP}?upc={r["upc"]}&entity=album&country=US',
+                                          headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=10)
+                except Exception:
+                    continue
+                album = next((
+                    a for a in raw.get('results') or [] if a.get('wrapperType') == 'collection'
+                    and _norm(r['title']) == _norm(a.get('collectionName') or '')
+                    and _norm(r['artist_name'] or '') == _norm(a.get('artistName') or '')
+                ), None)
+                if not album:
+                    continue
+                art = (album.get('artworkUrl100') or '').strip()
+                if not art:
+                    continue
+                art_url = re.sub(r'\b\d+x\d+bb\b', '3000x3000bb', art)
+                conn.execute(
+                    'UPDATE releases SET apple_music_id=?, album_art_url=?, album_art_source=?, '
+                    'album_art_thumb_url=NULL, updated_at=? WHERE id=?',
+                    (str(album.get('collectionId')), art_url, 'apple_music', now, r['id'])
+                )
+                conn.execute("UPDATE apple_match_status SET status='verified', checked_at=? WHERE release_id=?",
+                             (now, r['id']))
+                conn.commit()
+                upc_fixed += 1
+                if r in flagged:
+                    needs_review -= 1
+                else:
+                    unmatched -= 1
+                verified += 1
+                if n % 25 == 0:
+                    console.print(f'  [dim]{n}/{len(upc_queue)} checked, {upc_fixed} auto-matched by barcode[/dim]')
+            console.print(f'  [green]UPC pass matched {upc_fixed}/{len(upc_queue)} by barcode[/green]')
+
+        console.rule(style='dim')
+        console.print(f'  [green]Verified:[/green] {verified}   '
+                       f'[yellow]Needs review:[/yellow] {needs_review}   '
+                       f'[dim]Unmatched:[/dim] {unmatched}')
+        if needs_review or unmatched:
+            console.print(f'  [dim]Run [bold]mdb.py enrich apple-review[/bold] to resolve them.[/dim]')
+
+
+# ── cmd: enrich apple-review ─────────────────────────────────────────────────
+
+def _itunes_search_candidates(title: str, artist: str, limit: int = 5) -> list:
+    """Top N Apple Music album candidates for a title+artist search, each as
+    (collection_id, name, artist_name, year, track_count, artwork_3000_url)."""
+    term = urllib.parse.quote(f'{artist} {title}')
+    try:
+        raw = _http_get_json(f'{ITUNES_SEARCH}?term={term}&entity=album&country=US&limit=25',
+                              headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=10)
+    except Exception:
+        return []
+    out = []
+    for res in raw.get('results') or []:
+        if res.get('wrapperType') != 'collection':
+            continue
+        art = (res.get('artworkUrl100') or '').strip()
+        if not art:
+            continue
+        year_match = re.match(r'(\d{4})', res.get('releaseDate') or '')
+        out.append((
+            str(res.get('collectionId')),
+            res.get('collectionName') or '',
+            res.get('artistName') or '',
+            year_match.group(1) if year_match else '?',
+            res.get('trackCount'),
+            re.sub(r'\b\d+x\d+bb\b', '3000x3000bb', art),
+        ))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _prompt_manual_apple_id(prefill=None):
+    """Resolve a pasted Apple Music URL or bare collection ID to
+    (id, name, artist, year, track_count, art_url), or None if
+    cancelled/not found."""
+    if prefill is not None:
+        raw = prefill.strip()
+    else:
+        try:
+            raw = input('  Paste Apple Music URL or ID (blank to cancel): ').strip()
+        except EOFError:
+            return None
+    if not raw:
+        return None
+    m = re.search(r'(\d{6,})', raw)
+    if not m:
+        console.print('  [yellow]No numeric ID found in that input.[/yellow]')
+        return None
+    cid = m.group(1)
+    try:
+        raw_result = _http_get_json(f'{ITUNES_LOOKUP}?id={cid}&entity=album&country=US',
+                                     headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=10)
+    except Exception as e:
+        console.print(f'  [red]Lookup failed:[/red] {e}')
+        return None
+    album = next((r for r in raw_result.get('results') or [] if r.get('wrapperType') == 'collection'), None)
+    if not album:
+        console.print(f'  [yellow]No album found for ID {cid}.[/yellow]')
+        return None
+    art = (album.get('artworkUrl100') or '').strip()
+    if not art:
+        console.print('  [yellow]Found the album but it has no artwork.[/yellow]')
+        return None
+    year_match = re.match(r'(\d{4})', album.get('releaseDate') or '')
+    return (
+        cid, album.get('collectionName') or '', album.get('artistName') or '',
+        year_match.group(1) if year_match else '?', album.get('trackCount'),
+        re.sub(r'\b\d+x\d+bb\b', '3000x3000bb', art),
+    )
+
+
+def cmd_enrich_apple_review(args):
+    """Interactive triage for releases `enrich apple-verify` flagged as
+    needs_review/unmatched — one release at a time, top 5 Apple Music search
+    candidates rendered inline (via chafa, unless --no-preview), pick with
+    input()+Enter. Candidates for the next release prefetch in the
+    background while you're still deciding on the current one.
+
+    Deliberately uses input() rather than raw single-keypress reads: an
+    earlier version tried bare keypresses plus paste-sniffing to save a
+    keystroke, but terminals vary in how they deliver pasted text (some
+    byte-by-byte with real gaps, indistinguishable from typing), which
+    caused two separate incidents of releases getting silently corrupted
+    or skipped. input() reads one whole line as a single atomic unit, so a
+    pasted URL is just... the input, with no ambiguity to get wrong.
+    """
+    import queue, threading
+
+    render = not getattr(args, 'no_preview', False)
+    if render and not _chafa_available():
+        console.print('[dim yellow]chafa not found on PATH — previews will be text-only '
+                       '(brew install chafa for inline image rendering, or pass --no-preview)[/dim yellow]\n')
+
+    with managed_db(args.db or DB_PATH) as conn:
+        rows = conn.execute(f'''
+            SELECT r.id, r.title, r.release_year, r.total_tracks, r.apple_music_id,
+                   r.album_art_url, r.album_art_source,
+                   a.name AS artist_name, ams.status
+            FROM apple_match_status ams
+            JOIN releases r ON r.id = ams.release_id
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            LEFT JOIN artists a ON a.id = COALESCE(ra.artist_id, r.primary_artist_id)
+            WHERE ams.status IN ('needs_review', 'unmatched')
+            ORDER BY r.title
+            {"LIMIT " + str(args.limit) if args.limit else ""}
+        ''').fetchall()
+
+        if not rows:
+            console.print('[dim]Nothing queued for review. Run enrich apple-verify first.[/dim]')
+            return
+
+        console.print(f'[dim]{len(rows)} release{"s" if len(rows) != 1 else ""} queued  '
+                       f'([bold]1-5[/bold] pick · [bold]0[/bold] keep current · '
+                       f'paste a URL/ID directly · [bold]z[/bold] undo last · '
+                       f'[bold]s[/bold] skip · [bold]n[/bold] no match · [bold]q[/bold] quit)[/dim]\n')
+
+        # Background producer: fetches search candidates a couple releases
+        # ahead so there's no network wait between decisions. One thread,
+        # so it naturally shares the existing iTunes rate limiter safely.
+        prefetch: 'queue.Queue' = queue.Queue(maxsize=3)
+        stop = threading.Event()
+
+        def _producer():
+            for r in rows:
+                if stop.is_set():
+                    return
+                candidates = _itunes_search_candidates(r['title'], r['artist_name'] or '')
+                prefetch.put((r, candidates))
+
+        t = threading.Thread(target=_producer, daemon=True)
+        t.start()
+
+        def _write_release(release_id, apple_music_id, art_url, art_source, ts):
+            conn.execute(
+                'UPDATE releases SET apple_music_id=?, album_art_url=?, album_art_source=?, '
+                'album_art_thumb_url=NULL, updated_at=? WHERE id=?',
+                (apple_music_id, art_url, art_source, ts, release_id)
+            )
+
+        def _write_status(release_id, status, ts):
+            conn.execute("UPDATE apple_match_status SET status=?, checked_at=? WHERE release_id=?",
+                         (status, ts, release_id))
+
+        last_undo = None  # (title, release_id, prev_apple_music_id, prev_art_url, prev_art_source, prev_status)
+        reviewed = fixed = kept = skipped = no_match = 0
+        try:
+            for i in range(len(rows)):
+                r, candidates = prefetch.get()
+
+                while True:
+                    console.rule(f'[{i+1}/{len(rows)}]  {r["title"]}', style='dim')
+                    console.print(f'  [bold]{r["title"]}[/bold]  [dim]{r["artist_name"] or "?"} · '
+                                   f'{r["release_year"] or "?"} · {r["total_tracks"] or "?"} tracks · '
+                                   f'status: {r["status"]}[/dim]\n')
+
+                    if r['apple_music_id']:
+                        console.print(f'  [dim][0] keep current apple_music_id={r["apple_music_id"]}[/dim]\n')
+
+                    if not candidates:
+                        console.print('  [yellow]No Apple Music search results at all.[/yellow]')
+
+                    for idx, (cid, name, artist_name, year, tc, art) in enumerate(candidates, start=1):
+                        label = f'[{idx}] {name}  —  {artist_name} · {year} · {tc} tracks'
+                        _preview_art(art, label, render=render)
+
+                    try:
+                        raw_input = input(
+                            '\n  1-5 pick · 0 keep current · paste a URL/ID directly · '
+                            'z undo last · s skip · n no match · q quit: '
+                        ).strip()
+                    except EOFError:
+                        raw_input = 'q'
+                    console.print()
+
+                    now = int(time.time())
+
+                    if raw_input == 'z':
+                        if not last_undo:
+                            console.print('  [yellow]Nothing to undo.[/yellow]\n')
+                            continue
+                        u_title, u_id, u_am_id, u_art, u_art_src, u_status = last_undo
+                        _write_release(u_id, u_am_id, u_art, u_art_src, now)
+                        _write_status(u_id, u_status, now)
+                        conn.commit()
+                        console.print(f'  [green]↺[/green] undid last change on "{u_title}"  '
+                                       f'[dim]apple_music_id restored to {u_am_id or "(none)"}, '
+                                       f'status restored to {u_status}[/dim]\n')
+                        last_undo = None
+                        continue  # re-show the same item, decision not yet made
+
+                    break
+
+                # A pasted URL/ID lands here as plain multi-character text —
+                # distinguishing it from the single-char commands below needs
+                # no guessing since input() already delimited it by Enter.
+                if raw_input not in ('q', '0', '1', '2', '3', '4', '5', 's', 'n') and raw_input:
+                    key = 'u'
+                    pasted_text = raw_input
+                else:
+                    key = raw_input or 's'
+                    pasted_text = None
+
+                if key == 'q':
+                    console.print('[dim]Stopping — progress saved.[/dim]')
+                    break
+                elif key == '0' and r['apple_music_id']:
+                    last_undo = (r['title'], r['id'], r['apple_music_id'], r['album_art_url'],
+                                 r['album_art_source'], r['status'])
+                    _write_status(r['id'], 'verified', now)
+                    conn.commit()
+                    console.print(f'  [dim]kept — apple_match_status set to verified, no columns on '
+                                   f'releases changed[/dim]')
+                    kept += 1
+                elif key in '12345' and int(key) <= len(candidates):
+                    cid, name, artist_name, year, tc, art = candidates[int(key) - 1]
+                    last_undo = (r['title'], r['id'], r['apple_music_id'], r['album_art_url'],
+                                 r['album_art_source'], r['status'])
+                    _write_release(r['id'], cid, art, 'apple_music', now)
+                    _write_status(r['id'], 'verified', now)
+                    conn.commit()
+                    console.print(f'  [green]✓[/green] release {r["id"]}')
+                    console.print(f'      apple_music_id  {r["apple_music_id"] or "(none)"} → {cid}')
+                    console.print(f'      album_art_url   → "{name}" · {art[:60]}')
+                    fixed += 1
+                elif key == 'n':
+                    last_undo = (r['title'], r['id'], r['apple_music_id'], r['album_art_url'],
+                                 r['album_art_source'], r['status'])
+                    conn.execute(
+                        "UPDATE releases SET apple_music_id=NULL, album_art_url=NULL, album_art_source=NULL, "
+                        "album_art_thumb_url=NULL, updated_at=? WHERE id=? AND album_art_source='apple_music'",
+                        (now, r['id'])
+                    )
+                    _write_status(r['id'], 'no_match_available', now)
+                    conn.commit()
+                    console.print(f'  [yellow]cleared[/yellow] release {r["id"]}: apple_music_id, '
+                                   f'album_art_url, album_art_source, album_art_thumb_url all set to NULL')
+                    no_match += 1
+                elif key == 'u':
+                    manual = _prompt_manual_apple_id(prefill=pasted_text)
+                    if manual:
+                        cid, name, artist_name, year, tc, art = manual
+                        _preview_art(art, f'Confirm: {name}  —  {artist_name} · {year} · {tc} tracks', render=render)
+                        try:
+                            confirm = input('  Apply this match? [y/n]: ').strip().lower()
+                        except EOFError:
+                            confirm = 'n'
+                        console.print()
+                        if confirm == 'y':
+                            now2 = int(time.time())
+                            last_undo = (r['title'], r['id'], r['apple_music_id'], r['album_art_url'],
+                                         r['album_art_source'], r['status'])
+                            _write_release(r['id'], cid, art, 'apple_music', now2)
+                            _write_status(r['id'], 'verified', now2)
+                            conn.commit()
+                            console.print(f'  [green]✓[/green] release {r["id"]}  (manual)')
+                            console.print(f'      apple_music_id  {r["apple_music_id"] or "(none)"} → {cid}')
+                            console.print(f'      album_art_url   → "{name}" · {art[:60]}')
+                            fixed += 1
+                        else:
+                            console.print('  [dim]Cancelled — left queued.[/dim]')
+                            skipped += 1
+                    else:
+                        skipped += 1
+                else:
+                    skipped += 1  # 's' or anything unrecognized — leave queued for next time
+                reviewed += 1
+        finally:
+            stop.set()
+
+        console.rule(style='dim')
+        console.print(f'  [dim]Reviewed: {reviewed} · Fixed: {fixed} · Kept: {kept} · '
+                       f'No match: {no_match} · Skipped: {skipped}[/dim]')
+        if skipped:
+            console.print(f'  [dim]{skipped} left queued — run enrich apple-review again to continue.[/dim]')
+
+
+def cmd_enrich_spotify_links(args):
+    """Backfill Spotify album IDs for releases that have a UPC (or MB barcode) but no spotify_id.
+
+    Mirrors apple-links: UPC comes from the release row or the MB barcode field,
+    then a UPC search against Spotify's catalog.
+    """
+    load_dotenv()
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    if not cid or not csc:
+        console.print('[red]SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET not set[/red]')
+        return
+    client = SpotifyClient(cid, csc)
+
+    with managed_db(args.db or DB_PATH) as conn:
+        artist_clause  = ''
+        release_clause = ''
+        params: list   = []
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            release_clause = 'AND r.id = ?'
+            params.append(args.release_id)
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.mbid, r.upc, a.name AS artist_name
+            FROM   releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
+            WHERE  r.hidden = 0
+              AND  (r.spotify_id IS NULL OR r.spotify_id = '')
+              {artist_clause} {release_clause}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        queue = rows[args.skip:]
+        if args.limit:
+            queue = queue[:args.limit]
+
+        console.print(f'[dim]{len(rows)} releases without a Spotify ID, processing {len(queue)}[/dim]\n')
+
+        found = skipped = errors = 0
+        for r in queue:
+            rel_id = r['id']
+            title  = r['title']
+
+            upc = r['upc']
+            if not upc and r['mbid']:
+                try:
+                    from mdb_apis import _mb_get
+                    data    = _mb_get(f'/release/{r["mbid"]}', {'inc': ''})
+                    barcode = (data.get('barcode') or '').strip()
+                    if barcode:
+                        from mdb_strings import normalize_upc as _nupc
+                        upc = _nupc(barcode) or None
+                        if upc:
+                            conn.execute('UPDATE releases SET upc=? WHERE id=?', (upc, rel_id))
+                except Exception:
+                    pass
+
+            if not upc and not r['artist_name']:
+                skipped += 1
+                continue
+
+            try:
+                sp_id = None
+                if upc:
+                    data  = client.get('/search', {'q': f'upc:{upc}', 'type': 'album', 'limit': 1})
+                    items = (data.get('albums') or {}).get('items') or []
+                    if items:
+                        sp_id = items[0]['id']
+                if not sp_id and r['artist_name']:
+                    # UPCs drift across pressings/distributors — fall back to a text
+                    # search, but only accept an exact normalised title match so we
+                    # don't silently substitute a deluxe/remaster edition.
+                    from mdb_strings import normalize_text
+                    data2  = client.get('/search', {
+                        'q': f"album:{title} artist:{r['artist_name']}", 'type': 'album', 'limit': 10,
+                    })
+                    items2 = (data2.get('albums') or {}).get('items') or []
+                    target = normalize_text(title)
+                    for it in items2:
+                        if normalize_text(it['name']) == target:
+                            sp_id = it['id']
+                            break
+
+                if sp_id:
+                    conn.execute('UPDATE releases SET spotify_id=? WHERE id=?', (sp_id, rel_id))
+                    conn.commit()
+                    console.print(f'  [green]✓[/green]  {title}  [dim]→ spotify:{sp_id}[/dim]')
+                    found += 1
+                else:
+                    console.print(f'  [dim]–  {title}  (not on Spotify)[/dim]')
+                    skipped += 1
+            except sqlite3.IntegrityError:
+                console.print(f'  [yellow]⚠[/yellow]  {title}  [dim]spotify_id already claimed by another release[/dim]')
+                skipped += 1
+            except Exception as e:
+                console.print(f'  [red]✗[/red]  {title}  [dim]{e}[/dim]')
+                errors += 1
+
+        console.rule(style='dim')
+        console.print(f'  [dim]Found: {found} · No UPC/match: {skipped} · Errors: {errors}[/dim]')
+
+
+# ── cmd: enrich thumbnails ───────────────────────────────────────────────────────
+
+def cmd_enrich_thumbnails(args):
+    """Backfill album_art_thumb_url — derived directly from Apple Music's
+    3000px art where available, else Spotify's ~600px image, else a small
+    Apple Music rendering fetched by ID.
+
+    Apple-derived thumbs are a pure URL rewrite (…/3000x3000bb.jpg →
+    …/600x600bb.jpg), not a re-fetch from Spotify — this matters because a
+    release's stored spotify_id can point at the wrong recording (e.g. a
+    tribute-band cover sharing the same title) even when album_art_url is
+    correct, so trusting the already-verified Apple art avoids reintroducing
+    a wrong image. Spotify is only used as a fallback when there's no Apple
+    Music art at all.
+    """
+    load_dotenv()
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    client = SpotifyClient(cid, csc) if (cid and csc) else None
+
+    with managed_db(args.db or DB_PATH) as conn:
+        artist_clause  = ''
+        release_clause = ''
+        params: list   = []
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            release_clause = 'AND r.id = ?'
+            params.append(args.release_id)
+
+        force_clause = '' if getattr(args, 'force', False) else \
+            "AND (r.album_art_thumb_url IS NULL OR r.album_art_thumb_url = '' OR r.album_art_thumb_url = r.album_art_url)"
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.spotify_id, r.apple_music_id,
+                   r.album_art_url, r.album_art_source
+            FROM   releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            WHERE  r.hidden = 0
+              AND  ((r.spotify_id IS NOT NULL AND r.spotify_id != '')
+                    OR (r.apple_music_id IS NOT NULL AND r.apple_music_id != ''))
+              {force_clause}
+              {artist_clause} {release_clause}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        queue = rows[args.skip:]
+        if args.limit:
+            queue = queue[:args.limit]
+
+        console.print(f'[dim]{len(rows)} releases missing a small thumbnail, processing {len(queue)}[/dim]\n')
+
+        found = skipped = 0
+        now = int(time.time())
+
+        # Apple-derived thumbs first — a plain URL rewrite, no network call.
+        apple_art_re = re.compile(r'/\d+x\d+bb\.jpg$')
+        remaining = []
+        for r in queue:
+            url = r['album_art_url']
+            if r['album_art_source'] == 'apple_music' and url and apple_art_re.search(url):
+                thumb = apple_art_re.sub('/600x600bb.jpg', url)
+                conn.execute('UPDATE releases SET album_art_thumb_url=?, updated_at=? WHERE id=?',
+                             (thumb, now, r['id']))
+                found += 1
+            else:
+                remaining.append(r)
+        conn.commit()
+        console.print(f'  [dim]{found} thumbnails derived directly from Apple Music art[/dim]\n')
+
+        sp_queue = [r for r in remaining if r['spotify_id']]
+        am_only  = [r for r in remaining if not r['spotify_id'] and r['apple_music_id']]
+
+        if client:
+            for chunk_start in range(0, len(sp_queue), 20):
+                chunk = sp_queue[chunk_start:chunk_start + 20]
+                try:
+                    albums = client.get_albums_batch([r['spotify_id'] for r in chunk])
+                except Exception as e:
+                    console.print(f'  [red]✗[/red]  batch {chunk_start//20+1}  [dim]{e}[/dim]')
+                    continue
+                now = int(time.time())
+                for r, album in zip(chunk, albums):
+                    images = (album or {}).get('images') or []
+                    if not images:
+                        console.print(f'  [dim]–  {r["title"]}  (no images)[/dim]')
+                        skipped += 1
+                        continue
+                    # closest to 600px, not smallest — tiles were blurry at 64px
+                    best = min(images, key=lambda i: abs((i.get('width') or 0) - 600))
+                    conn.execute('UPDATE releases SET album_art_thumb_url=?, updated_at=? WHERE id=?',
+                                 (best['url'], now, r['id']))
+                    found += 1
+                conn.commit()
+        elif sp_queue:
+            console.print('  [dim yellow]No Spotify credentials — skipping Spotify thumbnails[/dim yellow]')
+            skipped += len(sp_queue)
+
+        # Apple-only fallback: same lookup batching as the art-source backfill,
+        # just requesting a small rendering instead of 3000x3000.
+        now = int(time.time())
+        for chunk_start in range(0, len(am_only), 100):
+            chunk = am_only[chunk_start:chunk_start + 100]
+            ids   = ','.join(r['apple_music_id'] for r in chunk)
+            try:
+                raw = _http_get_json(f'{ITUNES_LOOKUP}?id={ids}&entity=album&country=US',
+                                      headers={'User-Agent': MB_UA}, lim=_itunes_lim, timeout=15)
+            except Exception as e:
+                console.print(f'  [red]✗[/red]  Apple batch {chunk_start//100+1}  [dim]{e}[/dim]')
+                continue
+            by_id = {}
+            for res in raw.get('results') or []:
+                if res.get('wrapperType') == 'collection':
+                    art = (res.get('artworkUrl100') or '').strip()
+                    if art:
+                        by_id[str(res.get('collectionId'))] = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
+            for r in chunk:
+                thumb = by_id.get(str(r['apple_music_id']))
+                if thumb:
+                    conn.execute('UPDATE releases SET album_art_thumb_url=?, updated_at=? WHERE id=?',
+                                 (thumb, now, r['id']))
+                    found += 1
+                else:
+                    console.print(f'  [dim]–  {r["title"]}  (no Apple artwork)[/dim]')
+                    skipped += 1
+            conn.commit()
+
+        console.rule(style='dim')
+        console.print(f'  [dim]Found: {found} · Skipped: {skipped}[/dim]')
+
+
+# ── cmd: enrich art-dims ─────────────────────────────────────────────────────
+
+def cmd_enrich_art_dims(args):
+    """Backfill album_art_width/height and album_art_thumb_width/height by
+    downloading each image once and reading its real header — not the size
+    requested in the URL, which Apple's CDN will happily lie about (a
+    3000x3000bb URL can resolve to a much smaller real asset when that's
+    all the label ever uploaded).
+
+    Once populated, "is anything still low-res" is a plain SQL WHERE clause
+    instead of a re-download-everything script — that's the point of this
+    command existing at all.
+    """
+    with managed_db(args.db or DB_PATH) as conn:
+        artist_clause  = ''
+        release_clause = ''
+        params: list   = []
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            release_clause = 'AND r.id = ?'
+            params.append(args.release_id)
+
+        force_clause = '' if getattr(args, 'force', False) else \
+            'AND (r.album_art_width IS NULL OR (r.album_art_thumb_url IS NOT NULL AND r.album_art_thumb_width IS NULL))'
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.album_art_url, r.album_art_thumb_url
+            FROM   releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            WHERE  r.hidden = 0 AND r.album_art_url IS NOT NULL
+              {force_clause}
+              {artist_clause} {release_clause}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        queue = rows[args.skip:]
+        if args.limit:
+            queue = queue[:args.limit]
+
+        console.print(f'[dim]{len(rows)} releases missing art dimensions, processing {len(queue)}[/dim]\n')
+
+        found = skipped = 0
+        now = int(time.time())
+        for i, r in enumerate(queue, start=1):
+            large_dims = _fetch_image_dims(r['album_art_url'])
+            thumb_dims = _fetch_image_dims(r['album_art_thumb_url']) if r['album_art_thumb_url'] else None
+
+            if not large_dims and not thumb_dims:
+                console.print(f'  [dim]–  {r["title"]}  (fetch failed)[/dim]')
+                skipped += 1
+                continue
+
+            conn.execute(
+                'UPDATE releases SET album_art_width=?, album_art_height=?, '
+                'album_art_thumb_width=?, album_art_thumb_height=?, updated_at=? WHERE id=?',
+                (large_dims[0] if large_dims else None, large_dims[1] if large_dims else None,
+                 thumb_dims[0] if thumb_dims else None, thumb_dims[1] if thumb_dims else None,
+                 now, r['id'])
+            )
+            found += 1
+            if i % 50 == 0:
+                conn.commit()
+                console.print(f'  [dim]{i}/{len(queue)} processed[/dim]')
+
+        conn.commit()
+        console.rule(style='dim')
+        console.print(f'  [dim]Found: {found} · Skipped: {skipped}[/dim]')
+
+
+# ── cmd: enrich art-verify ────────────────────────────────────────────────────
+
+def cmd_enrich_art_verify(args):
+    """Cross-check that a release's thumb and large art are actually the
+    same photo at different sizes, via perceptual hash (imagehash.phash) —
+    a signal independent of the title/artist text matching apple-verify
+    does. Catches cases text matching can't: e.g. a correct title+artist
+    match whose thumb happens to be a stale image from a different edition
+    or a totally different source than the large art.
+
+    A Hamming distance of 0-2 between hashes reliably means "same image,
+    different scale/compression" — phash is designed to be robust to
+    exactly that, unlike raw pixel comparison. Read-only: reports
+    mismatches, never rewrites anything.
+    """
+    try:
+        import imagehash  # noqa: F401
+    except ImportError:
+        console.print('[red]Error:[/red] pip install imagehash Pillow  (see requirements.txt)')
+        return
+
+    with managed_db(args.db or DB_PATH) as conn:
+        artist_clause  = ''
+        release_clause = ''
+        params: list   = []
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            artist_clause = 'AND (ra.artist_id = ? OR r.primary_artist_id = ?)'
+            params.extend([row['id'], row['id']])
+        if args.release_id:
+            release_clause = 'AND r.id = ?'
+            params.append(args.release_id)
+        list_clause = ''
+        if getattr(args, 'list_id', None):
+            list_clause = 'AND r.id IN (SELECT release_id FROM canonical_list_entries WHERE list_id = ?)'
+            params.append(args.list_id)
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.album_art_url, r.album_art_thumb_url
+            FROM   releases r
+            LEFT JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
+            WHERE  r.hidden = 0 AND r.album_art_url IS NOT NULL AND r.album_art_thumb_url IS NOT NULL
+              {artist_clause} {release_clause} {list_clause}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        queue = rows[args.skip:]
+        if args.limit:
+            queue = queue[:args.limit]
+
+        console.print(f'[dim]{len(rows)} releases have both thumb and large art, checking {len(queue)}[/dim]\n')
+
+        # Same URL apart from the requested size suffix (…/600x600bb.jpg vs
+        # …/3000x3000bb.jpg) means the same underlying asset by construction
+        # — skip both the download and the hash, and don't bother phash at
+        # all. This isn't just an optimization: at extreme scale ratios
+        # (600 vs 3000, a 5x downsample) phash can drift a few bits on
+        # high-contrast covers even for a genuinely identical image, so
+        # this same-asset check also avoids a real class of false positive.
+        size_suffix_re = re.compile(r'/\d+x\d+bb\.jpg$')
+
+        threshold = args.threshold
+        mismatches = errors = same_asset = 0
+        for i, r in enumerate(queue, start=1):
+            thumb_prefix = size_suffix_re.sub('', r['album_art_thumb_url'])
+            large_prefix = size_suffix_re.sub('', r['album_art_url'])
+            if thumb_prefix and thumb_prefix == large_prefix:
+                same_asset += 1
+                continue
+
+            large_hash = _fetch_image_phash(r['album_art_url'])
+            thumb_hash = _fetch_image_phash(r['album_art_thumb_url'])
+            if large_hash is None or thumb_hash is None:
+                errors += 1
+                continue
+            dist = large_hash - thumb_hash
+            if dist > threshold:
+                console.print(f'  [yellow]![/yellow]  {r["title"]}  [dim](hamming distance {dist})[/dim]')
+                console.print(f'      thumb  {r["album_art_thumb_url"][:70]}')
+                console.print(f'      large  {r["album_art_url"][:70]}')
+                mismatches += 1
+            if i % 25 == 0:
+                console.print(f'  [dim]{i}/{len(queue)} checked[/dim]')
+
+        console.rule(style='dim')
+        console.print(f'  [dim]Checked: {len(queue)} · Same asset (skipped): {same_asset} · '
+                       f'Mismatches: {mismatches} · Fetch errors: {errors}[/dim]')
 
 
 # ── cmd: enrich audio ─────────────────────────────────────────────────────────
@@ -2952,6 +3908,146 @@ def cmd_enrich_audio(args):
         conn.commit()
     console.rule(style='dim')
     console.print(f'  [dim]Updated {updated}/{len(rows)} tracks with audio features[/dim]')
+
+# ── cmd: enrich spotify-tracks ──────────────────────────────────────────────────
+
+def cmd_enrich_spotify_tracks(args):
+    """Backfill missing track-level Spotify IDs on releases that already have one.
+
+    Fetches each release's full Spotify tracklist and matches by ISRC — this
+    is the only reliable cross-source key, since track titles/positions vary
+    between providers (bonus tracks, remasters, disc splits).
+    """
+    load_dotenv()
+    cid = os.environ.get('SPOTIFY_CLIENT_ID')
+    csc = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    if not cid or not csc:
+        console.print('[red]SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET not set[/red]')
+        return
+    client = SpotifyClient(cid, csc)
+
+    with managed_db(args.db or DB_PATH) as conn:
+        params: list = []
+        artist_clause = ''
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found: {args.artist}[/red]')
+                return
+            artist_clause = '''
+              AND r.id IN (
+                SELECT DISTINCT t2.release_id FROM tracks t2
+                JOIN track_artists ta ON ta.track_id = t2.id
+                WHERE ta.artist_id = ? AND ta.role = 'main'
+              )'''
+            params.append(row['id'])
+
+        release_clause = ''
+        if args.release_id:
+            release_clause = ' AND r.id = ?'
+            params.append(args.release_id)
+
+        rows = conn.execute(f'''
+            SELECT DISTINCT r.id, r.title, r.spotify_id
+            FROM releases r
+            WHERE r.hidden = 0 AND r.spotify_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0
+                  AND (t.spotify_id IS NULL OR t.spotify_id = '')
+              )
+              {artist_clause}{release_clause}
+            ORDER BY r.title
+        ''', params).fetchall()
+
+        if args.skip:
+            rows = rows[args.skip:]
+        if args.limit:
+            rows = rows[:args.limit]
+
+        if not rows:
+            console.print('[green]Nothing to process.[/green]')
+            return
+
+        console.print(f'  [bold]{len(rows)}[/bold] release(s) with incomplete Spotify track IDs\n')
+
+        releases_touched = tracks_matched = tracks_unmatched = 0
+        for r in rows:
+            try:
+                album = client.get_album(r['spotify_id'])
+            except Exception as e:
+                console.print(f'  [red]✗[/red]  {r["title"]}  [dim]{e}[/dim]')
+                continue
+
+            sp_tracks = album.get('_all_tracks') or []
+            sp_ids    = [t['id'] for t in sp_tracks if t.get('id')]
+            full_map  = {t['id']: t for t in client.get_tracks_batch(sp_ids)} if sp_ids else {}
+
+            isrc_to_sp: dict = {}
+            for t in sp_tracks:
+                full_t = full_map.get(t['id'], t)
+                isrc   = (full_t.get('external_ids') or {}).get('isrc')
+                if isrc:
+                    isrc_to_sp[isrc.upper()] = full_t
+
+            db_tracks = conn.execute('''
+                SELECT id, title, isrc, track_number, disc_number FROM tracks
+                WHERE release_id = ? AND hidden = 0 AND (spotify_id IS NULL OR spotify_id = '')
+            ''', (r['id'],)).fetchall()
+
+            # Fallback for tracks with no ISRC at all (e.g. imported from a source that
+            # doesn't expose one): match by normalised title, only when unambiguous.
+            from mdb_strings import normalize_text
+            title_to_sp: dict = {}
+            ambiguous_titles: set = set()
+            for t in sp_tracks:
+                full_t = full_map.get(t['id'], t)
+                key = normalize_text(t.get('name', ''))
+                if not key:
+                    continue
+                if key in title_to_sp:
+                    ambiguous_titles.add(key)
+                else:
+                    title_to_sp[key] = full_t
+
+            now = int(time.time())
+            matched_this = 0
+            for dbt in db_tracks:
+                sp_t = isrc_to_sp.get(dbt['isrc'].upper()) if dbt['isrc'] else None
+                if not sp_t and not dbt['isrc']:
+                    key = normalize_text(dbt['title'] or '')
+                    if key and key not in ambiguous_titles:
+                        sp_t = title_to_sp.get(key)
+                if not sp_t:
+                    continue
+                try:
+                    conn.execute(
+                        'UPDATE tracks SET spotify_id = ?, spotify_popularity = ?, updated_at = ? WHERE id = ?',
+                        (sp_t['id'], sp_t.get('popularity'), now, dbt['id']),
+                    )
+                except sqlite3.IntegrityError:
+                    # spotify_id already claimed by another track row — skip rather than crash
+                    continue
+                matched_this += 1
+            tracks_matched   += matched_this
+            tracks_unmatched += len(db_tracks) - matched_this
+            if matched_this:
+                releases_touched += 1
+                console.print(
+                    f'  [green]✓[/green]  {r["title"]}  '
+                    f'[dim]{matched_this}/{len(db_tracks)} tracks matched[/dim]'
+                )
+            else:
+                console.print(
+                    f'  [yellow]⚠[/yellow]  {r["title"]}  '
+                    f'[dim]0/{len(db_tracks)} matched — no ISRC overlap[/dim]'
+                )
+            conn.commit()
+
+        console.rule(style='dim')
+        console.print(
+            f'  [dim]{tracks_matched} track(s) matched across {releases_touched} release(s)'
+            f'  ·  {tracks_unmatched} still unmatched[/dim]'
+        )
 
 # ── cmd: enrich popularity ─────────────────────────────────────────────────────
 
@@ -3316,7 +4412,7 @@ def cmd_enrich_artists(args):
                         continue
 
                 sp_parts = []
-                if do_spotify and sp_client and not artist['image_url']:
+                if do_spotify and sp_client and (not artist['image_url'] or args.force):
                     try:
                         sp_artist = None
                         if artist['spotify_id']:
@@ -3881,8 +4977,40 @@ def cmd_artist_merge(args):
         conn.execute('UPDATE track_artists   SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
         conn.execute('UPDATE releases SET primary_artist_id = ? WHERE primary_artist_id = ?', [to_id, from_id])
         conn.execute('UPDATE artist_aliases  SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
+
+        # Drop relation rows that would collide with TO's existing relations once
+        # repointed (same PK: from_artist_id, to_artist_id, relation_type), then
+        # repoint. Mirrors the artist_members collision handling below.
+        conn.execute('''
+            DELETE FROM artist_relations AS r1
+            WHERE from_artist_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM artist_relations AS r2
+                  WHERE r2.from_artist_id = ?
+                    AND r2.to_artist_id   = r1.to_artist_id
+                    AND r2.relation_type  = r1.relation_type
+              )
+        ''', [from_id, to_id])
+        conn.execute('''
+            DELETE FROM artist_relations AS r1
+            WHERE to_artist_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM artist_relations AS r2
+                  WHERE r2.to_artist_id    = ?
+                    AND r2.from_artist_id  = r1.from_artist_id
+                    AND r2.relation_type   = r1.relation_type
+              )
+        ''', [from_id, to_id])
         conn.execute('UPDATE artist_relations SET from_artist_id = ? WHERE from_artist_id = ?', [to_id, from_id])
         conn.execute('UPDATE artist_relations SET to_artist_id   = ? WHERE to_artist_id   = ?', [to_id, from_id])
+        # A merge can make an artist relate to itself; that edge is meaningless.
+        conn.execute('DELETE FROM artist_relations WHERE from_artist_id = to_artist_id')
+
+        # artist_year_medals has no natural "combine" — TO keeps its own medals
+        # (they're independently computed per artist, not additive facts to
+        # merge) and any leftover FROM rows are simply dropped so the later
+        # DELETE FROM artists doesn't fail on the artist_id foreign key.
+        conn.execute('DELETE FROM artist_year_medals WHERE artist_id = ?', [from_id])
 
         # Drop rows that would collide with TO's existing membership, then repoint.
         conn.execute('''
@@ -4545,6 +5673,239 @@ _CERT_THRESHOLDS = [
 ]
 
 
+def cmd_list_import_csv(args):
+    """Create/refresh a canonical_lists row + its ranked entries from a CSV
+    or JSON file (format auto-detected by extension).
+
+    CSV: columns given by --rank-col/--artist-col/--album-col/--year-col.
+    JSON: a list of objects with keys rank/artist/album/year (year optional)
+    and an optional position_label (e.g. "2025 #1") for lists that have no
+    single global ranking — a per-year top-5 list, say — where `rank` is
+    still required (as a dense/unique internal sort key) but the UI should
+    show position_label instead of a bare "#rank".
+
+    Idempotent: re-running with the same --id replaces that list's entries
+    (matched release_ids are preserved by re-matching on artist+title, not
+    wiped — a rank can shift between editions of the same underlying source
+    without losing prior matches).
+    """
+    import csv as csv_mod
+    if not os.path.exists(args.csv):
+        console.print(f'[red]File not found:[/red] {args.csv}')
+        return
+
+    entries = []
+    if args.csv.lower().endswith('.json'):
+        with open(args.csv, encoding='utf-8') as f:
+            data = json.load(f)
+        for row in data:
+            rank = row.get('rank')
+            album = str(row.get('album') or '').strip()
+            artist = str(row.get('artist') or '').strip()
+            if rank is None or not album or not artist:
+                continue
+            year = row.get('year')
+            year = int(year) if isinstance(year, (int, str)) and str(year).isdigit() else None
+            label = row.get('position_label')
+            label = str(label).strip() if label else None
+            entries.append((int(rank), artist, album, year, label))
+    else:
+        if not args.rank_col:
+            console.print('[red]--rank-col is required for CSV input.[/red]')
+            return
+        with open(args.csv, newline='', encoding='utf-8') as f:
+            reader = csv_mod.DictReader(f)
+            if args.rank_col not in reader.fieldnames:
+                console.print(f'[red]Column not found:[/red] {args.rank_col!r}')
+                console.print(f'  [dim]Available: {", ".join(reader.fieldnames)}[/dim]')
+                return
+            for row in reader:
+                raw_rank = (row.get(args.rank_col) or '').strip()
+                if not raw_rank:
+                    continue
+                try:
+                    rank = int(raw_rank)
+                except ValueError:
+                    continue  # footnote rows ("added 2023", "prior RS", etc.) — not part of the ranked list
+                album  = (row.get(args.album_col) or '').strip()
+                artist = (row.get(args.artist_col) or '').strip()
+                if not album or not artist:
+                    continue
+                year_raw = (row.get(args.year_col) or '').strip() if args.year_col else ''
+                year = int(year_raw) if year_raw.isdigit() else None
+                entries.append((rank, artist, album, year, None))
+
+    if not entries:
+        console.print('[red]No ranked rows found — check --rank-col (CSV) or the JSON shape.[/red]')
+        return
+    entries.sort(key=lambda e: e[0])
+
+    now = int(time.time())
+    with managed_db(args.db or DB_PATH) as conn:
+        # Preserve existing release_id matches across a re-import: key by
+        # (artist_name, album_title) since rank can legitimately shift
+        # between an existing DB copy and a freshly re-exported CSV.
+        existing_matches = {}
+        if conn.execute('SELECT 1 FROM canonical_lists WHERE id=?', (args.id,)).fetchone():
+            for r in conn.execute(
+                'SELECT artist_name, album_title, release_id FROM canonical_list_entries '
+                'WHERE list_id=? AND release_id IS NOT NULL', (args.id,)
+            ).fetchall():
+                existing_matches[(r['artist_name'], r['album_title'])] = r['release_id']
+
+        conn.execute('''
+            INSERT INTO canonical_lists (id, name, short_name, source_url, total_count, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, short_name=excluded.short_name,
+                source_url=excluded.source_url, total_count=excluded.total_count,
+                updated_at=excluded.updated_at
+        ''', (args.id, args.name, args.short_name, args.source_url, len(entries), now, now))
+
+        conn.execute('DELETE FROM canonical_list_entries WHERE list_id=?', (args.id,))
+        for rank, artist, album, year, label in entries:
+            release_id = existing_matches.get((artist, album))
+            conn.execute(
+                'INSERT INTO canonical_list_entries (list_id, rank, release_id, artist_name, album_title, year, position_label) '
+                'VALUES (?,?,?,?,?,?,?)',
+                (args.id, rank, release_id, artist, album, year, label)
+            )
+        conn.commit()
+
+    console.print(f'[green]✓[/green] {args.id}: {len(entries)} entries '
+                  f'({len(existing_matches)} pre-matched carried over)')
+    console.print(f'  [dim]Run `mdb.py list match --id {args.id}` to match/backfill releases.[/dim]')
+
+
+def cmd_list_match(args):
+    """Match canonical_list_entries against existing releases by artist+title.
+
+    Read-only against `releases`/`artists` — never imports anything. Use
+    `mdb.py import <url>` (see rs500-discography skill) to actually bring in
+    missing albums, then re-run this to link them.
+    """
+    from mdb_strings import ascii_key
+
+    with managed_db(args.db or DB_PATH) as conn:
+        lst = conn.execute('SELECT * FROM canonical_lists WHERE id=?', (args.id,)).fetchone()
+        if not lst:
+            console.print(f'[red]List not found:[/red] {args.id}')
+            return
+
+        artists = conn.execute("SELECT id, name FROM artists WHERE hidden=0").fetchall()
+        artist_by_key = {}
+        for a in artists:
+            artist_by_key.setdefault(ascii_key(a['name']), []).append(a['id'])
+        for al in conn.execute('SELECT artist_id, alias FROM artist_aliases').fetchall():
+            artist_by_key.setdefault(ascii_key(al['alias']), []).append(al['artist_id'])
+
+        entries = conn.execute(
+            'SELECT rank, artist_name, album_title, release_id FROM canonical_list_entries '
+            'WHERE list_id=? ORDER BY rank', (args.id,)
+        ).fetchall()
+
+        matched = 0
+        now = int(time.time())
+        for e in entries:
+            if e['release_id'] and not args.force:
+                continue
+            a_key = ascii_key(e['artist_name'])
+            # Strip a leading "the " for matching only (RS500-style CSVs
+            # frequently drop it: "Beatles" vs DB's "The Beatles").
+            a_key_stripped = re.sub(r'^the\s+', '', a_key)
+            candidate_ids = artist_by_key.get(a_key) or artist_by_key.get(a_key_stripped) or []
+            if not candidate_ids:
+                for k, ids in artist_by_key.items():
+                    if re.sub(r'^the\s+', '', k) == a_key_stripped:
+                        candidate_ids = ids
+                        break
+            if not candidate_ids:
+                continue
+
+            t_key = ascii_key(e['album_title'])
+            all_rels = []
+            for aid in candidate_ids:
+                all_rels.extend(conn.execute(
+                    'SELECT id, title FROM releases WHERE primary_artist_id=? AND hidden=0', (aid,)
+                ).fetchall())
+
+            # Exact-key match always wins outright — checked across ALL of the
+            # artist's releases before any fallback, so "Led Zeppelin" (list)
+            # can't accidentally bind to "Led Zeppelin II" just because that
+            # release happened to be examined first by a substring check.
+            exact = [r['id'] for r in all_rels if ascii_key(r['title']) == t_key]
+            if len(exact) == 1:
+                found_rid = exact[0]
+            elif len(exact) > 1:
+                found_rid = None  # genuine ambiguity (e.g. two editions with the same title) — leave for manual review
+            else:
+                # Substring fallback only for genuinely unambiguous cases —
+                # e.g. list says "Led Zeppelin IV", DB has the bracketed
+                # "[Led Zeppelin IV]", or list says "Abbey Road (2019 Mix)"
+                # and DB just has "Abbey Road". Numbered/sequel titles ("Led
+                # Zeppelin" vs "Led Zeppelin II") must NOT satisfy this: guard
+                # by rejecting only when the extra text IS (in full) nothing
+                # but a sequel marker — a bare roman/arabic numeral, optionally
+                # preceded by "part"/"vol(ume)". A longer descriptive phrase
+                # that happens to contain a digit ("2012 remaster", "36
+                # chambers", "20th anniversary") is real decoration, not a
+                # sequel number, and must NOT be rejected.
+                _SEQUEL_ONLY_RE = re.compile(r'^(part|vol|volume)?\s*(i{1,3}|iv|v|vi{1,3}|ix|x|\d+)$')
+
+                def _is_decoration_only(shorter, longer):
+                    extra = longer.replace(shorter, '', 1).strip()
+                    return not _SEQUEL_ONLY_RE.match(extra)
+
+                candidates = []
+                for r in all_rels:
+                    rt_key = ascii_key(r['title'])
+                    if t_key == rt_key:
+                        continue  # already handled above
+                    if t_key in rt_key and _is_decoration_only(t_key, rt_key):
+                        candidates.append(r['id'])
+                    elif rt_key in t_key and _is_decoration_only(rt_key, t_key):
+                        candidates.append(r['id'])
+                found_rid = candidates[0] if len(candidates) == 1 else None
+
+            if found_rid:
+                conn.execute(
+                    'UPDATE canonical_list_entries SET release_id=? WHERE list_id=? AND rank=?',
+                    (found_rid, args.id, e['rank'])
+                )
+                matched += 1
+
+        conn.execute('UPDATE canonical_lists SET updated_at=? WHERE id=?', (now, args.id))
+        conn.commit()
+
+    console.print(f'[green]✓[/green] matched {matched} new entries')
+
+
+def cmd_list_status(args):
+    """Print completion summary for one or all canonical lists."""
+    with managed_db(args.db or DB_PATH) as conn:
+        lists = conn.execute('SELECT * FROM canonical_lists' + (' WHERE id=?' if args.id else ''),
+                              (args.id,) if args.id else ()).fetchall()
+        if not lists:
+            console.print('[dim]No canonical lists found.[/dim]' if not args.id else f'[red]List not found:[/red] {args.id}')
+            return
+        for lst in lists:
+            total = conn.execute('SELECT COUNT(*) FROM canonical_list_entries WHERE list_id=?', (lst['id'],)).fetchone()[0]
+            matched = conn.execute(
+                'SELECT COUNT(*) FROM canonical_list_entries WHERE list_id=? AND release_id IS NOT NULL',
+                (lst['id'],)
+            ).fetchone()[0]
+            heard = conn.execute('''
+                SELECT COUNT(*) FROM canonical_list_entries cle
+                JOIN releases r ON r.id = cle.release_id
+                WHERE cle.list_id=? AND EXISTS (
+                    SELECT 1 FROM tracks t JOIN listens l ON l.track_id=t.id
+                    WHERE t.release_id = r.id
+                )
+            ''', (lst['id'],)).fetchone()[0]
+            console.print(f"[bold]{lst['name']}[/bold]  [dim]({lst['id']})[/dim]")
+            console.print(f"  matched: {matched}/{total}   heard: {heard}/{total}")
+
+
 def cmd_genre_relations(args):
     """Populate genre_relations from a tab-indented tree file."""
     import os
@@ -4559,6 +5920,75 @@ def cmd_genre_relations(args):
         inserted, skipped = populate_genre_relations(conn, tree_path)
     console.print(f'  [green]✓ {inserted} genre relations inserted[/green]'
                   f'  [dim]({skipped} tree entries not in DB)[/dim]')
+
+
+def cmd_genre_relations_sync(args):
+    """Rebuild genre_relations from AOTY's live Parent/Child Genres sidebar.
+
+    genre_tree.txt is a stale manual transcription that's missing real AOTY
+    parent genres (e.g. Mambo is filed under Latin American Music, Regional,
+    and Spanish Caribbean Music on AOTY — the tree file only had "Regional").
+    This walks every genre in the local DB, scrapes its actual AOTY page, and
+    inserts any newly-discovered parent/child genre stubs plus the relations
+    between them, so the tree matches AOTY's own multi-parent taxonomy.
+    """
+    limit = getattr(args, 'limit', None)
+    with managed_db(args.db or DB_PATH) as conn:
+        genres = conn.execute('SELECT aoty_id, name, slug FROM genres ORDER BY aoty_id').fetchall()
+        if limit:
+            genres = genres[:limit]
+
+        known_ids = {r['aoty_id'] for r in genres}
+        new_genres = {}   # id -> (name, slug)
+        relations = set()  # (parent_id, child_id)
+        errors = 0
+
+        console.print(f'[dim]Scraping {len(genres)} AOTY genre pages...[/dim]\n')
+        to_scrape = [(g['aoty_id'], g['name'], g['slug']) for g in genres]
+        scraped_ids = set()
+
+        while to_scrape:
+            gid, gname, gslug = to_scrape.pop()
+            if gid in scraped_ids:
+                continue
+            scraped_ids.add(gid)
+            if len(scraped_ids) % 25 == 0:
+                console.print(f'[dim]  {len(scraped_ids)} genre pages scraped so far...[/dim]')
+            try:
+                rel = scrape_aoty_genre_relations(gid, gslug)
+            except Exception as e:
+                log.warning('Genre relations scrape failed for %s (%s): %s', gname, gid, e)
+                errors += 1
+                continue
+
+            for pid, pname, pslug in rel['parents']:
+                if pid not in known_ids and pid not in new_genres:
+                    new_genres[pid] = (pname, pslug)
+                    to_scrape.append((pid, pname, pslug))  # walk up to a connected root
+                relations.add((pid, gid))
+            for cid, cname, cslug in rel['children']:
+                if cid not in known_ids and cid not in new_genres:
+                    new_genres[cid] = (cname, cslug)
+                relations.add((gid, cid))
+
+        for gid, (name, slug) in new_genres.items():
+            conn.execute(
+                'INSERT OR IGNORE INTO genres (aoty_id, name, slug) VALUES (?, ?, ?)',
+                (gid, name, slug),
+            )
+        conn.execute('DELETE FROM genre_relations')
+        for pid, cid in relations:
+            conn.execute(
+                'INSERT OR IGNORE INTO genre_relations (parent_aoty_id, child_aoty_id) VALUES (?, ?)',
+                (pid, cid),
+            )
+        conn.commit()
+
+    console.print(
+        f'  [green]✓ {len(relations)} genre relations[/green]  '
+        f'[dim]({len(new_genres)} new genre stubs inserted, {len(scraped_ids)} pages scraped, {errors} failed)[/dim]'
+    )
+    console.print('  Run [bold]./generate_genre_tree.py[/bold] next to refresh genre-tree.js')
 
 
 # -- Genre Commit Graph --
@@ -4639,6 +6069,10 @@ def _build_genre_root_map(tree_path: str) -> dict[str, dict[str, float]]:
     Parse tab-indented genre tree and return {genre_name: {root_name: weight}}.
     Weights sum to 1.0 per genre. Multi-parent genres split weight equally up
     the hierarchy until reaching top-level (parentless) genres.
+
+    Reads the tree file rather than genre_relations: that table only holds
+    relations where both endpoints are genres we stock, so it loses the
+    intermediate links needed to walk a subgenre up to its real root.
     """
     parents: dict[str, set[str]] = {}
     stack: dict[int, str] = {}
@@ -4722,6 +6156,83 @@ def _blend_genres(
     ][:6]
 
     return color, top
+
+
+GENRE_TREE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'genre_tree.txt')
+
+
+def cmd_genres_refresh(args):
+    """Recompute monthly genre profiles into monthly_genre_profile.
+
+    Feeds the Taste Over Time heatmap on the home page. Only whole months are
+    written: the current month is still accruing listens, so its blend would
+    shift every time this ran.
+    """
+    tree_path = args.tree or GENRE_TREE_PATH
+    if not os.path.exists(tree_path):
+        console.print(f'[red]Genre tree not found: {tree_path}[/red]')
+        sys.exit(1)
+
+    now = datetime.now()
+    with managed_db(args.db or DB_PATH) as conn:
+        genre_root_map = _build_genre_root_map(tree_path)
+
+        months = [
+            (y, m) for y, m in conn.execute(
+                'SELECT DISTINCT year, month FROM listens ORDER BY year, month'
+            )
+            if (y, m) < (now.year, now.month)
+        ]
+        console.print(f'  [dim]{len(months)} complete months '
+                      f'(excluding {now.year}-{now.month:02d})[/dim]')
+
+        rows = []
+        for year, month in months:
+            listen_count = conn.execute(
+                'SELECT COUNT(*) FROM listens WHERE year=? AND month=?', (year, month)
+            ).fetchone()[0]
+
+            genre_rows = conn.execute('''
+                SELECT l.id, g.name
+                FROM listens l
+                JOIN tracks t          ON t.id = l.track_id AND t.hidden = 0
+                JOIN release_genres rg ON rg.release_id = t.release_id
+                JOIN genres g          ON g.aoty_id = rg.aoty_genre_id
+                WHERE l.year = ? AND l.month = ?
+            ''', (year, month)).fetchall()
+
+            if not genre_rows:
+                rows.append((year, month, listen_count, '#64748B', '#64748B', None, None))
+                continue
+
+            listen_genres: dict[int, list[str]] = {}
+            for lid, gname in genre_rows:
+                listen_genres.setdefault(lid, []).append(gname)
+
+            # Each listen contributes 1.0, split across its genres, then split
+            # again up the tree so a subgenre credits its root families.
+            root_weights: dict[str, float] = {}
+            for genres in listen_genres.values():
+                genre_wt = 1.0 / len(genres)
+                for gname in genres:
+                    for root, rw in genre_root_map.get(gname, {gname: 1.0}).items():
+                        root_weights[root] = root_weights.get(root, 0.0) + genre_wt * rw
+
+            color, top = _blend_genres(root_weights)
+            dominant   = top[0]['genre'] if top else None
+            top_color  = _hsl_to_hex(*_TOP_GENRE_HSL.get(dominant, _DEFAULT_HSL)) if dominant else '#64748B'
+            rows.append((year, month, listen_count, color, top_color, dominant,
+                         json.dumps(top) if top else None))
+
+        conn.execute('DELETE FROM monthly_genre_profile')
+        conn.executemany(
+            'INSERT INTO monthly_genre_profile '
+            '(year, month, listen_count, color_hex, top_genre_color_hex, dominant_genre, genres_json) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            rows,
+        )
+    span = f'{rows[0][0]}-{rows[0][1]:02d} to {rows[-1][0]}-{rows[-1][1]:02d}' if rows else 'none'
+    console.print(f'  [green]{len(rows)} months cached[/green]  [dim]{span}[/dim]')
 
 
 def cmd_certs_refresh(args):
@@ -5025,39 +6536,42 @@ def cmd_stats_refresh(args):
         _vlog('labels', cache['labels'], t0)
 
         # ── Album Completion ──────────────────────────────────────────────
-        # HAVING is applied via an outer WHERE on a subquery rather than
-        # directly after GROUP BY — sqlite mis-evaluates a direct HAVING
-        # comparison between two COUNT(DISTINCT CASE...) aliases in some
-        # versions. Verified against master.sqlite directly.
+        # Grouped by same_song_key() so hearing any one edit/length variant
+        # (radio edit, extended mix, original mix, ...) of a track counts as
+        # having heard that song — a named remix stays its own distinct slot.
         t0 = time.perf_counter()
-        completion_rows = conn.execute('''
-            SELECT * FROM (
-                SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
-                       COUNT(DISTINCT CASE
-                           WHEN t.hidden = 0 AND t.variant_section IS NULL
-                            AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
-                           THEN t.id END) as total_tracks,
-                       COUNT(DISTINCT CASE
-                           WHEN t.hidden = 0 AND t.variant_section IS NULL
-                            AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
-                            AND l.id IS NOT NULL
-                           THEN t.id END) as heard_tracks,
-                       COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens
-                FROM releases r
-                JOIN tracks t ON t.release_id = r.id
-                LEFT JOIN listens l ON l.track_id = t.id
-                LEFT JOIN artists a ON a.id = r.primary_artist_id
-                WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
-                GROUP BY r.id
-            )
-            WHERE heard_tracks > 0 AND heard_tracks < total_tracks AND total_listens > 0
-            ORDER BY total_listens DESC LIMIT 8
+        raw_rows = conn.execute('''
+            SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
+                   t.title as track_title,
+                   EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id) as heard,
+                   (SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) as track_listens
+            FROM releases r
+            JOIN tracks t ON t.release_id = r.id
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
+            WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0)
+              AND t.hidden = 0 AND t.variant_section IS NULL
+              AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
         ''').fetchall()
-        cache['completion'] = [
-            {'id': r['id'], 'title': r['title'], 'total': r['total_tracks'],
-             'heard': r['heard_tracks'], 'listens': r['total_listens']}
-            for r in completion_rows
-        ]
+        by_release: dict = {}
+        for r in raw_rows:
+            entry = by_release.setdefault(
+                r['id'], {'title': r['title'], 'art_url': r['art_url'],
+                          'groups': {}, 'total_listens': 0})
+            key = same_song_key(r['track_title'])
+            entry['groups'][key] = entry['groups'].get(key, False) or bool(r['heard'])
+            entry['total_listens'] += r['track_listens']
+
+        completion = []
+        for rid, entry in by_release.items():
+            total = len(entry['groups'])
+            heard = sum(1 for v in entry['groups'].values() if v)
+            if heard > 0 and heard < total and entry['total_listens'] > 0:
+                completion.append({
+                    'id': rid, 'title': entry['title'], 'total': total,
+                    'heard': heard, 'listens': entry['total_listens'],
+                })
+        completion.sort(key=lambda c: c['listens'], reverse=True)
+        cache['completion'] = completion[:8]
         _vlog('completion', cache['completion'], t0)
 
         # ── Most Relistened Tracks (one per release, so a single album
@@ -5209,6 +6723,112 @@ def cmd_stats_refresh(args):
             'artist_cutover': cutover_row['cutover'] if cutover_row else 0,
         }
         _vlog('nerd', [cache['nerd']], t0)
+
+        # ── Genres Index (views/genres.js) ───────────────────────────────────
+        # One row per genre with plays > 0, matching genre.js's own per-genre
+        # queries — precomputed so the index page doesn't run the full
+        # release_genres/tracks/listens join 575+ times on every load.
+        #
+        # track_plays pre-aggregates listens per track ONCE before joining to
+        # release_genres. Joining raw `listens` rows directly through
+        # release_genres -> tracks fans out multiplicatively (every listen
+        # re-matched per genre tag on the release) — 244s cold on this
+        # library. Pre-aggregating first cut it to ~20s for the same result.
+        t0 = time.perf_counter()
+        genre_rows = conn.execute('''
+            WITH track_plays AS (
+                SELECT track_id, COUNT(*) as tp_count FROM listens GROUP BY track_id
+            )
+            SELECT g.aoty_id, g.name,
+                   COUNT(DISTINCT rg.release_id) as releases,
+                   COALESCE(SUM(tp.tp_count), 0) as total_plays
+            FROM genres g
+            JOIN release_genres rg ON g.aoty_id = rg.aoty_genre_id
+            JOIN releases r ON r.id = rg.release_id AND r.hidden = 0
+            JOIN tracks t ON rg.release_id = t.release_id AND t.hidden = 0
+            LEFT JOIN track_plays tp ON tp.track_id = t.id
+            GROUP BY g.aoty_id
+            HAVING total_plays > 0
+        ''').fetchall()
+        # Releases average ~4 genre tags each, so summing each genre's own
+        # `plays` double/triple-counts the same listen once per tag — that
+        # sum is meaningful per-genre but not as a "total plays" headline
+        # number. genresTotalListens is the actual distinct-listen count
+        # (each scrobble counted once) for views/genres.js's subtitle.
+        genres_total_listens = conn.execute('''
+            SELECT COUNT(DISTINCT l.id)
+            FROM listens l
+            JOIN tracks t ON t.id = l.track_id AND t.hidden = 0
+            JOIN release_genres rg ON rg.release_id = t.release_id
+        ''').fetchone()[0]
+        cache['genresIndex'] = [
+            {'id': r['aoty_id'], 'name': r['name'], 'releases': r['releases'], 'plays': r['total_plays']}
+            for r in genre_rows
+        ]
+        cache['genresTotalListens'] = genres_total_listens
+        _vlog('genresIndex', cache['genresIndex'], t0)
+
+        # ── Canonical Lists (RS500, etc.) ────────────────────────────────────
+        # Each list's full ranked entry set is embedded so the modal can render
+        # every album (heard or not) client-side with zero further queries —
+        # this table is small (≤ a few thousand rows per list) so shipping it
+        # whole is cheaper than round-tripping per click.
+        t0 = time.perf_counter()
+        canon_lists = []
+        for lst in conn.execute('SELECT * FROM canonical_lists ORDER BY name').fetchall():
+            entries = conn.execute('''
+                SELECT cle.rank, cle.artist_name, cle.album_title, cle.year, cle.release_id,
+                       cle.position_label,
+                       r.title as release_title, r.album_art_thumb_url, r.album_art_url,
+                       r.primary_artist_id, r.release_year,
+                       EXISTS (
+                           SELECT 1 FROM tracks t JOIN listens l ON l.track_id = t.id
+                           WHERE t.release_id = r.id
+                       ) as heard,
+                       (SELECT COUNT(*) FROM tracks t
+                        WHERE t.release_id = r.id AND t.hidden = 0 AND t.variant_section IS NULL
+                          AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+                       ) as total_tracks,
+                       (SELECT COUNT(DISTINCT t.id) FROM tracks t JOIN listens l ON l.track_id = t.id
+                        WHERE t.release_id = r.id AND t.hidden = 0 AND t.variant_section IS NULL
+                          AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
+                       ) as listened_tracks
+                FROM canonical_list_entries cle
+                LEFT JOIN releases r ON r.id = cle.release_id
+                WHERE cle.list_id = ?
+                ORDER BY cle.rank
+            ''', (lst['id'],)).fetchall()
+            heard_n = sum(1 for e in entries if e['heard'])
+            matched_n = sum(1 for e in entries if e['release_id'])
+            # Average per-album completion (tracks heard / tracks total),
+            # over matched entries with a known tracklist — a texture stat
+            # alongside heard_n, not a replacement for it (see the "Heard"
+            # discussion: one play already counts an album as heard, so
+            # this is deliberately a separate, lower number that shows how
+            # much of each album beyond the first play has actually landed).
+            completions = [
+                e['listened_tracks'] / e['total_tracks']
+                for e in entries if e['release_id'] and e['total_tracks']
+            ]
+            avg_completion = round(sum(completions) / len(completions) * 100, 1) if completions else 0
+            canon_lists.append({
+                'id': lst['id'], 'name': lst['name'], 'short_name': lst['short_name'],
+                'source_url': lst['source_url'], 'total': lst['total_count'],
+                'heard': heard_n, 'matched': matched_n, 'avg_completion': avg_completion,
+                'entries': [{
+                    'rank': e['rank'], 'artist': e['artist_name'], 'album': e['album_title'],
+                    'year': e['year'] or e['release_year'], 'release_id': e['release_id'],
+                    'position_label': e['position_label'],
+                    'title': e['release_title'] or e['album_title'],
+                    'art': e['album_art_thumb_url'] or e['album_art_url'],
+                    'primary_artist_id': e['primary_artist_id'],
+                    'heard': bool(e['heard']),
+                    'total_tracks': e['total_tracks'],
+                    'listened_tracks': e['listened_tracks'],
+                } for e in entries],
+            })
+        cache['canonicalLists'] = canon_lists
+        _vlog('canonicalLists', canon_lists, t0)
 
         # ── Write cache ───────────────────────────────────────────────────
         now = int(time.time())
@@ -5407,8 +7027,8 @@ def cmd_stats_refresh(args):
 
 
 def cmd_checkpoint(args):
-    """Run the full publish pipeline: certs → stats → wal-checkpoint → integrity
-    → make_prod_db → gzip → jekyll build → verify.
+    """Run the full publish pipeline: genres → certs → stats → wal-checkpoint →
+    integrity → make_prod_db → gzip → jekyll build → verify.
 
     Run this after a batch of imports; skipping a step leaves the frontend
     serving a stale or truncated database.
@@ -5421,13 +7041,16 @@ def cmd_checkpoint(args):
     def _step(label):
         console.print(Rule(f'[bold]{label}[/bold]', style='bright_blue'))
 
-    _step('1/8  certs refresh')
+    _step('1/9  genres refresh')
+    cmd_genres_refresh(argparse.Namespace(db=db_path, tree=None))
+
+    _step('2/9  certs refresh')
     cmd_certs_refresh(argparse.Namespace(db=db_path))
 
-    _step('2/8  stats refresh')
+    _step('3/9  stats refresh')
     cmd_stats_refresh(argparse.Namespace(db=db_path, verbose=False))
 
-    _step('3/8  WAL checkpoint (TRUNCATE)')
+    _step('4/9  WAL checkpoint (TRUNCATE)')
     conn = open_db(db_path)
     try:
         result = conn.execute('PRAGMA wal_checkpoint(TRUNCATE);').fetchone()
@@ -5435,7 +7058,7 @@ def cmd_checkpoint(args):
     finally:
         conn.close()
 
-    _step('4/8  integrity check')
+    _step('5/9  integrity check')
     conn = open_db(db_path)
     try:
         result = conn.execute('PRAGMA integrity_check;').fetchone()
@@ -5463,14 +7086,14 @@ def cmd_checkpoint(args):
     finally:
         conn.close()
 
-    _step('5/8  make_prod_db.py')
+    _step('6/9  make_prod_db.py')
     r = subprocess.run([sys.executable, os.path.join(music_dir, 'make_prod_db.py')],
                        cwd=music_dir)
     if r.returncode != 0:
         console.print('[red]make_prod_db.py failed — aborting checkpoint.[/red]')
         sys.exit(1)
 
-    _step('6/8  gzip master_prod.sqlite')
+    _step('7/9  gzip master_prod.sqlite')
     r = subprocess.run(['gzip', '-k', '-f', '-9', 'master_prod.sqlite'], cwd=music_dir)
     if r.returncode != 0:
         console.print('[red]gzip failed — aborting checkpoint.[/red]')
@@ -5480,14 +7103,14 @@ def cmd_checkpoint(args):
         console.print('[dim]Skipping jekyll build (--skip-jekyll).[/dim]')
         return
 
-    _step('7/8  jekyll build')
+    _step('8/9  jekyll build')
     r = subprocess.run(['bundle', 'exec', 'jekyll', 'build', '--destination', '_site'],
                        cwd=repo_root)
     if r.returncode != 0:
         console.print('[red]jekyll build failed — aborting checkpoint.[/red]')
         sys.exit(1)
 
-    _step('8/8  verify gzip matches _site')
+    _step('9/9  verify gzip matches _site')
     src  = os.path.join(music_dir, 'master_prod.sqlite.gz')
     dest = os.path.join(site_dir, 'music', 'master_prod.sqlite.gz')
     r = subprocess.run(['cmp', src, dest])
@@ -5511,7 +7134,8 @@ def cmd_track_variants_wrapper(args):
 # ── cmd: dedup ─────────────────────────────────────────────────────────────────
 
 _EL_NAMES = {0: 'Wikipedia', 1: 'MusicBrainz', 2: 'Spotify', 3: 'Apple Music',
-             4: 'Deezer', 5: 'Tidal', 6: 'Bandcamp', 7: 'Beatport'}
+             4: 'Deezer', 5: 'Tidal', 6: 'Bandcamp', 7: 'Beatport',
+             8: 'Genius', 9: 'Genius', 10: 'Discogs', 11: 'RateYourMusic', 12: 'Resident Advisor'}
 
 
 def _dedup_find_groups(cur) -> list[list[dict]]:
@@ -5521,7 +7145,7 @@ def _dedup_find_groups(cur) -> list[list[dict]]:
     rows = cur.execute('''
         SELECT r.id, r.title, r.primary_artist_id, a.name AS artist_name,
                r.release_date, r.date_source, r.mbid, r.spotify_id, r.apple_music_id,
-               r.aoty_url, r.aoty_id, r.wikipedia_url, r.album_art_url, r.album_art_source,
+               r.aoty_url, r.aoty_id, r.album_art_url, r.album_art_source,
                r.type, r.type_secondary, r.release_group_mbid, r.label, r.notes,
                r.total_tracks, r.aoty_score_critic, r.aoty_score_user,
                r.aoty_ratings_critic, r.aoty_ratings_user,
@@ -5632,10 +7256,10 @@ def _dedup_match_tracks(
 
 def _dedup_suggest_canonical(releases: list[dict]) -> int:
     """Return index of the release most suitable to be canonical."""
-    # Score: listens × 4 + tracks × 2 + (has_mbid + has_sp + has_am + has_aoty + has_wiki) × 1
+    # Score: listens × 4 + tracks × 2 + (has_mbid + has_sp + has_am + has_aoty) × 1
     def score(r):
         ids = (bool(r['mbid']) + bool(r['spotify_id']) + bool(r['apple_music_id'])
-               + bool(r['aoty_url']) + bool(r['wikipedia_url']))
+               + bool(r['aoty_url']))
         return r['listen_count'] * 4 + r['track_count'] * 2 + ids
     best = max(range(len(releases)), key=lambda i: score(releases[i]))
     return best
@@ -5646,7 +7270,7 @@ _DEDUP_UNIQUE_FIELDS = frozenset({'mbid', 'spotify_id', 'apple_music_id'})
 _DEDUP_COALESCE_FIELDS = [
     'mbid', 'spotify_id', 'apple_music_id', 'aoty_id', 'aoty_url',
     'aoty_score_critic', 'aoty_score_user', 'aoty_ratings_critic',
-    'aoty_ratings_user', 'wikipedia_url', 'album_art_url', 'album_art_source',
+    'aoty_ratings_user', 'album_art_url', 'album_art_source',
     'release_date', 'date_source', 'release_year',
     'release_group_mbid', 'type', 'type_secondary', 'label',
     'total_tracks', 'notes', 'spotify_popularity',
@@ -5764,8 +7388,8 @@ def _dedup_show_preview(releases: list[dict], all_tracks: list[list[dict]],
          lambda r, e: yn(r['aoty_url']),
          yn(merged.get('aoty_url'))),
         ('Wikipedia',
-         lambda r, e: yn(r['wikipedia_url']),
-         yn(merged.get('wikipedia_url'))),
+         lambda r, e: yn(e.get(0)),
+         yn(merged_ext.get(0))),
         ('Beatport',
          lambda r, e: yn(e.get(7)),
          yn(merged_ext.get(7))),
@@ -5883,7 +7507,7 @@ def _dedup_merge(conn, canonical: dict, loser: dict,
         loser_track = pair[loser_idx_in_pair]
         cur.execute('UPDATE listens SET track_id=? WHERE track_id=?',
                     (canon_track['id'], loser_track['id']))
-        cur.execute('UPDATE tracks SET canonical_track_id=? WHERE id=?',
+        cur.execute('UPDATE tracks SET canonical_track_id=?, hidden=1 WHERE id=?',
                     (canon_track['id'], loser_track['id']))
 
     # -- 5. Move unmatched loser tracks to canonical release -----------------------
@@ -6041,12 +7665,16 @@ def cmd_dedup(args):
                     if len(live) == 2:
                         pair_matched = matched
                         loser_unmatched = unmatched[loser_idx_in_live]
+                        pair_canon_idx = canon_idx
                     else:
-                        # For N-way: pair-match each loser against canonical on the fly
+                        # For N-way: pair-match each loser against canonical on the fly.
+                        # _dedup_match_tracks(canonical, loser) always returns pairs as
+                        # (canonical_track, loser_track), so the canonical side is index 0.
                         pair_matched, _, loser_unmatched = _dedup_match_tracks(
                             all_tracks[canon_idx], all_tracks[loser_idx_in_live]
                         )
-                    _dedup_merge(conn, canonical, loser, pair_matched, loser_unmatched, 0)
+                        pair_canon_idx = 0
+                    _dedup_merge(conn, canonical, loser, pair_matched, loser_unmatched, pair_canon_idx)
                     console.print(
                         f'  [green]✓[/green]  Merged [dim]{loser["id"][:12]}…[/dim] → '
                         f'[bold]{canonical["title"]}[/bold]'
@@ -6780,9 +8408,16 @@ def main():
     p.set_defaults(func=cmd_import)
 
     # discography
-    p_disc = sub.add_parser('discography', help='Import a full discography from a YAML file')
+    p_disc = sub.add_parser('discography', help='Import a full discography from a YAML or wikitext file')
     p_disc.add_argument('discography', metavar='FILE',
-                        help='YAML file with album_title + article (Wikipedia URL) per entry')
+                        help='YAML file with album_title + article (Wikipedia URL) per entry, '
+                             'or --wikitext dump')
+    p_disc.add_argument('--wikitext', action='store_true',
+                        help='FILE is a wikitext dump (Wikipedia "Discography" sections), '
+                             'one artist per `%%%%%% Artist Name` block, instead of YAML')
+    p_disc.add_argument('--sections', metavar='LIST', default='studio albums,extended plays,eps',
+                        help='Comma-separated heading names to pull rows from '
+                             '(--wikitext only; default: %(default)r)')
     p_disc.add_argument('--artist',   metavar='NAME', default='',
                         help='Artist name hint for MB title-search fallback')
     p_disc.add_argument('--no-aoty',  action='store_true', help='Skip AOTY enrichment')
@@ -6834,6 +8469,42 @@ def main():
     _add_filter_args(p_apple)
     p_apple.set_defaults(func=cmd_enrich_apple_links)
 
+    p_apple_verify = es.add_parser('apple-verify',
+        help='Strictly re-check apple_music_id against Apple\'s own title+artist (flags only, no rewrites)')
+    _add_filter_args(p_apple_verify)
+    p_apple_verify.set_defaults(func=cmd_enrich_apple_verify)
+
+    p_apple_review = es.add_parser('apple-review',
+        help='Interactively resolve releases apple-verify flagged, via keypress + inline chafa previews')
+    p_apple_review.add_argument('--limit', type=int, help='Review at most N releases this session')
+    p_apple_review.add_argument('--no-preview', action='store_true',
+                                 help='Skip chafa image rendering — text-only, much faster to page through')
+    p_apple_review.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_apple_review.set_defaults(func=cmd_enrich_apple_review)
+
+    p_sp_links = es.add_parser('spotify-links', help='Backfill Spotify album IDs via UPC lookup')
+    _add_filter_args(p_sp_links)
+    p_sp_links.set_defaults(func=cmd_enrich_spotify_links)
+
+    p_thumbs = es.add_parser('thumbnails', help='Backfill small album art thumbnails from Spotify')
+    _add_filter_args(p_thumbs)
+    p_thumbs.add_argument('--force', action='store_true', help='Re-fetch even if a thumb is already set')
+    p_thumbs.set_defaults(func=cmd_enrich_thumbnails)
+
+    p_art_dims = es.add_parser('art-dims',
+        help='Backfill real pixel dimensions for album art (detects low-res art without re-downloading everything each time)')
+    _add_filter_args(p_art_dims)
+    p_art_dims.add_argument('--force', action='store_true', help='Re-check even if dimensions are already stored')
+    p_art_dims.set_defaults(func=cmd_enrich_art_dims)
+
+    p_art_verify = es.add_parser('art-verify',
+        help='Perceptual-hash check that thumb and large art are the same photo at different sizes (read-only)')
+    _add_filter_args(p_art_verify)
+    p_art_verify.add_argument('--list-id', metavar='ID', help='Scope to one canonical list (e.g. apple-music-100)')
+    p_art_verify.add_argument('--threshold', type=int, default=2,
+                               help='Max Hamming distance before flagging a mismatch (default: 2)')
+    p_art_verify.set_defaults(func=cmd_enrich_art_verify)
+
     p_desc = es.add_parser('descriptions', help="Scrape Apple Music 'About this Album' editorial notes")
     _add_filter_args(p_desc)
     p_desc.add_argument('--force', action='store_true', help='Re-fetch even if editorial_note already present')
@@ -6862,6 +8533,11 @@ def main():
     _add_filter_args(p_popularity)
     p_popularity.add_argument('--force', action='store_true', help='Re-fetch even if already populated')
     p_popularity.set_defaults(func=cmd_enrich_popularity)
+
+    p_sp_tracks = es.add_parser('spotify-tracks',
+                                 help='Backfill missing track-level Spotify IDs via ISRC match')
+    _add_filter_args(p_sp_tracks)
+    p_sp_tracks.set_defaults(func=cmd_enrich_spotify_tracks)
 
     # hide
     p = sub.add_parser('hide', help='Bulk hide or unhide artists, tracks, or releases')
@@ -7039,6 +8715,13 @@ def main():
     p_r_ls.set_defaults(func=cmd_relation)
 
     # certs
+    p_genres = sub.add_parser('genres', help='Manage monthly genre profiles')
+    gs_      = p_genres.add_subparsers(dest='genres_cmd', required=True)
+    p_g_ref  = gs_.add_parser('refresh', help='Recompute monthly genre profiles (Taste Over Time)')
+    p_g_ref.add_argument('--tree', metavar='PATH', help='Tab-indented genre tree (default: music/genre_tree.txt)')
+    p_g_ref.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
+    p_g_ref.set_defaults(func=cmd_genres_refresh)
+
     p_certs  = sub.add_parser('certs', help='Manage certification tiers')
     cs_      = p_certs.add_subparsers(dest='certs_cmd', required=True)
     p_c_ref  = cs_.add_parser('refresh', help='Recompute gold/platinum/diamond tiers for all artists')
@@ -7058,6 +8741,40 @@ def main():
     p_gr.add_argument('--tree', metavar='PATH', help='Path to tab-indented genre tree file')
     p_gr.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
     p_gr.set_defaults(func=cmd_genre_relations)
+
+    p_grs = sub.add_parser('genre-relations-sync',
+                            help="Rebuild genre parent/child relations from AOTY's live genre pages")
+    p_grs.add_argument('--limit', type=int, metavar='N', help='Only scrape the first N genres (testing)')
+    p_grs.add_argument('--db',    metavar='PATH', help='Path to master.sqlite')
+    p_grs.set_defaults(func=cmd_genre_relations_sync)
+
+    # list (canonical lists: RS500, AFI-style "top N albums" trackers)
+    p_list = sub.add_parser('list', help='Manage canonical album lists (RS500, etc.)')
+    ls2_    = p_list.add_subparsers(dest='list_cmd', required=True)
+
+    p_l_import = ls2_.add_parser('import-csv', help='Create/refresh a canonical list from a ranked CSV')
+    p_l_import.add_argument('--id', required=True, metavar='SLUG', help="List id, e.g. 'rs500-2020'")
+    p_l_import.add_argument('--name', required=True, metavar='NAME', help='Full display name')
+    p_l_import.add_argument('--short-name', dest='short_name', metavar='NAME', help='Compact label for tight UI')
+    p_l_import.add_argument('--source-url', dest='source_url', metavar='URL')
+    p_l_import.add_argument('--csv', required=True, metavar='PATH', help='CSV or .json file path')
+    p_l_import.add_argument('--rank-col', metavar='COL', help='CSV column holding the rank (CSV only, required for CSV)')
+    p_l_import.add_argument('--artist-col', default='Artist', metavar='COL')
+    p_l_import.add_argument('--album-col', default='Album', metavar='COL')
+    p_l_import.add_argument('--year-col', default='Year', metavar='COL')
+    p_l_import.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_l_import.set_defaults(func=cmd_list_import_csv)
+
+    p_l_match = ls2_.add_parser('match', help='Match list entries to existing releases (read-only)')
+    p_l_match.add_argument('--id', required=True, metavar='SLUG')
+    p_l_match.add_argument('--force', action='store_true', help='Re-check already-matched entries too')
+    p_l_match.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_l_match.set_defaults(func=cmd_list_match)
+
+    p_l_status = ls2_.add_parser('status', help='Print completion summary for one or all lists')
+    p_l_status.add_argument('--id', metavar='SLUG', help='Limit to one list (default: all)')
+    p_l_status.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
+    p_l_status.set_defaults(func=cmd_list_status)
 
     p_dedup = sub.add_parser('dedup', help='Find and resolve duplicate releases interactively')
     p_dedup.add_argument('--artist', metavar='NAME', help='Limit to a specific artist')
