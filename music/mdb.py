@@ -7283,7 +7283,6 @@ def _dedup_compute_merged(canonical: dict, losers: list[dict],
     Returns (merged_release_dict, merged_ext_dict).
     Fields highlighted if they differ from canonical.
     """
-    from mdb_strings import _should_update_date
     merged = dict(canonical)
     for loser in losers:
         for field in _DEDUP_COALESCE_FIELDS:

@@ -379,7 +379,7 @@ def _gemini_find_wiki_article(
     Returns:
       'Article Title'  — Gemini found a specific article (use it)
       ''               — Gemini ran and confirmed no article exists (don't keyword-search)
-      None             — Gemini unavailable (no API key / error) → fall back to search_wikipedia
+      None             — Gemini unavailable (no API key / error) → fall back to keyword search
     """
     import os, json as _json, re as _re, time as _time
     api_key = os.environ.get('GEMINI_API_KEY')
@@ -437,29 +437,6 @@ def _gemini_find_wiki_article(
     return None
 
 
-
-    """Return (page_id, date). page_id is the permanent Wikipedia integer page ID."""
-    query = f'{release_name} {artist_name}'.strip() if artist_name else release_name
-    url   = ('https://en.wikipedia.org/w/api.php?'
-             + urllib.parse.urlencode({
-                 'action': 'query', 'list': 'search',
-                 'srsearch': query, 'srlimit': 5, 'format': 'json',
-             }))
-    _wiki_lim.wait()
-    req = urllib.request.Request(url, headers={'User-Agent': MB_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read())
-    except Exception:
-        return None, None
-    for hit in (data.get('query') or {}).get('search') or []:
-        pid  = hit.get('pageid')
-        date = fetch_wikipedia_date(page_id=pid) if pid else None
-        if date:
-            return pid, date
-    return None, None
-
-
 def fetch_date_candidates(mbid: str, release_name: str = None,
                           artist_name: str = None,
                           release_year: str = None,
@@ -469,7 +446,7 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
     Wikipedia article discovery order:
       1. MB url-rels  — curated, most reliable
       2. Gemini       — semantic disambiguation (requires GEMINI_API_KEY)
-      3. search_wikipedia — keyword fallback (only when Gemini unavailable)
+      3. keyword search  — Wikipedia opensearch fallback (only when Gemini unavailable)
     """
     release_date, rg_first, wiki_url = mb_fetch_release_data(mbid)
     mb_dates, seen = [], set()

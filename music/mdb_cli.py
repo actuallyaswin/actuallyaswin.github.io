@@ -15,7 +15,7 @@ from rich import box
 from rich.console import Console
 from rich.table   import Table
 
-from mdb_apis     import compare_releases
+from mdb_apis     import compare_releases, SpotifyRelease
 from mdb_strings  import detect_variant_types, _parse_user_date, normalize_text, _base_title
 from mdb_websources import _has_aoty, _fmt_aoty
 
