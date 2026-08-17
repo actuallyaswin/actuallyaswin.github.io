@@ -53,6 +53,8 @@ from mdb_strings import (
 from mdb_ops import (
     new_ulid,
     slugify,
+    latin_slug_base,
+    latin_release_slug_base,
     unique_slug,
     EL_RELEASE,
     EL_SVC_BEATPORT,
@@ -1028,7 +1030,7 @@ def _resolve_artist_credit(cur: sqlite3.Cursor, credit: MDBArtistCredit) -> str 
     if not credit.name:
         return None
 
-    base = slugify(credit.name)
+    base = latin_slug_base(credit.name, mbid=credit.mbid or None)
     existing = {r[0] for r in cur.execute(
         'SELECT slug FROM artists WHERE slug IS NOT NULL').fetchall()}
     slug = unique_slug(base, existing)
@@ -1116,12 +1118,12 @@ def upsert_release_mdb(cur: sqlite3.Cursor,
         created = False
     else:
         release_id = new_ulid()
-        base = slugify(release.title)
+        base = latin_release_slug_base(release.title, mbid=release.mbid)
         existing = {r[0] for r in cur.execute(
             'SELECT slug FROM releases WHERE primary_artist_id IS ?',
             (primary_artist_id,)
         ).fetchall()}
-        slug = unique_slug(base, existing)
+        slug = unique_slug(base, existing, fallback='release')
         cur.execute(
             'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
             ' release_date, release_year, date_source, label, spotify_id, mbid,'
@@ -1244,7 +1246,11 @@ def upsert_tracks_mdb(cur: sqlite3.Cursor,
             new_vs = existing_vs if is_canonical_track else (
                 variant_section if existing_vs is None else existing_vs
             )
-            _do_update(track_id, target_rid, new_vs)
+            if target_rid == release_id:
+                _do_update(track_id, target_rid, new_vs)
+            # else: the track belongs to a different release and stays there —
+            # its title/track_number/spotify_id etc. are that release's data,
+            # not this import's, so leave every field untouched.
             updated += 1
         else:
             track_id = new_ulid()

@@ -5,25 +5,47 @@ const ViewArtist = (() => {
     let _chartData = { monthly: null, yearly: null, monthlyRaw: null };
     let _chartState = { granularity: 'monthly', type: 'distribution' };
     let _discSort = 'date'; // 'date' | 'listens'
+    let _discView = localStorage.getItem('artistDiscView') || 'grid'; // 'grid' | 'list'
     let _discData = { own: null, collabs: null };
     let _themeObserver = null;
     let _artistName = null;
     let _hasListens = false;
 
     const CHART_ENABLED = false;
+    // Experimental: small release-art markers on the Timeline's year rows.
+    // Flagged off by default — flip to true to preview, revert if it doesn't
+    // earn its keep.
+    const TIMELINE_RELEASE_MARKERS = false;
 
     function mount(container, db, params) {
         _db = db;
-        _artistId = params.id;
         _currentChart = null;
         _chartData = { monthly: null, yearly: null, monthlyRaw: null };
         _discData = { own: null, collabs: null };
         _artistName = null;
         _hasListens = false;
 
-        if (!_artistId) {
+        // Accept either a slug or a raw ULID in either param — resolve to the
+        // canonical id up front so every query below (all keyed on the real
+        // id) keeps working unchanged, then canonicalize the address bar to
+        // the slug-based URL for clean copy-paste.
+        const key = params.slug || params.id;
+        if (!key) {
             navigate({ view: 'home' });
             return;
+        }
+        const safeKey = String(key).replace(/'/g, "''");
+        const resolved = db.exec(`SELECT id, slug FROM artists WHERE slug = '${safeKey}' OR id = '${safeKey}' LIMIT 1`)[0];
+        if (resolved) {
+            const [realId, slug] = resolved.values[0];
+            _artistId = realId;
+            if (slug && params.id && !params.slug) {
+                history.replaceState({ view: 'artist', slug }, '', `?view=artist&slug=${encodeURIComponent(slug)}`);
+            }
+        } else {
+            // No match — keep the original key so downstream queries fail the
+            // same way they always did, surfacing "Artist not found".
+            _artistId = key;
         }
 
         container.innerHTML = `
@@ -31,6 +53,9 @@ const ViewArtist = (() => {
                 <a href="?" class="bc-home"><i data-lucide="home"></i></a>
                 <i data-lucide="chevron-right" class="bc-sep"></i>
                 <span class="bc-current" id="artistBreadcrumbName">Loading…</span>
+                <a class="artist-compare-link" id="artistCompareLink" hidden>
+                    <i data-lucide="git-compare"></i> Compare
+                </a>
             </nav>
 
             <div id="artistHero" class="artist-hero" hidden></div>
@@ -71,6 +96,10 @@ const ViewArtist = (() => {
                         <span class="disc-sort-label">Sort by</span>
                         <button class="sort-btn${_discSort === 'date' ? ' active' : ''}" data-disc-sort="date">Release Date</button>
                         <button class="sort-btn${_discSort === 'listens' ? ' active' : ''}" data-disc-sort="listens">Listens</button>
+                    </div>
+                    <div class="sort-controls">
+                        <button class="sort-btn${_discView === 'grid' ? ' active' : ''}" data-disc-view="grid" title="Art view" aria-label="Art view"><i data-lucide="layout-grid"></i></button>
+                        <button class="sort-btn${_discView === 'list' ? ' active' : ''}" data-disc-view="list" title="List view" aria-label="List view"><i data-lucide="list"></i></button>
                     </div>
                 </div>
                 <div id="discographyContainer">
@@ -165,12 +194,21 @@ const ViewArtist = (() => {
         const breadcrumbNameEl = document.getElementById('artistBreadcrumbName');
         if (breadcrumbNameEl) breadcrumbNameEl.textContent = name;
 
+        const compareLinkEl = document.getElementById('artistCompareLink');
+        if (compareLinkEl) {
+            compareLinkEl.href = `?view=compare&a=${encodeURIComponent(_artistId)}`;
+            compareLinkEl.removeAttribute('hidden');
+        }
+
         const nameEl = document.getElementById('artistName');
         const isNonLatin = s => /[^ -]/.test(s);
-        if (nativeScript) {
-            nameEl.innerHTML = `${escapeHtml(nativeScript[0])} <span class="artist-romanized">(${escapeHtml(name)})</span>`;
-        } else if (isNonLatin(name) && transliteration) {
-            nameEl.innerHTML = `${escapeHtml(name)} <span class="artist-romanized">(${escapeHtml(transliteration[0])})</span>`;
+        // Primary name first, native/transliterated form in parens — matches
+        // release.js's title rendering (e.g. "Disgaea 7: Vows of the
+        // Virtueless (魔界戦記ディスガイア7)"), rather than leading with the
+        // native script.
+        const secondaryLabel = nativeScript ? nativeScript[0] : (isNonLatin(name) && transliteration ? transliteration[0] : null);
+        if (secondaryLabel) {
+            nameEl.innerHTML = `${escapeHtml(name)} <span class="artist-romanized">(${escapeHtml(secondaryLabel)})</span>`;
         } else {
             nameEl.textContent = name;
         }
@@ -229,34 +267,34 @@ const ViewArtist = (() => {
         }
 
         const membersResult = _db.exec(`
-            SELECT a.id, a.name FROM artist_members am
+            SELECT a.id, a.name, a.slug FROM artist_members am
             JOIN artists a ON a.id = am.member_artist_id
             WHERE am.group_artist_id = '${safeId}'
             ORDER BY am.sort_order, a.name
         `)[0];
         if (membersResult?.values.length) {
             _appendFullRow('Members',
-                membersResult.values.map(([mid, mname]) =>
-                    `<a href="?view=artist&id=${encodeURIComponent(mid)}" class="stat-genre-tag is-primary">${escapeHtml(mname)}</a>`
+                membersResult.values.map(([mid, mname, mslug]) =>
+                    `<a href="${artistHref(mid, mslug)}" class="stat-genre-tag is-primary">${escapeHtml(mname)}</a>`
                 ).join(''));
         }
 
         const memberOfResult = _db.exec(`
-            SELECT a.id, a.name FROM artist_members am
+            SELECT a.id, a.name, a.slug FROM artist_members am
             JOIN artists a ON a.id = am.group_artist_id
             WHERE am.member_artist_id = '${safeId}'
             ORDER BY a.name
         `)[0];
         if (memberOfResult?.values.length) {
             _appendFullRow('Member of',
-                memberOfResult.values.map(([gid, gname]) =>
-                    `<a href="?view=artist&id=${encodeURIComponent(gid)}" class="stat-genre-tag is-primary">${escapeHtml(gname)}</a>`
+                memberOfResult.values.map(([gid, gname, gslug]) =>
+                    `<a href="${artistHref(gid, gslug)}" class="stat-genre-tag is-primary">${escapeHtml(gname)}</a>`
                 ).join(''));
         }
 
         // ── Collaborators → stats table (either direction, deduped) ────────────
         const collabResult = _db.exec(`
-            SELECT DISTINCT a.id, a.name
+            SELECT DISTINCT a.id, a.name, a.slug
             FROM artist_relations ar
             JOIN artists a ON a.id = (
                 CASE WHEN ar.from_artist_id = '${safeId}' THEN ar.to_artist_id ELSE ar.from_artist_id END
@@ -268,8 +306,8 @@ const ViewArtist = (() => {
         `)[0];
         if (collabResult?.values.length) {
             _appendFullRow('Collaborators',
-                collabResult.values.map(([cid, cname]) =>
-                    `<a href="?view=artist&id=${encodeURIComponent(cid)}" class="stat-genre-tag is-primary">${escapeHtml(cname)}</a>`
+                collabResult.values.map(([cid, cname, cslug]) =>
+                    `<a href="${artistHref(cid, cslug)}" class="stat-genre-tag is-primary">${escapeHtml(cname)}</a>`
                 ).join(''));
         }
 
@@ -306,7 +344,7 @@ const ViewArtist = (() => {
             if (extLinks.get(7))    phtml += renderLinkPill('beatport',    `https://www.beatport.com/artist/-/${extLinks.get(7)}`, 'Beatport');
             if (extLinks.get(6))    phtml += renderLinkPill('bandcamp',    extLinks.get(6), 'Bandcamp');
             if (mbid)               phtml += renderLinkPill('musicbrainz', `https://musicbrainz.org/artist/${mbid}`, 'MusicBrainz');
-            if (wikiPageId)         phtml += renderLinkPill('wikipedia',   `https://en.wikipedia.org/wiki/?curid=${wikiPageId}`, 'Wikipedia');
+            if (wikiPageId)         phtml += renderLinkPill('wikipedia',   wikipediaHref(wikiPageId), 'Wikipedia');
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/artist/${aotyId}/` : null);
             if (resolvedAotyUrl)    phtml += renderLinkPill('aoty',        resolvedAotyUrl, 'AOTY');
             if (extLinks.get(8))    phtml += renderLinkPill('genius',      `https://genius.com/artists/${extLinks.get(8)}`, 'Genius');
@@ -331,7 +369,8 @@ const ViewArtist = (() => {
                 (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
                  WHERE t.release_id = r.id AND t.hidden = 0
                  AND t.variant_section IS NULL) as total_listens,
-                NULL as primary_artist_name
+                NULL as primary_artist_name,
+                r.slug
             FROM releases r
             WHERE r.primary_artist_id = '${safeId}'
             AND r.hidden = 0        `)[0];
@@ -347,7 +386,8 @@ const ViewArtist = (() => {
                 (SELECT COUNT(*) FROM tracks t JOIN listens l ON t.id = l.track_id
                  WHERE t.release_id = r.id AND t.hidden = 0
                  AND t.variant_section IS NULL) as total_listens,
-                (SELECT a2.name FROM artists a2 WHERE a2.id = r.primary_artist_id) as primary_artist_name
+                (SELECT a2.name FROM artists a2 WHERE a2.id = r.primary_artist_id) as primary_artist_name,
+                r.slug
             FROM releases r
             JOIN release_artists ra ON ra.release_id = r.id
             WHERE ra.artist_id = '${safeId}' AND ra.role = 'main'
@@ -420,7 +460,7 @@ const ViewArtist = (() => {
 
     function _makeDiscCard(row, collab) {
         const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
-               totalListens, primaryArtistName, totalTracks, listenedTracks] = row;
+               totalListens, primaryArtistName, slug, totalTracks, listenedTracks] = row;
 
         const pct   = totalTracks > 0 ? listenedTracks / totalTracks : 0;
         const pctInt = Math.round(pct * 100);
@@ -434,7 +474,7 @@ const ViewArtist = (() => {
 
         const card = document.createElement('a');
         card.className = 'disc-card' + (totalListens === 0 ? ' unplayed' : '');
-        card.href = `?view=release&id=${encodeURIComponent(id)}`;
+        card.href = releaseHref(id, slug);
 
         const imgSrc = albumArtUrl || getFallbackImageUrl();
         const tooltipText = totalTracks > 0 ? `${listenedTracks} / ${totalTracks} tracks` : '';
@@ -452,6 +492,38 @@ const ViewArtist = (() => {
         return card;
     }
 
+    function _makeDiscListRow(row, collab) {
+        const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
+               totalListens, primaryArtistName, slug, totalTracks, listenedTracks] = row;
+
+        const pct    = totalTracks > 0 ? listenedTracks / totalTracks : 0;
+        const pctInt = Math.round(pct * 100);
+        const color  = _discDonutColor(pct);
+        const year   = releaseDate ? releaseDate.slice(0, 4) : '';
+
+        const rowEl = document.createElement('a');
+        rowEl.className = 'disc-list-row' + (totalListens === 0 ? ' unplayed' : '');
+        rowEl.href = releaseHref(id, slug);
+
+        const imgSrc = albumArtUrl || getFallbackImageUrl();
+        const subLabel = collab && primaryArtistName ? escapeHtml(primaryArtistName) : '';
+        const tooltipText = totalTracks > 0 ? `${listenedTracks} / ${totalTracks} tracks` : '';
+
+        rowEl.innerHTML = `
+            <div class="disc-list-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
+            <div class="disc-list-info">
+                <div class="disc-list-title">${escapeHtml(title)}</div>
+                ${subLabel ? `<div class="disc-list-artist">${subLabel}</div>` : ''}
+            </div>
+            <div class="disc-list-right">
+                <span class="disc-list-year">${year}</span>
+                <span class="disc-list-frac">${totalTracks > 0 ? `${listenedTracks}/${totalTracks}` : ''}</span>
+                ${totalTracks > 0 ? `<div class="donut-wrap donut-sm" style="--p:${pctInt};--c:${color}" data-tooltip="${tooltipText}"><div class="donut"></div></div>` : ''}
+            </div>
+        `;
+        return rowEl;
+    }
+
     function _renderDiscGroup(container, label, rows, collab) {
         if (!rows || rows.length === 0) return;
 
@@ -462,10 +534,17 @@ const ViewArtist = (() => {
         h3.textContent = label;
         group.appendChild(h3);
 
-        const grid = document.createElement('div');
-        grid.className = 'disc-grid';
-        rows.forEach(row => grid.appendChild(_makeDiscCard(row, collab)));
-        group.appendChild(grid);
+        if (_discView === 'list') {
+            const list = document.createElement('div');
+            list.className = 'disc-list';
+            rows.forEach(row => list.appendChild(_makeDiscListRow(row, collab)));
+            group.appendChild(list);
+        } else {
+            const grid = document.createElement('div');
+            grid.className = 'disc-grid';
+            rows.forEach(row => grid.appendChild(_makeDiscCard(row, collab)));
+            group.appendChild(grid);
+        }
 
         container.appendChild(group);
     }
@@ -522,6 +601,11 @@ const ViewArtist = (() => {
             _discSort = btn.dataset.discSort;
             renderDiscography();
         });
+        setupToggleGroup('[data-disc-view]', btn => {
+            _discView = btn.dataset.discView;
+            localStorage.setItem('artistDiscView', _discView);
+            renderDiscography();
+        });
     }
 
     function loadRecentPlays() {
@@ -532,7 +616,8 @@ const ViewArtist = (() => {
                 COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url,
                 r.title as release_title,
                 l.timestamp,
-                r.id as release_id
+                r.id as release_id,
+                r.slug as release_slug
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             LEFT JOIN releases r ON t.release_id = r.id
@@ -556,14 +641,14 @@ const ViewArtist = (() => {
         // otherwise an album played straight through reads as a stuck/glitched
         // list rather than genuine recent activity.
         const groups = [];
-        result.values.forEach(([trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId]) => {
+        result.values.forEach(([trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, releaseSlug]) => {
             const last = groups[groups.length - 1];
             const key = releaseId || `track:${trackTitle}`;
             if (last && last.key === key) {
                 last.count += 1;
                 last.tracks.push(trackTitle);
             } else {
-                groups.push({ key, trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, count: 1, tracks: [trackTitle] });
+                groups.push({ key, trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, releaseSlug, count: 1, tracks: [trackTitle] });
             }
         });
 
@@ -577,7 +662,7 @@ const ViewArtist = (() => {
                 ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(g.releaseTitle)}`
                 : null;
             const tag = g.releaseId ? 'a' : 'div';
-            const hrefAttr = g.releaseId ? ` href="?view=release&id=${encodeURIComponent(g.releaseId)}"` : '';
+            const hrefAttr = g.releaseId ? ` href="${releaseHref(g.releaseId, g.releaseSlug)}"` : '';
             return `
                 <${tag} class="recent-play-row"${hrefAttr}>
                     <div class="recent-play-thumb" style="background-image: url('${cssUrl(imgSrc)}')"></div>

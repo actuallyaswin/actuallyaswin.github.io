@@ -21,6 +21,22 @@ function renderLinkPill(svc, href, name, sub) {
         `</span>${_PILL_SVG_EXT}</a>`;
 }
 
+// external_links Wikipedia values are usually a bare English Wikipedia page ID
+// (e.g. "12326111"), but for artists/releases with no English article we store
+// the full non-English Wikipedia URL instead (same convention as Bandcamp/RYM).
+function wikipediaHref(value) {
+    return /^\d+$/.test(value) ? `https://en.wikipedia.org/wiki/?curid=${value}` : value;
+}
+
+// Prefer clean slug-based URLs for artist/release links; fall back to the raw
+// id if a slug isn't available (e.g. a query that didn't select it).
+function artistHref(id, slug) {
+    return `?view=artist&${slug ? `slug=${encodeURIComponent(slug)}` : `id=${encodeURIComponent(id)}`}`;
+}
+function releaseHref(id, slug) {
+    return `?view=release&${slug ? `slug=${encodeURIComponent(slug)}` : `id=${encodeURIComponent(id)}`}`;
+}
+
 // Fine-grained "Xs/Xm/Xh/Xd ago" — for activity lists (Recent Plays, History).
 // Distinct from formatRelativeTime() below, which is coarser (today/yesterday/
 // weeks/months/years) and used for single "Last played" stat fields.

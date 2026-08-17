@@ -83,6 +83,21 @@ turso-push:
     cd music && sqlite3 master.sqlite "PRAGMA wal_checkpoint(TRUNCATE);"
     cd music && {{mdb_python}} turso_push.py
 
+# Fast path for local dev: regenerate master_prod.sqlite.gz and drop it
+# straight into the already-built _site/, skipping certs/stats refresh and
+# the full `jekyll build` — just enough to see a master.sqlite edit reflected
+# at localhost:4000 without the ~10s round trip db-checkpoint does. Requires
+# _site/ to already exist (run `just build` or `just db-checkpoint` once
+# first) — this only refreshes the one file, it won't create the site.
+# Skips certs/stats refresh, so anything that reads stats_cache or
+# artists.cert (Stats page, cert badges) won't reflect the edit — run
+# db-checkpoint for those, or before committing/deploying.
+db-refresh:
+    cd music && {{mdb_python}} make_prod_db.py
+    cd music && gzip -k -f -9 master_prod.sqlite
+    cp music/master_prod.sqlite.gz _site/music/master_prod.sqlite.gz
+    @echo "Refreshed _site/music/master_prod.sqlite.gz (dev-server fast path — run db-checkpoint before deploying)"
+
 # Open an interactive sqlite3 shell on the music DB.
 db-shell:
     sqlite3 music/master.sqlite

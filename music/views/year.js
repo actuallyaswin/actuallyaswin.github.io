@@ -196,7 +196,8 @@ const ViewYear = (() => {
                  FROM tracks t2
                  JOIN listens l2 ON t2.id = l2.track_id
                  WHERE t2.release_id = r.id AND t2.hidden = 0
-                 AND l2.year = ${currentYear}) as total_minutes
+                 AND l2.year = ${currentYear}) as total_minutes,
+                r.slug
             ${fromClause}
             WHERE ${whereClause}
             GROUP BY r.id
@@ -221,7 +222,8 @@ const ViewYear = (() => {
                     COALESCE(a.image_thumb_url, a.image_url) as image_url,
                     COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN l.id END) as unique_tracks,
                     COUNT(CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN l.id END) as total_listens,
-                    CAST(SUM(CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                    CAST(SUM(CASE WHEN t.hidden = 0 AND l.year = ${currentYear} THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
+                    a.slug
                 FROM releases r
                 JOIN release_artists ra ON r.id = ra.release_id AND ra.role = 'main'
                 JOIN artists a ON ra.artist_id = a.id
@@ -241,7 +243,8 @@ const ViewYear = (() => {
                     COALESCE(a.image_thumb_url, a.image_url) as image_url,
                     COUNT(DISTINCT CASE WHEN t.hidden = 0 THEN l.id END) as unique_tracks,
                     COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
-                    CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes
+                    CAST(SUM(CASE WHEN t.hidden = 0 THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
+                    a.slug
                 FROM listens l
                 JOIN tracks t ON l.track_id = t.id
                 JOIN track_artists ta ON t.id = ta.track_id AND ta.role IN (${PRIMARY_ROLES_SQL})
@@ -277,17 +280,17 @@ const ViewYear = (() => {
             container.className = 'collage-grid';
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedReleases.forEach((row, i) => {
-                const [id, title, year, albumArtUrl] = row;
-                const card = createImageCard({ href: `?view=release&id=${encodeURIComponent(id)}`, imageUrl: albumArtUrl });
+                const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes, slug] = row;
+                const card = createImageCard({ href: releaseHref(id, slug), imageUrl: albumArtUrl });
                 if (i >= show) card.style.display = 'none';
                 container.appendChild(card);
             });
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedReleases.forEach((row, i) => {
-                const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes] = row;
+                const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes, slug] = row;
                 const card = createWideCard({
-                    href: `?view=release&id=${encodeURIComponent(id)}`,
+                    href: releaseHref(id, slug),
                     imageUrl: albumArtUrl,
                     name: title,
                     meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
@@ -301,9 +304,9 @@ const ViewYear = (() => {
         } else {
             container.className = 'image-grid';
             cachedReleases.forEach((row, i) => {
-                const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes] = row;
+                const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes, slug] = row;
                 const card = createImageCard({
-                    href: `?view=release&id=${encodeURIComponent(id)}`,
+                    href: releaseHref(id, slug),
                     imageUrl: albumArtUrl,
                     title,
                     subtitle: artistName || 'Various Artists',
@@ -335,17 +338,17 @@ const ViewYear = (() => {
             container.className = 'collage-grid';
             container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
             cachedArtists.forEach((row, i) => {
-                const [id, name, imageUrl] = row;
-                const card = createImageCard({ href: `?view=artist&id=${encodeURIComponent(id)}`, imageUrl });
+                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes, slug] = row;
+                const card = createImageCard({ href: artistHref(id, slug), imageUrl });
                 if (i >= show) card.style.display = 'none';
                 container.appendChild(card);
             });
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
             cachedArtists.forEach((row, i) => {
-                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes, slug] = row;
                 const card = createWideCard({
-                    href: `?view=artist&id=${encodeURIComponent(id)}`,
+                    href: artistHref(id, slug),
                     imageUrl,
                     name,
                     meta: `${formatNumber(uniqueTracks)} tracks`,
@@ -359,9 +362,9 @@ const ViewYear = (() => {
         } else {
             container.className = 'image-grid';
             cachedArtists.forEach((row, i) => {
-                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes] = row;
+                const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes, slug] = row;
                 const card = createImageCard({
-                    href: `?view=artist&id=${encodeURIComponent(id)}`,
+                    href: artistHref(id, slug),
                     imageUrl,
                     title: name,
                     totalListens,

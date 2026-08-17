@@ -84,7 +84,8 @@ const ViewTop = (() => {
                         COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as unique_tracks,
                         COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
                         CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
-                        CAST(AVG(CASE WHEN t.hidden = 0 THEN l.timestamp END) AS INTEGER) as avg_ts
+                        CAST(AVG(CASE WHEN t.hidden = 0 THEN l.timestamp END) AS INTEGER) as avg_ts,
+                        a.slug
                     FROM artists a
                     LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role IN (${PRIMARY_ROLES_SQL})
                     LEFT JOIN tracks t ON ta.track_id = t.id ${genreClause}
@@ -96,10 +97,10 @@ const ViewTop = (() => {
                     LIMIT 100
                 `)[0];
             },
-            cardHref: f => `?view=artist&id=${encodeURIComponent(f.id)}`,
+            cardHref: f => artistHref(f.id, f.slug),
             buildCardFields(row) {
-                const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes, avgTs] = row;
-                return { id, name, imageUrl, cert, meta2: uniqueTracks, totalListens, totalMinutes, avgTs, label: name };
+                const [id, name, imageUrl, cert, uniqueTracks, totalListens, totalMinutes, avgTs, slug] = row;
+                return { id, name, imageUrl, cert, meta2: uniqueTracks, totalListens, totalMinutes, avgTs, label: name, slug };
             },
         },
         albums: {
@@ -131,7 +132,8 @@ const ViewTop = (() => {
                         COUNT(DISTINCT CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN t.id END) as tracks_listened,
                         COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
                         CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
-                        r.stat_avg_listen_ts as avg_ts
+                        r.stat_avg_listen_ts as avg_ts,
+                        r.slug
                     FROM releases r
                     LEFT JOIN artists a ON a.id = r.primary_artist_id
                     LEFT JOIN tracks t ON t.release_id = r.id
@@ -143,13 +145,13 @@ const ViewTop = (() => {
                     LIMIT 100
                 `)[0];
             },
-            cardHref: f => `?view=release&id=${encodeURIComponent(f.id)}`,
+            cardHref: f => releaseHref(f.id, f.slug),
             buildCardFields(row) {
-                const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes, avgTs] = row;
+                const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes, avgTs, slug] = row;
                 return {
                     id, title, name: title, imageUrl: albumArtUrl, artistName: artistName || 'Various Artists',
                     meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
-                    totalListens, totalMinutes, avgTs, label: title,
+                    totalListens, totalMinutes, avgTs, label: title, slug,
                 };
             },
         },
@@ -186,7 +188,8 @@ const ViewTop = (() => {
                            r.id,
                            COUNT(l.id) total_listens,
                            CAST(SUM(COALESCE(t.duration_ms,0))/60000.0 AS INTEGER) total_minutes,
-                           t.stat_avg_listen_ts as avg_ts
+                           t.stat_avg_listen_ts as avg_ts,
+                           r.slug
                     FROM tracks t
                     LEFT JOIN releases r ON t.release_id = r.id
                     LEFT JOIN listens l ON t.id = l.track_id
@@ -197,10 +200,10 @@ const ViewTop = (() => {
                     LIMIT 5000
                 `)[0];
             },
-            cardHref: f => f.releaseId ? `?view=release&id=${encodeURIComponent(f.releaseId)}` : '#',
+            cardHref: f => f.releaseId ? releaseHref(f.releaseId, f.releaseSlug) : '#',
             buildCardFields(row) {
-                const [id, title, artistName, artistId, art, releaseId, totalListens, totalMinutes, avgTs] = row;
-                return { id, title, name: title, artistName, imageUrl: art, releaseId, totalListens, totalMinutes, avgTs, label: title };
+                const [id, title, artistName, artistId, art, releaseId, totalListens, totalMinutes, avgTs, releaseSlug] = row;
+                return { id, title, name: title, artistName, imageUrl: art, releaseId, totalListens, totalMinutes, avgTs, label: title, releaseSlug };
             },
         },
     };

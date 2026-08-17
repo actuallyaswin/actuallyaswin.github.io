@@ -54,7 +54,7 @@ const ViewList = (() => {
                 ${donut}
             </div>`;
         if (e.release_id) {
-            return `<a href="?view=release&id=${encodeURIComponent(e.release_id)}"
+            return `<a href="${releaseHref(e.release_id, e.release_slug)}"
                        class="disc-card${heardClass}" title="${e.heard ? 'Heard' : 'Not heard yet'}">${inner}</a>`;
         }
         return `<div class="disc-card${heardClass}" title="Not yet in your library">${inner}</div>`;
@@ -171,7 +171,7 @@ const ViewList = (() => {
                 }
                 const pick = candidates[Math.floor(Math.random() * candidates.length)];
                 _lastRandomPick = pick.release_id;
-                navigate({ view: 'release', id: pick.release_id });
+                navigate(pick.release_slug ? { view: 'release', slug: pick.release_slug } : { view: 'release', id: pick.release_id });
             });
         }
     }

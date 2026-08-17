@@ -151,6 +151,22 @@ h3 {
     margin-bottom: 1rem;
 }
 
+/* Shared "section label" idiom: small-caps, letter-spaced, muted color —
+   used everywhere a heading introduces a group of content without being a
+   real page-level title (the base h3 rule above covers actual <h3>
+   elements; these five classes apply the same look to non-h3 elements that
+   grew their own near-duplicate rules independently over time). Each
+   selector below keeps only its own font-size/color/spacing deviation. */
+.sidebar-heading,
+.variant-section-title,
+.tracklist-disc-header,
+.search-section-label,
+.vgst-group-header {
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
 .container {
     max-width: 1200px;
     margin: 0 auto;
@@ -175,6 +191,16 @@ header {
     z-index: 300;
     background: var(--bg);
     border-bottom: 1px solid var(--border);
+    /* Every other sticky element on the page (.list-year-header,
+       .pulse-section, .view-sidebar) assumes this bar is exactly 4rem tall
+       via `top: 4rem`. Its real content only adds up to ~51px, ~13px short
+       of that — the gap where those elements lock in left a dead zone of
+       un-covered scrolling content between the search bar's true bottom
+       edge and their sticky offset. Guaranteeing the real height here fixes
+       it at the source instead of chasing the mismatch in every dependent. */
+    min-height: 4rem;
+    display: flex;
+    align-items: center;
 }
 /* Hides the hairline of content that shows through on fractional scroll offsets. */
 .music-subhead::before {
@@ -188,6 +214,9 @@ header {
 }
 .music-subhead-inner {
     position: relative;      /* anchors the absolutely-positioned results panel */
+    width: 100%;             /* .music-subhead is now a flex container (see above) —
+                                 flex items shrink-to-fit by default, so this is
+                                 needed to keep spanning full width up to max-width */
     max-width: 1200px;
     margin: 0 auto;
     padding: 0.55rem 1rem;
@@ -286,9 +315,6 @@ header {
 .search-results-panel[hidden] { display: none; }
 .search-section-label {
     font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     color: var(--text-tertiary);
     padding: 0.6rem 1rem 0.25rem;
 }
@@ -535,6 +561,12 @@ header h1 {
     transition: color 0.12s, border-color 0.12s;
 }
 .stat-genre-tag:hover { color: var(--primary); }
+.stat-genre-tag-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.stat-genre-tag-icon .vgst-group-icon svg { width: 11px; height: 11px; }
 .stat-genre-tag.is-primary {
     color: var(--text-secondary);
     border: 1px solid var(--border);
@@ -699,8 +731,7 @@ header h1 {
     padding: 0.55rem 1.5rem 0.55rem 0;
 }
 .variant-section-title {
-    font-size: 0.74rem; font-weight: 600; color: var(--text-secondary);
-    text-transform: uppercase; letter-spacing: 0.06em;
+    font-size: 0.74rem; color: var(--text-secondary);
 }
 .variant-section-title a { color: inherit; text-decoration: none; }
 .variant-section-title a:hover { color: var(--primary); }
@@ -749,6 +780,18 @@ header h1 {
     opacity: 0.5;
     margin: 0 0.15rem;
 }
+
+.artist-compare-link {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text-tertiary);
+    text-decoration: none;
+    font-size: 0.8125rem;
+}
+.artist-compare-link:hover { color: var(--primary); }
+.artist-compare-link svg { width: 0.875rem; height: 0.875rem; }
 
 .bc-home {
     color: var(--text-tertiary);
@@ -819,19 +862,6 @@ header h1 {
     text-align: left;
 }
 
-.release-type-badge {
-    display: inline-block;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    font-weight: 600;
-    color: var(--text-tertiary);
-    background: var(--bg-tertiary);
-    border-radius: 4px;
-    padding: 0.1rem 0.35rem;
-    margin-right: 0.3rem;
-    vertical-align: middle;
-}
 
 /* Genre chips — scoped to release header only */
 #releaseHeader .genre-list {
@@ -1345,6 +1375,10 @@ a.stat-card:hover .stat-label::after {
     gap: 0.75rem;
 }
 
+.disc-grid[hidden] {
+    display: none;
+}
+
 .disc-card {
     display: block;
     text-decoration: none;
@@ -1464,6 +1498,107 @@ a.stat-card:hover .stat-label::after {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     margin-right: 0.25rem;
+}
+
+/* Discography list view — 2 columns on desktop, 1 on mobile */
+.disc-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 1.5rem;
+}
+
+@media (max-width: 768px) {
+    .disc-list {
+        grid-template-columns: 1fr;
+    }
+}
+
+.disc-list-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.4rem 0.25rem;
+    text-decoration: none;
+    color: inherit;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+    min-width: 0;
+}
+
+.disc-list-row:hover {
+    background: var(--bg-secondary);
+}
+
+.disc-list-img {
+    width: 64px;
+    height: 64px;
+    flex-shrink: 0;
+    background-size: cover;
+    background-position: center;
+    background-color: var(--bg-secondary);
+    border-radius: 4px;
+}
+
+.disc-list-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.disc-list-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.disc-list-artist {
+    font-size: 0.72rem;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 0.15rem;
+}
+
+.disc-list-right {
+    display: grid;
+    grid-template-columns: 2.5em 3em auto;
+    align-items: center;
+    gap: 0.6rem;
+    flex-shrink: 0;
+}
+
+.disc-list-year {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: right;
+}
+
+.disc-list-frac {
+    font-size: 0.68rem;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    text-align: right;
+}
+
+@media (max-width: 480px) {
+    .disc-list-frac { display: none; }
+    .disc-list-right { grid-template-columns: 2.5em auto; }
+}
+
+.disc-list-row.unplayed .disc-list-img {
+    filter: grayscale(1) opacity(0.45);
+}
+
+.donut-sm {
+    width: 20px;
+    height: 20px;
+}
+
+.donut-sm .donut::after {
+    inset: 5px;
 }
 
 /* Page Controls */
@@ -1691,6 +1826,16 @@ a.stat-card:hover .stat-label::after {
     font-size: 0.75rem;
     color: var(--text-tertiary);
     margin-top: 0.1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+.tracklist-alias-icon {
+    float: left;
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    color: var(--text-tertiary);
 }
 
 .tracklist-track-artists {
@@ -1742,9 +1887,6 @@ a.stat-card:hover .stat-label::after {
 
 .tracklist-disc-header {
     font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
     color: var(--text-secondary);
     padding: 0.75rem 0 0.25rem;
     border-bottom: 1px solid var(--border);
@@ -2311,9 +2453,6 @@ a.stat-card:hover .stat-label::after {
 .sidebar-section:last-child { border-bottom: none; }
 .sidebar-heading {
     font-size: 0.68rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
     color: var(--text-tertiary);
     margin: 0 0 0.5rem;
 }
@@ -3256,10 +3395,58 @@ footer a:hover {
     margin: 0;
     font-size: 1.1rem;
     color: var(--text-secondary);
-    z-index: 5;
+    z-index: 15; /* above .disc-card:hover's z-index:10 — a scaled-up card
+                    scrolling past must not paint over this bar */
+}
+/* Same hairline-bleed fix as .music-subhead::before: a sticky element's own
+   background only covers its content box, so a card scrolling underneath
+   can still show through at the sub-pixel seam above it on fractional
+   scroll offsets. */
+.list-year-header::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    height: 6px;
+    background: var(--bg);
 }
 .list-year-header + .disc-grid {
     margin-bottom: 2rem;
+}
+.vgst-group-count { font-size: 0.85rem; color: var(--text-tertiary); font-weight: 400; }
+.vgst-empty { color: var(--text-tertiary); padding: 2rem 0; }
+
+/* Section headers on the soundtracks view: sticky (long scrolling list of
+   many groups benefits from knowing which one you're in), styled like the
+   Stats page's small-caps section labels rather than list.js's plain
+   .list-year-header text — that one-off style was never meant as a general
+   heading, just a scroll marker for a single feature (group-by-year). */
+.vgst-group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+@media (min-width: 769px) {
+    .vgst-group-header { justify-content: center; }
+}
+.vgst-group-header-clickable { cursor: pointer; }
+.vgst-group-header-clickable:hover { color: var(--primary); }
+.vgst-group-header-clickable:hover .lang-chevron { color: var(--primary); }
+.vgst-group-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-secondary);
+}
+.vgst-group-icon svg {
+    width: 22px;
+    height: 22px;
+}
+.vgst-group-icon .ccsvg__primary,
+.vgst-group-icon .ccsvg__secondary {
+    fill: currentColor;
 }
 
 /* Rank badge overlaid on each disc-card's art, top-left corner. */
@@ -3285,3 +3472,258 @@ footer a:hover {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; }
+
+/* ── Compare view ─────────────────────────────────────────────────────── */
+.compare-header {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 1.5rem;
+    margin: 1.5rem 0 2rem;
+}
+.compare-vs {
+    font-weight: 800;
+    font-size: 1.1rem;
+    color: var(--text-tertiary);
+    letter-spacing: 0.05em;
+}
+.compare-slot {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    min-height: 76px;
+}
+.compare-card-photo {
+    flex-shrink: 0;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    overflow: hidden;
+    display: block;
+}
+.compare-card-photo img { width: 100%; height: 100%; object-fit: cover; }
+.compare-card-name {
+    flex: 1;
+    font-weight: 700;
+    font-size: 1.05rem;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.compare-card-name a { color: var(--text); text-decoration: none; }
+.compare-card-name a:hover { color: var(--primary); }
+.compare-card-swap {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 0.4rem;
+    border-radius: 6px;
+    display: flex;
+}
+.compare-card-swap:hover { background: var(--bg-tertiary); color: var(--text); }
+.compare-card-swap svg { width: 18px; height: 18px; }
+
+.compare-picker {
+    position: relative;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.compare-picker-icon { width: 18px; height: 18px; color: var(--text-tertiary); flex-shrink: 0; }
+.compare-picker-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-size: 1rem;
+    font-family: inherit;
+}
+.compare-picker-input::placeholder { color: var(--text-tertiary); }
+.compare-picker-results {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: -1rem;
+    right: -1rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    z-index: 20;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.compare-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.55rem 0.85rem;
+    cursor: pointer;
+}
+.compare-picker-row:hover { background: var(--bg-tertiary); }
+.compare-picker-row img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.compare-picker-empty { padding: 0.85rem; color: var(--text-tertiary); font-size: 0.9rem; }
+
+.compare-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 4rem 1rem;
+    color: var(--text-tertiary);
+    text-align: center;
+}
+.compare-empty-state svg { width: 40px; height: 40px; }
+.compare-empty-inline { color: var(--text-tertiary); font-size: 0.9rem; padding: 1rem 0; }
+
+.compare-metrics {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    margin-bottom: 2.5rem;
+}
+.compare-metric-row {
+    display: grid;
+    grid-template-columns: 70px 1fr 70px;
+    align-items: center;
+    gap: 0.75rem;
+}
+.compare-metric-val {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    text-align: center;
+}
+.compare-metric-val.compare-metric-winner { color: var(--primary); }
+.compare-metric-bars {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 0.6rem;
+}
+.compare-metric-label {
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    text-align: center;
+}
+.compare-metric-label-standalone { grid-column: 2; }
+.compare-metric-row-date { grid-template-columns: 1fr auto 1fr; }
+.compare-metric-bar-track {
+    height: 10px;
+    border-radius: 5px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+.compare-metric-bar-left { direction: rtl; }
+.compare-metric-bar-fill { height: 100%; background: var(--primary); border-radius: 5px; }
+
+.compare-timeline { margin-bottom: 2.5rem; }
+.compare-line-legend {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+.compare-line-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+}
+.compare-line-legend-dot:not(:first-child) { margin-left: 1.25rem; }
+.compare-chart-wrap { position: relative; height: 300px; margin-top: 0.75rem; }
+
+.compare-marker-legend {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+}
+.compare-marker-legend-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid;
+}
+.compare-marker-legend-dot.compare-marker-a { border-color: var(--primary); }
+.compare-marker-legend-dot.compare-marker-b { border-color: var(--text-tertiary); margin-left: 0.75rem; }
+
+.compare-marker-tooltip {
+    position: fixed;
+    transform: translate(-50%, -100%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.78rem;
+    padding: 0.3rem 0.55rem;
+    border-radius: 6px;
+    pointer-events: none;
+    white-space: pre-line;
+    text-align: center;
+    line-height: 1.4;
+    max-width: 220px;
+    z-index: 30;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+
+.compare-tracks-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 2.5rem;
+}
+.compare-track-row {
+    display: grid;
+    grid-template-columns: 1.5rem 1fr 90px 40px;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0;
+    text-decoration: none;
+    color: inherit;
+    border-bottom: 1px solid var(--border);
+}
+.compare-track-row:last-child { border-bottom: none; }
+.compare-track-row:hover .compare-track-title { color: var(--primary); }
+.compare-track-rank { color: var(--text-tertiary); font-size: 0.85rem; text-align: right; }
+.compare-track-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.92rem;
+}
+.compare-track-bar-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+.compare-track-bar-fill { height: 100%; background: var(--primary); opacity: 0.7; border-radius: 3px; }
+.compare-track-count {
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.compare-genres-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+
+@media (max-width: 700px) {
+    .compare-header { grid-template-columns: 1fr; }
+    .compare-vs { justify-self: center; }
+    .compare-tracks-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+    .compare-metric-row { grid-template-columns: 56px 1fr 56px; }
+}

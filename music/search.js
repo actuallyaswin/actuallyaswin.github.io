@@ -36,6 +36,8 @@ function _searchQuery(q) {
             { label: 'History',         view: 'history',         icon: 'history' },
             { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },
             { label: 'Genres',          view: 'genres',          icon: 'tags' },
+            { label: 'Soundtracks',     view: 'soundtracks',     icon: 'gamepad-2' },
+            { label: 'Compare Artists', view: 'compare',         icon: 'git-compare' },
             { label: 'Top Albums',      view: 'top', params: '&type=albums',  icon: 'disc-album' },
             { label: 'Top Artists',     view: 'top', params: '&type=artists', icon: 'mic-vocal' },
             { label: 'Top Tracks',      view: 'top', params: '&type=tracks',  icon: 'music' },
@@ -83,7 +85,7 @@ function _searchQuery(q) {
 
     // Releases
     const releases = _db.exec(`
-        SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url), a.name, r.release_year
+        SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url), a.name, r.release_year, r.slug
         FROM releases r
         LEFT JOIN artists a ON a.id = r.primary_artist_id
         WHERE r.hidden = 0
@@ -96,11 +98,11 @@ function _searchQuery(q) {
     `)[0];
     if (releases?.values.length) {
         html += `<div class="search-section-label">Releases</div>`;
-        for (const [id, title, art, artist, year] of releases.values) {
+        for (const [id, title, art, artist, year, slug] of releases.values) {
             const thumb = art
                 ? `<img class="search-result-thumb" src="${escapeHtml(art)}" alt="" loading="lazy">`
                 : `<div class="search-result-thumb" style="background:var(--bg-tertiary)"></div>`;
-            html += `<a class="search-result-row" href="index.html?view=release&id=${encodeURIComponent(id)}">
+            html += `<a class="search-result-row" href="index.html${releaseHref(id, slug)}">
                 ${thumb}
                 <div class="search-result-text">
                     <div class="search-result-name">${escapeHtml(title)}</div>
@@ -111,9 +113,10 @@ function _searchQuery(q) {
 
     // Artists
     const artists = _db.exec(`
-        SELECT a.id, a.name, COALESCE(a.image_thumb_url, a.image_url)
+        SELECT a.id, a.name, COALESCE(a.image_thumb_url, a.image_url), a.slug
         FROM artists a
-        WHERE (lower(a.name) LIKE lower('%${safe}%')
+        WHERE (a.hidden IS NULL OR a.hidden = 0)
+          AND (lower(a.name) LIKE lower('%${safe}%')
             OR EXISTS (SELECT 1 FROM artist_aliases aa
                        WHERE aa.artist_id = a.id AND lower(aa.alias) LIKE lower('%${safe}%')))
         ORDER BY (lower(a.name) LIKE lower('${safe}%')) DESC
@@ -121,11 +124,11 @@ function _searchQuery(q) {
     `)[0];
     if (artists?.values.length) {
         html += `<div class="search-section-label">Artists</div>`;
-        for (const [id, name, img] of artists.values) {
+        for (const [id, name, img, slug] of artists.values) {
             const thumb = img
                 ? `<img class="search-result-thumb round" src="${escapeHtml(img)}" alt="" loading="lazy">`
                 : `<div class="search-result-thumb round" style="background:var(--bg-tertiary)"></div>`;
-            html += `<a class="search-result-row" href="index.html?view=artist&id=${encodeURIComponent(id)}">
+            html += `<a class="search-result-row" href="index.html${artistHref(id, slug)}">
                 ${thumb}
                 <div class="search-result-text">
                     <div class="search-result-name">${escapeHtml(name)}</div>
@@ -135,7 +138,7 @@ function _searchQuery(q) {
 
     // Tracks
     const tracks = _db.exec(`
-        SELECT t.id, t.title, r.title, r.id, a.name
+        SELECT t.id, t.title, r.title, r.id, a.name, r.slug
         FROM tracks t
         JOIN releases r ON r.id = t.release_id
         LEFT JOIN artists a ON a.id = r.primary_artist_id
@@ -145,8 +148,8 @@ function _searchQuery(q) {
     `)[0];
     if (tracks?.values.length) {
         html += `<div class="search-section-label">Tracks</div>`;
-        for (const [, title, rTitle, rId, artist] of tracks.values) {
-            html += `<a class="search-result-row" href="index.html?view=release&id=${encodeURIComponent(rId)}">
+        for (const [, title, rTitle, rId, artist, rSlug] of tracks.values) {
+            html += `<a class="search-result-row" href="index.html${releaseHref(rId, rSlug)}">
                 <div class="search-result-thumb" style="background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center">
                     <i data-lucide="music" style="width:16px;height:16px;color:var(--text-tertiary)"></i>
                 </div>

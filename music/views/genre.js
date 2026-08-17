@@ -173,7 +173,8 @@ const ViewGenre = (() => {
                     (SELECT CAST(SUM(COALESCE(t2.duration_ms, 0)) / 60000.0 AS INTEGER)
                      FROM tracks t2
                      JOIN listens l2 ON t2.id = l2.track_id
-                     WHERE t2.release_id = r.id AND t2.hidden = 0) as total_minutes
+                     WHERE t2.release_id = r.id AND t2.hidden = 0) as total_minutes,
+                    r.slug
                 FROM release_genres rg
                 JOIN releases r ON rg.release_id = r.id
                 JOIN genres g ON rg.aoty_genre_id = g.aoty_id
@@ -199,9 +200,9 @@ const ViewGenre = (() => {
             return;
         }
 
-        result.values.forEach(([id, title, year, albumArtUrl, artistName, totalPlays, totalMinutes]) => {
+        result.values.forEach(([id, title, year, albumArtUrl, artistName, totalPlays, totalMinutes, slug]) => {
             const card = createWideCard({
-                href: `?view=release&id=${encodeURIComponent(id)}`,
+                href: releaseHref(id, slug),
                 imageUrl: albumArtUrl,
                 name: title,
                 meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
@@ -242,7 +243,7 @@ const ViewGenre = (() => {
         if (isNaN(safeId)) return;
 
         const result = _db.exec(`
-            SELECT a.id, a.name, COUNT(l.id) as plays
+            SELECT a.id, a.name, COUNT(l.id) as plays, a.slug
             FROM release_genres rg
             JOIN releases r ON rg.release_id = r.id
             JOIN artists a ON a.id = r.primary_artist_id
@@ -258,8 +259,8 @@ const ViewGenre = (() => {
         const list = document.getElementById('genreArtistsList');
         if (!section || !list || !result || result.values.length === 0) return;
 
-        const items = result.values.map(([id, name, plays]) => ({
-            label: name, n: plays, href: `?view=artist&id=${encodeURIComponent(id)}`,
+        const items = result.values.map(([id, name, plays, slug]) => ({
+            label: name, n: plays, href: artistHref(id, slug),
         }));
         list.innerHTML = _breakdownBarsHtml(items);
         section.removeAttribute('hidden');

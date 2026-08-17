@@ -8,6 +8,7 @@ const ViewStats = (() => {
         container.innerHTML = `
             <header>
                 <h1>Stats</h1>
+                <p class="subtitle"><a href="?view=soundtracks">Browse video game soundtracks →</a></p>
             </header>
             <div id="statsContent"></div>
         `;
@@ -31,9 +32,8 @@ const ViewStats = (() => {
     // _drill_albums) — opening a chevron only ever toggles CSS, no query runs.
     function _drillPanel(rows, kind, id) {
         if (!rows || !rows.length) return '';
-        const cards = rows.map(([rid, name, img, n]) => {
-            const href = kind === 'artist' ? `?view=artist&id=${encodeURIComponent(rid)}`
-                                            : `?view=release&id=${encodeURIComponent(rid)}`;
+        const cards = rows.map(([rid, name, img, n, slug]) => {
+            const href = kind === 'artist' ? artistHref(rid, slug) : releaseHref(rid, slug);
             const thumb = img || getFallbackImageUrl();
             return `<a href="${href}" class="lang-expand-card">
                 <div class="lang-expand-thumb${kind === 'artist' ? ' rounded' : ''}" style="background-image:url('${cssUrl(thumb)}')"></div>
@@ -212,6 +212,10 @@ const ViewStats = (() => {
             title: 'Certified Artists',
             desc: 'Gold at 250 plays, platinum at 500, diamond at 1,000.',
         },
+        everyYear: {
+            title: 'Every-Year Artists',
+            desc: 'Artists you\'ve listened to in every single year of your library.',
+        },
         nerd: {
             title: 'Stats for Nerds',
         },
@@ -294,10 +298,10 @@ const ViewStats = (() => {
         if (!rows || !rows.length) return _emptySection('completion', 'No data yet — run `mdb stats refresh`.');
 
         const max = Math.max(...rows.map(r => r.listens), 1);
-        const rowsHtml = rows.map(({ id, title, total, heard, listens }) => {
+        const rowsHtml = rows.map(({ id, title, total, heard, listens, slug }) => {
             const pct     = total ? ((heard / total) * 100).toFixed(0) : '0';
             const opacity = (0.35 + 0.65 * (listens / max)).toFixed(2);
-            const href    = `?view=release&id=${encodeURIComponent(id)}`;
+            const href    = releaseHref(id, slug);
             // .lang-list is a fixed 5-column grid; every row (display:contents)
             // must supply exactly 5 children or subsequent rows' columns drift.
             // This section has no chevron, so the 5th cell is an empty spacer.
@@ -351,8 +355,8 @@ const ViewStats = (() => {
         const rows = _cache('relistened');
         if (!rows || !rows.length) return _emptySection('relistened', 'No data yet — run `mdb stats refresh`.');
 
-        const cards = rows.map(({ id, title, artist, art_url, release_id, n }) => {
-            const href  = release_id ? `?view=release&id=${encodeURIComponent(release_id)}` : '#';
+        const cards = rows.map(({ id, title, artist, art_url, release_id, n, release_slug }) => {
+            const href  = release_id ? releaseHref(release_id, release_slug) : '#';
             const thumb = art_url || getFallbackImageUrl();
             const sub   = artist ? `${escapeHtml(artist)} · ${formatNumber(n)} plays` : `${formatNumber(n)} plays`;
             return `<a href="${href}" class="lang-expand-card lang-expand-card-wide">
@@ -383,8 +387,8 @@ const ViewStats = (() => {
         const rows = _cache('cert');
         if (!rows || !rows.length) return _emptySection('cert', 'No data yet — run `mdb certs refresh`.');
 
-        const pills = rows.map(({ id, name, cert }) => `
-                <a href="?view=artist&id=${encodeURIComponent(id)}" class="badge-cert badge-cert-${cert}"
+        const pills = rows.map(({ id, name, cert, slug }) => `
+                <a href="${artistHref(id, slug)}" class="badge-cert badge-cert-${cert}"
                    title="${escapeHtml(CERT_LABELS[cert] || cert)}" style="text-decoration:none;width:auto;margin:0.15rem;display:inline-flex;gap:0.35rem">
                     ${escapeHtml(name)}
                 </a>`).join('');
@@ -398,6 +402,22 @@ const ViewStats = (() => {
     // computations get the same precomputed-cache treatment as everything
     // else on this page — the "every year artists" query in particular
     // scans all of listens/track_artists on every home-page load otherwise) ──
+    function _everyYearSection() {
+        const n = _cache('nerd');
+        if (!n || !n.every_year_artists.length) return '';
+
+        const cards = n.every_year_artists.map(a => `
+                <a href="${artistHref(a.id, a.slug)}" class="lang-expand-card">
+                    <div class="lang-expand-thumb rounded" style="background-image:url('${cssUrl(a.img || getFallbackImageUrl())}')"></div>
+                    <div class="lang-expand-name">${escapeHtml(a.name)}</div>
+                </a>`).join('');
+
+        return `<section class="stat-section">
+            ${_sectionHeader('everyYear')}
+            <div class="lang-expand lang-expand-static">${cards}</div>
+        </section>`;
+    }
+
     function _nerdSection() {
         const n = _cache('nerd');
         if (!n) return _emptySection('nerd', 'No data yet — run `mdb stats refresh`.');
@@ -414,18 +434,9 @@ const ViewStats = (() => {
             ['Artist cutover point', days(n.artist_cutover)],
         ];
 
-        const everyYearHtml = n.every_year_artists.length ? `
-            <div class="lang-expand-static" style="margin-top:1rem">
-                ${n.every_year_artists.map(a => `
-                    <a href="?view=artist&id=${encodeURIComponent(a.id)}" class="lang-expand-card">
-                        <div class="lang-expand-name" style="font-size:0.75rem">${escapeHtml(a.name)}</div>
-                    </a>`).join('')}
-            </div>` : '';
-
         return `<section class="stat-section">
             ${_sectionHeader('nerd')}
             ${_statCards(cards)}
-            ${everyYearHtml}
         </section>`;
     }
 
@@ -473,6 +484,10 @@ const ViewStats = (() => {
 
             <div class="insights-group">
                 ${_certSpotlightSection()}
+            </div>
+
+            <div class="insights-group">
+                ${_everyYearSection()}
             </div>
 
             <div class="insights-group">

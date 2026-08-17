@@ -43,7 +43,7 @@ import hashlib
 import getpass
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.rule import Rule
@@ -6302,7 +6302,7 @@ def cmd_certs_refresh(args):
 def _drill_artists(conn, extra_where, params=()):
     rows = conn.execute(f'''
         SELECT a.id, a.name, COALESCE(a.image_thumb_url, a.image_url) as image_url,
-               COUNT(l.id) as total_listens
+               COUNT(l.id) as total_listens, a.slug
         FROM artists a
         JOIN track_artists ta ON a.id = ta.artist_id AND ta.role = 'main'
         JOIN tracks t ON ta.track_id = t.id AND t.hidden = 0
@@ -6312,13 +6312,13 @@ def _drill_artists(conn, extra_where, params=()):
         ORDER BY total_listens DESC
         LIMIT 4
     ''', params).fetchall()
-    return [[r['id'], r['name'], r['image_url'], r['total_listens']] for r in rows]
+    return [[r['id'], r['name'], r['image_url'], r['total_listens'], r['slug']] for r in rows]
 
 
 def _drill_albums(conn, extra_where, params=()):
     rows = conn.execute(f'''
         SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
-               COUNT(l.id) as total_listens
+               COUNT(l.id) as total_listens, r.slug
         FROM releases r
         JOIN tracks t ON t.release_id = r.id AND t.hidden = 0
         JOIN listens l ON l.track_id = t.id
@@ -6328,7 +6328,7 @@ def _drill_albums(conn, extra_where, params=()):
         ORDER BY total_listens DESC
         LIMIT 4
     ''', params).fetchall()
-    return [[r['id'], r['title'], r['art_url'], r['total_listens']] for r in rows]
+    return [[r['id'], r['title'], r['art_url'], r['total_listens'], r['slug']] for r in rows]
 
 
 def _drill(conn, kind, extra_where, params, n):
@@ -6544,7 +6544,8 @@ def cmd_stats_refresh(args):
             SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
                    t.title as track_title,
                    EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id) as heard,
-                   (SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) as track_listens
+                   (SELECT COUNT(*) FROM listens l WHERE l.track_id = t.id) as track_listens,
+                   r.slug
             FROM releases r
             JOIN tracks t ON t.release_id = r.id
             LEFT JOIN artists a ON a.id = r.primary_artist_id
@@ -6555,7 +6556,7 @@ def cmd_stats_refresh(args):
         by_release: dict = {}
         for r in raw_rows:
             entry = by_release.setdefault(
-                r['id'], {'title': r['title'], 'art_url': r['art_url'],
+                r['id'], {'title': r['title'], 'art_url': r['art_url'], 'slug': r['slug'],
                           'groups': {}, 'total_listens': 0})
             key = same_song_key(r['track_title'])
             entry['groups'][key] = entry['groups'].get(key, False) or bool(r['heard'])
@@ -6567,7 +6568,7 @@ def cmd_stats_refresh(args):
             heard = sum(1 for v in entry['groups'].values() if v)
             if heard > 0 and heard < total and entry['total_listens'] > 0:
                 completion.append({
-                    'id': rid, 'title': entry['title'], 'total': total,
+                    'id': rid, 'title': entry['title'], 'total': total, 'slug': entry['slug'],
                     'heard': heard, 'listens': entry['total_listens'],
                 })
         completion.sort(key=lambda c: c['listens'], reverse=True)
@@ -6578,10 +6579,10 @@ def cmd_stats_refresh(args):
         # doesn't crowd out the rest of the list) ─────────────────────────
         t0 = time.perf_counter()
         relistened_rows = conn.execute('''
-            SELECT id, title, artist_name, art_url, release_id, total_listens FROM (
+            SELECT id, title, artist_name, art_url, release_id, total_listens, release_slug FROM (
                 SELECT t.id, t.title, a.name as artist_name,
                        COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
-                       r.id as release_id, COUNT(l.id) as total_listens,
+                       r.id as release_id, COUNT(l.id) as total_listens, r.slug as release_slug,
                        ROW_NUMBER() OVER (
                            PARTITION BY t.release_id ORDER BY COUNT(l.id) DESC
                        ) as release_rank
@@ -6598,7 +6599,7 @@ def cmd_stats_refresh(args):
         ''').fetchall()
         cache['relistened'] = [
             {'id': r['id'], 'title': r['title'], 'artist': r['artist_name'], 'art_url': r['art_url'],
-             'release_id': r['release_id'], 'n': r['total_listens']}
+             'release_id': r['release_id'], 'n': r['total_listens'], 'release_slug': r['release_slug']}
             for r in relistened_rows
         ]
         _vlog('relistened', cache['relistened'], t0)
@@ -6618,9 +6619,9 @@ def cmd_stats_refresh(args):
         t0 = time.perf_counter()
         cert_order = {'diamond': 0, 'platinum': 1, 'gold': 2}
         cert_rows = sorted(
-            conn.execute("SELECT id, name, cert FROM artists WHERE cert IS NOT NULL").fetchall(),
+            conn.execute("SELECT id, name, cert, slug FROM artists WHERE cert IS NOT NULL").fetchall(),
             key=lambda r: cert_order.get(r['cert'], 99))
-        cache['cert'] = [{'id': r['id'], 'name': r['name'], 'cert': r['cert']} for r in cert_rows]
+        cache['cert'] = [{'id': r['id'], 'name': r['name'], 'cert': r['cert'], 'slug': r['slug']} for r in cert_rows]
         _vlog('cert', cache['cert'], t0)
 
         # ── Stats for Nerds (currently live in views/home.js) ────────────
@@ -6670,7 +6671,7 @@ def cmd_stats_refresh(args):
                 SELECT artist_id, COUNT(DISTINCT yr) AS yrs FROM artist_years
                 GROUP BY artist_id HAVING yrs = (SELECT n FROM total_years)
             )
-            SELECT a.id, a.name, (SELECT n FROM total_years) AS total_yrs
+            SELECT a.id, a.name, a.image_url, a.slug, (SELECT n FROM total_years) AS total_yrs
             FROM every_year ey JOIN artists a ON a.id = ey.artist_id
             WHERE a.hidden = 0 ORDER BY a.name
         ''').fetchall()
@@ -6717,7 +6718,7 @@ def cmd_stats_refresh(args):
             'peak_month_count': peak_row['cnt'] if peak_row else 0,
             'one_hit_wonders': ohw_row['ohw'] or 0,
             'one_hit_wonders_total': ohw_row['total'] or 0,
-            'every_year_artists': [{'id': r['id'], 'name': r['name']} for r in ey_rows],
+            'every_year_artists': [{'id': r['id'], 'name': r['name'], 'img': r['image_url'], 'slug': r['slug']} for r in ey_rows],
             'every_year_total_years': ey_rows[0]['total_yrs'] if ey_rows else 0,
             'eddington': edd_row['eddington'] if edd_row else 0,
             'artist_cutover': cutover_row['cutover'] if cutover_row else 0,
@@ -6780,7 +6781,7 @@ def cmd_stats_refresh(args):
                 SELECT cle.rank, cle.artist_name, cle.album_title, cle.year, cle.release_id,
                        cle.position_label,
                        r.title as release_title, r.album_art_thumb_url, r.album_art_url,
-                       r.primary_artist_id, r.release_year,
+                       r.primary_artist_id, r.release_year, r.slug as release_slug,
                        EXISTS (
                            SELECT 1 FROM tracks t JOIN listens l ON l.track_id = t.id
                            WHERE t.release_id = r.id
@@ -6818,6 +6819,7 @@ def cmd_stats_refresh(args):
                 'entries': [{
                     'rank': e['rank'], 'artist': e['artist_name'], 'album': e['album_title'],
                     'year': e['year'] or e['release_year'], 'release_id': e['release_id'],
+                    'release_slug': e['release_slug'],
                     'position_label': e['position_label'],
                     'title': e['release_title'] or e['album_title'],
                     'art': e['album_art_thumb_url'] or e['album_art_url'],
@@ -7171,6 +7173,14 @@ def _dedup_find_groups(cur) -> list[list[dict]]:
     groups: list = []
     for releases in list(by_key.values()) + list(by_rg.values()):
         if len(releases) < 2:
+            continue
+        # by_rg groups purely on a shared release_group_mbid, with no artist
+        # check at all — bad MusicBrainz data (or an import bug) could in
+        # principle put two different artists' releases in the same RG and
+        # get silently offered as a "duplicate" to merge. by_key is already
+        # artist-scoped and can't hit this; guard the by_rg path explicitly.
+        artist_ids = {r['primary_artist_id'] for r in releases}
+        if len(artist_ids) > 1:
             continue
         id_set = frozenset(r['id'] for r in releases)
         if id_set in seen:
@@ -7575,6 +7585,18 @@ def cmd_dedup(args):
         f'  [bold]{len(groups)}[/bold] duplicate group(s)'
         + (f'  ·  [dim]filtering: {only_artist}[/dim]' if only_artist else '')
     )
+
+    # Read-only mode: list candidate groups and exit — never enters the
+    # interactive merge loop, never touches the DB. Safe for automation/CI
+    # to run unattended, unlike the interactive mode (see Known Issues in
+    # the discography-buildout skill for why that distinction matters).
+    if getattr(args, 'report', False):
+        for gi, group in enumerate(groups, 1):
+            artist = group[0].get('artist_name') or '(no artist)'
+            console.print(f'  [bold]{gi}.[/bold] {artist} — {group[0]["title"]!r}  [dim]({len(group)} releases)[/dim]')
+            for r in group:
+                console.print(f'      {r["id"]}  [dim]{r["type"] or "?"}[/dim]  tracks={r["track_count"]} listens={r["listen_count"]}')
+        return
 
     merged = skipped = linked = 0
 
@@ -8152,12 +8174,19 @@ def cmd_audit_matches(args):
             params.append(args.release_id)
 
         if args.since:
-            since_ts = _parse_user_date(args.since)
-            if since_ts is None:
+            # _parse_user_date returns a normalized YYYY / YYYY-MM / YYYY-MM-DD
+            # *string*, not a timestamp — pad partial dates to the 1st and
+            # convert to a UTC epoch second to compare against listens.timestamp,
+            # which is always stored as UTC epoch (see sync.py).
+            since_str = _parse_user_date(args.since)
+            if since_str is None:
                 console.print(f'[red]Could not parse --since date:[/red] {args.since}')
                 sys.exit(1)
+            parts = since_str.split('-')
+            padded = parts + ['01'] * (3 - len(parts))
+            since_dt = datetime(int(padded[0]), int(padded[1]), int(padded[2]), tzinfo=timezone.utc)
             where.append('l.timestamp >= ?')
-            params.append(int(since_ts))
+            params.append(int(since_dt.timestamp()))
 
         rows = cur.execute(f'''
             SELECT l.id as listen_id, l.raw_artist_name, l.raw_track_name,
@@ -8386,6 +8415,7 @@ def cmd_admin_pin(args):
 
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser(
         prog='mdb',
         description='Music database import and enrichment tool',
@@ -8777,6 +8807,8 @@ def main():
 
     p_dedup = sub.add_parser('dedup', help='Find and resolve duplicate releases interactively')
     p_dedup.add_argument('--artist', metavar='NAME', help='Limit to a specific artist')
+    p_dedup.add_argument('--report', action='store_true',
+        help='List candidate duplicate groups and exit — read-only, no prompts, safe for automation/CI')
     p_dedup.add_argument('--db',     metavar='PATH', help='Path to master.sqlite')
     p_dedup.set_defaults(func=cmd_dedup)
 

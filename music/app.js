@@ -8,6 +8,7 @@ const VIEWS = {
     'year':            () => ViewYear,
     'top':             () => ViewTop,
     'artist':          () => ViewArtist,
+    'compare':         () => ViewCompare,
     'release':         () => ViewRelease,
     'genre':           () => ViewGenre,
     'genres':          () => ViewGenres,
@@ -15,6 +16,7 @@ const VIEWS = {
     'history':         () => ViewHistory,
     'stats':           () => ViewStats,
     'list':            () => ViewList,
+    'soundtracks':     () => ViewSoundtracks,
 };
 
 function getParams() {

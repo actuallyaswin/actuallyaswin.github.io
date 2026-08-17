@@ -66,7 +66,84 @@ def slugify(text: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', text).strip('-')
 
 
-def unique_slug(base: str, existing: set) -> str:
+def latin_slug_base(name: str, mbid: 'str | None' = None) -> str:
+    """slugify(name), with a romanization fallback for non-Latin names (CJK, Cyrillic,
+    Hebrew, etc. all NFKD-strip to empty). Tries a MusicBrainz sort-name/alias lookup;
+    falls back to the empty string (caller decides what to do) if nothing is found."""
+    base = slugify(name)
+    if base:
+        return base
+    try:
+        from mdb_apis import _mb_get
+        mbid_local = mbid
+        if not mbid_local:
+            data = _mb_get('/artist', {'query': name, 'limit': 5})
+            for cand in data.get('artists', []):
+                if cand.get('name') == name:
+                    mbid_local = cand.get('id')
+                    break
+        if mbid_local:
+            data = _mb_get(f'/artist/{mbid_local}', {'inc': 'aliases'})
+            aliases = data.get('aliases', []) or []
+            primary_en = [a.get('name') for a in aliases if a.get('locale') == 'en' and a.get('primary')]
+            en_aliases  = [a.get('name') for a in aliases if a.get('locale') == 'en']
+            all_aliases = [a.get('name') for a in aliases]
+            sort_name   = data.get('sort-name')
+            if sort_name and ',' in sort_name:
+                # MB sort-names are "Last, First" — reverse to natural reading order.
+                last, _, first = sort_name.partition(',')
+                sort_name = f'{first.strip()} {last.strip()}'
+            candidates = primary_en + en_aliases + all_aliases + [sort_name]
+            for c in candidates:
+                if c:
+                    cand_slug = slugify(c)
+                    if cand_slug:
+                        return cand_slug
+    except Exception:
+        pass
+    return ''
+
+
+def latin_release_slug_base(title: str, mbid: 'str | None' = None) -> str:
+    """Like latin_slug_base, but for release titles — tries a MusicBrainz release-group
+    alias/title lookup (English locale preferred) when slugify(title) is empty."""
+    base = slugify(title)
+    if base:
+        return base
+    try:
+        from mdb_apis import _mb_get
+        rgid = None
+        if mbid:
+            data = _mb_get(f'/release/{mbid}', {'inc': 'release-groups'})
+            rgid = (data.get('release-group') or {}).get('id')
+        if not rgid:
+            data = _mb_get('/release-group', {'query': title, 'limit': 5})
+            for cand in data.get('release-groups', []):
+                if cand.get('title') == title:
+                    rgid = cand.get('id')
+                    break
+        if rgid:
+            data = _mb_get(f'/release-group/{rgid}', {'inc': 'aliases'})
+            aliases = data.get('aliases', []) or []
+            primary_en  = [a.get('name') for a in aliases if a.get('locale') == 'en' and a.get('primary')]
+            en_aliases  = [a.get('name') for a in aliases if a.get('locale') == 'en']
+            all_aliases = [a.get('name') for a in aliases]
+            candidates = primary_en + en_aliases + all_aliases + [data.get('title')]
+            for c in candidates:
+                if c:
+                    cand_slug = slugify(c)
+                    if cand_slug:
+                        return cand_slug
+    except Exception:
+        pass
+    return ''
+
+
+def unique_slug(base: str, existing: set, fallback: str = 'artist') -> str:
+    if not base:
+        # No Latin-derivable slug at all — use a short descriptive fallback instead of a
+        # bare, sequentially-incrementing "-2"/"-3" that reveals nothing about the entity.
+        base = fallback
     slug, n = base, 2
     while slug in existing:
         slug = f'{base}-{n}'
@@ -117,7 +194,6 @@ CREATE TABLE IF NOT EXISTS artists (
     updated_at     INTEGER,
     aoty_id        INTEGER,
     aoty_url       TEXT,
-    wikipedia_url  TEXT,
     type           TEXT,
     gender         TEXT,
     disambiguation TEXT
@@ -158,7 +234,6 @@ CREATE TABLE IF NOT EXISTS releases (
     apple_music_id     TEXT,
     aoty_id            INTEGER UNIQUE,
     aoty_url           TEXT,
-    wikipedia_url      TEXT,
     album_art_url      TEXT,
     album_art_source   TEXT,
     total_tracks       INTEGER,
@@ -305,7 +380,9 @@ CREATE TABLE IF NOT EXISTS release_soundtrack_meta (
     release_id        TEXT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
     source_type       TEXT CHECK(source_type IN ('film','video_game','tv_series','musical','podcast','other')),
     industry_region   TEXT,  -- ISO 3166-1 alpha-2 (US, IN, GB, JP, ES, ...)
-    original_language TEXT   -- ISO 639-1 (en, hi, ta, es, ja, ...)
+    original_language TEXT,  -- ISO 639-1 (en, hi, ta, es, ja, ...)
+    platform           TEXT, -- video_game only: console/platform, e.g. 'n64', 'ps2', 'switch', 'pc'
+    series              TEXT -- video_game only: franchise/series name, e.g. 'Ratchet & Clank'
 );
 CREATE TABLE IF NOT EXISTS collection_items (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -427,7 +504,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # indexes in SCHEMA that reference new columns find them already present.
     for ddl in [
         "ALTER TABLE releases ADD COLUMN release_group_mbid TEXT",
-        "ALTER TABLE releases ADD COLUMN wikipedia_url TEXT",
         "ALTER TABLE releases ADD COLUMN date_source TEXT",
         "ALTER TABLE releases ADD COLUMN aoty_score_critic INTEGER",
         "ALTER TABLE releases ADD COLUMN aoty_score_user REAL",
@@ -438,7 +514,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE artists ADD COLUMN mbid TEXT",
         "ALTER TABLE artists ADD COLUMN aoty_id INTEGER",
         "ALTER TABLE artists ADD COLUMN aoty_url TEXT",
-        "ALTER TABLE artists ADD COLUMN wikipedia_url TEXT",
         "ALTER TABLE artists ADD COLUMN slug TEXT",
         "ALTER TABLE artists ADD COLUMN type TEXT",
         "ALTER TABLE artists ADD COLUMN gender TEXT",
@@ -500,6 +575,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE releases ADD COLUMN album_art_height INTEGER",
         "ALTER TABLE releases ADD COLUMN album_art_thumb_width INTEGER",
         "ALTER TABLE releases ADD COLUMN album_art_thumb_height INTEGER",
+        "ALTER TABLE release_soundtrack_meta ADD COLUMN platform TEXT",
+        "ALTER TABLE release_soundtrack_meta ADD COLUMN series TEXT",
     ]:
         try:
             conn.execute(ddl)
@@ -794,7 +871,7 @@ def upsert_artist(cur, sp_artist: dict) -> 'tuple[str, bool]':
              now, row[0])
         )
         return row[0], False
-    base     = slugify(sp_artist['name'])
+    base     = latin_slug_base(sp_artist['name'])
     existing = {r[0] for r in cur.execute('SELECT slug FROM artists WHERE slug IS NOT NULL').fetchall()}
     slug     = unique_slug(base, existing)
     aid      = new_ulid()
@@ -846,10 +923,9 @@ def upsert_release(cur, sp_album: dict, primary_artist_id: str) -> 'tuple[str, b
         )
         return row['id'], False
 
-    base       = slugify(clean_title)
-    existing   = {r[0] for r in cur.execute(
-        'SELECT slug FROM releases WHERE primary_artist_id = ?', (primary_artist_id,)).fetchall()}
-    slug       = unique_slug(base, existing)
+    base       = latin_release_slug_base(clean_title)
+    existing   = {r[0] for r in cur.execute('SELECT slug FROM releases').fetchall()}
+    slug       = unique_slug(base, existing, fallback='release')
     release_id = new_ulid()
     cur.execute(
         'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
@@ -987,7 +1063,7 @@ def upsert_artist_mb(cur, mb_artist: dict) -> 'tuple[str, bool]':
         return row[0], False
 
     # New artist
-    base     = slugify(name)
+    base     = latin_slug_base(name, mbid=mbid)
     existing = {r[0] for r in cur.execute(
         'SELECT slug FROM artists WHERE slug IS NOT NULL').fetchall()}
     slug = unique_slug(base, existing)
@@ -1061,12 +1137,9 @@ def upsert_release_mb(cur, mb_data: dict, primary_artist_id: 'str | None',
             )
         return row['id'], False
 
-    base     = slugify(title)
-    existing = {r[0] for r in cur.execute(
-        'SELECT slug FROM releases WHERE primary_artist_id IS ?',
-        (primary_artist_id,),
-    ).fetchall()}
-    slug       = unique_slug(base, existing)
+    base     = latin_release_slug_base(title, mbid=mbid)
+    existing = {r[0] for r in cur.execute('SELECT slug FROM releases').fetchall()}
+    slug       = unique_slug(base, existing, fallback='release')
     release_id = new_ulid()
     cur.execute(
         'INSERT INTO releases (id, slug, title, primary_artist_id, type, type_secondary,'
@@ -1123,11 +1196,9 @@ def upsert_release_beatport(cur, beatport_id: int, title: str,
         return release_id, False
 
     rel_year   = int(date_raw[:4]) if date_raw and date_raw[:4].isdigit() else None
-    base       = slugify(title)
-    existing   = {r[0] for r in cur.execute(
-        'SELECT slug FROM releases WHERE primary_artist_id IS ?', (primary_artist_id,)
-    ).fetchall()}
-    slug       = unique_slug(base, existing)
+    base       = latin_release_slug_base(title)
+    existing   = {r[0] for r in cur.execute('SELECT slug FROM releases').fetchall()}
+    slug       = unique_slug(base, existing, fallback='release')
     release_id = new_ulid()
     cur.execute(
         'INSERT INTO releases (id, slug, title, primary_artist_id, type,'
@@ -1734,13 +1805,17 @@ def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
     from mdb_strings import normalize_text
 
     # Build lookup: (norm_artist, norm_album, norm_track) -> track_id
-    rows = conn.execute('''
+    # release_artists only holds explicit collab/split credits; most releases
+    # hang their artist off primary_artist_id instead, so both sources are
+    # needed here — joining on release_artists alone silently skipped nearly
+    # every ordinary single-primary-artist release in the catalog.
+    rows = conn.execute(f'''
         SELECT t.id, t.title, r.title AS release_title,
                a.name AS artist_name
         FROM   tracks t
         JOIN   releases r ON r.id = t.release_id
-        JOIN   release_artists ra ON ra.release_id = r.id
-        JOIN   artists a ON a.id = ra.artist_id
+        JOIN   {_RELEASE_CREDITS_SQL} rex ON rex.release_id = r.id
+        JOIN   artists a ON a.id = rex.artist_id
         WHERE  t.hidden = 0 AND r.hidden = 0
     ''').fetchall()
 

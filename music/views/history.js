@@ -113,14 +113,16 @@ const ViewHistory = (() => {
 
     function _buildRow(r) {
         // r: [id, timestamp, source, ms_played, raw_track, raw_artist, raw_album,
-        //     track_id, track_title, release_id, release_title, art, artist_id, artist_name]
+        //     track_id, track_title, release_id, release_title, art, artist_id, artist_name,
+        //     release_slug, artist_slug]
         const [id, ts, source, ms, rawTrack, rawArtist, rawAlbum,
-               trackId, trackTitle, releaseId, releaseTitle, art, artistId, artistName] = r;
+               trackId, trackTitle, releaseId, releaseTitle, art, artistId, artistName,
+               releaseSlug, artistSlug] = r;
 
         const matched = !!trackId;
         const el = document.createElement(matched && releaseId ? 'a' : 'div');
         el.className = 'recent-play-row history-row' + (matched ? '' : ' history-unmatched');
-        if (matched && releaseId) el.href = `?view=release&id=${encodeURIComponent(releaseId)}`;
+        if (matched && releaseId) el.href = releaseHref(releaseId, releaseSlug);
         el.style.height = ROW_H + 'px';
         el.style.boxSizing = 'border-box';
 
@@ -164,7 +166,8 @@ const ViewHistory = (() => {
                    t.title,
                    r.id, r.title,
                    COALESCE(r.album_art_thumb_url, r.album_art_url),
-                   a.id, a.name
+                   a.id, a.name,
+                   r.slug, a.slug
             FROM listens l
             LEFT JOIN tracks t  ON l.track_id = t.id
             LEFT JOIN releases r ON r.id = t.release_id
@@ -215,13 +218,13 @@ const ViewHistory = (() => {
         })();
 
         // Top releases (by listens count in current view)
-        const relCount = {}, relName = {};
-        _rows.forEach(r => { if (r[9]) { relCount[r[9]] = (relCount[r[9]]||0)+1; relName[r[9]] = r[10]; }});
+        const relCount = {}, relName = {}, relSlug = {};
+        _rows.forEach(r => { if (r[9]) { relCount[r[9]] = (relCount[r[9]]||0)+1; relName[r[9]] = r[10]; relSlug[r[9]] = r[14]; }});
         const topReleases = Object.entries(relCount).sort(([,a],[,b])=>b-a).slice(0,5);
 
         // Top artists
-        const artCount = {}, artName = {};
-        _rows.forEach(r => { if (r[12]) { artCount[r[12]] = (artCount[r[12]]||0)+1; artName[r[12]] = r[13]; }});
+        const artCount = {}, artName = {}, artSlug = {};
+        _rows.forEach(r => { if (r[12]) { artCount[r[12]] = (artCount[r[12]]||0)+1; artName[r[12]] = r[13]; artSlug[r[12]] = r[15]; }});
         const topArtists = Object.entries(artCount).sort(([,a],[,b])=>b-a).slice(0,5);
 
         const fmt = n => n.toLocaleString();
@@ -247,7 +250,7 @@ const ViewHistory = (() => {
                 ${topReleases.map(([id, n], i) => `
                     <div class="sidebar-row">
                         <span class="track-rank">${i+1}</span>
-                        <a class="sidebar-row-name" href="?view=release&id=${encodeURIComponent(id)}">${escapeHtml(relName[id]||id)}</a>
+                        <a class="sidebar-row-name" href="${releaseHref(id, relSlug[id])}">${escapeHtml(relName[id]||id)}</a>
                         <span class="sidebar-row-count">${n}</span>
                     </div>`).join('')}
             </div>` : ''}
@@ -256,7 +259,7 @@ const ViewHistory = (() => {
                 ${topArtists.map(([id, n], i) => `
                     <div class="sidebar-row">
                         <span class="track-rank">${i+1}</span>
-                        <a class="sidebar-row-name" href="?view=artist&id=${encodeURIComponent(id)}">${escapeHtml(artName[id]||id)}</a>
+                        <a class="sidebar-row-name" href="${artistHref(id, artSlug[id])}">${escapeHtml(artName[id]||id)}</a>
                         <span class="sidebar-row-count">${n}</span>
                     </div>`).join('')}
             </div>` : ''}

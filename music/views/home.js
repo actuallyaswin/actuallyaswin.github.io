@@ -166,7 +166,7 @@ const ViewHome = (() => {
         // Singles and one-off compilations aren't "discoveries", and a release
         // needs a few plays before it counts as one.
         const found = _db.exec(`
-            SELECT r.id, r.title, a.id, a.name
+            SELECT r.id, r.title, a.id, a.name, r.slug, a.slug
             FROM releases r
             LEFT JOIN artists a ON a.id = r.primary_artist_id
             WHERE r.hidden = 0
@@ -178,10 +178,10 @@ const ViewHome = (() => {
         `)[0];
         let find = null;
         if (found) {
-            const [rid, rtitle, aid, aname] = found.values[0];
-            find = `<a href="?view=release&id=${encodeURIComponent(rid)}">${escapeHtml(rtitle)}</a>`;
+            const [rid, rtitle, aid, aname, rslug, aslug] = found.values[0];
+            find = `<a href="${releaseHref(rid, rslug)}">${escapeHtml(rtitle)}</a>`;
             if (aname) {
-                find += ` by <a href="?view=artist&id=${encodeURIComponent(aid)}">${escapeHtml(aname)}</a>`;
+                find += ` by <a href="${artistHref(aid, aslug)}">${escapeHtml(aname)}</a>`;
             }
         }
 
@@ -240,8 +240,8 @@ const ViewHome = (() => {
                 });
             }
             if (list) {
-                list.innerHTML = artists.map(({ id, name }) =>
-                    `<li><a href="?view=artist&id=${encodeURIComponent(id)}">${escapeHtml(name)}</a></li>`
+                list.innerHTML = artists.map(({ id, name, slug }) =>
+                    `<li><a href="${artistHref(id, slug)}">${escapeHtml(name)}</a></li>`
                 ).join('');
             }
         }
@@ -258,7 +258,7 @@ const ViewHome = (() => {
     function loadWeeklyReleases() {
         const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
         const result = _db.exec(`
-            SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url, a.name as artist_name, COUNT(l.id) as plays
+            SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url, a.name as artist_name, COUNT(l.id) as plays, r.slug
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON t.release_id = r.id
@@ -278,8 +278,8 @@ const ViewHome = (() => {
         container.className = 'collage-grid';
         container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
 
-        result.values.forEach(([id, title, albumArtUrl, artistName]) => {
-            const card = createImageCard({ href: `?view=release&id=${encodeURIComponent(id)}`, imageUrl: albumArtUrl });
+        result.values.forEach(([id, title, albumArtUrl, artistName, plays, slug]) => {
+            const card = createImageCard({ href: releaseHref(id, slug), imageUrl: albumArtUrl });
             card.title = title + (artistName ? ` · ${artistName}` : '');
             container.appendChild(card);
         });
@@ -295,7 +295,8 @@ const ViewHome = (() => {
                 a.name as artist_name,
                 l.timestamp,
                 r.id as release_id,
-                r.title as release_title
+                r.title as release_title,
+                r.slug as release_slug
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             LEFT JOIN releases r ON t.release_id = r.id
@@ -313,7 +314,7 @@ const ViewHome = (() => {
         // otherwise an album played straight through reads as a stuck/glitched
         // list rather than genuine recent activity.
         const groups = [];
-        result.values.forEach(([trackTitle, albumArtUrl, artistName, timestamp, releaseId, releaseTitle]) => {
+        result.values.forEach(([trackTitle, albumArtUrl, artistName, timestamp, releaseId, releaseTitle, releaseSlug]) => {
             const last = groups[groups.length - 1];
             const key = releaseId || `track:${trackTitle}`;
             if (last && last.key === key) {
@@ -322,7 +323,7 @@ const ViewHome = (() => {
             } else {
                 groups.push({
                     key, trackTitle, albumArtUrl, artistName, timestamp,
-                    releaseId, releaseTitle, count: 1, tracks: [trackTitle],
+                    releaseId, releaseTitle, releaseSlug, count: 1, tracks: [trackTitle],
                 });
             }
         });
@@ -338,7 +339,7 @@ const ViewHome = (() => {
                 (g.releaseTitle && g.count === 1) ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(g.releaseTitle)}` : null,
             ].filter(Boolean).join(' · ');
             const tag = g.releaseId ? 'a' : 'div';
-            const hrefAttr = g.releaseId ? ` href="?view=release&id=${encodeURIComponent(g.releaseId)}"` : '';
+            const hrefAttr = g.releaseId ? ` href="${releaseHref(g.releaseId, g.releaseSlug)}"` : '';
             return `
                 <${tag} class="recent-play-row"${hrefAttr}>
                     <div class="recent-play-thumb" style="background-image: url('${cssUrl(imgSrc)}')"></div>
@@ -366,7 +367,7 @@ const ViewHome = (() => {
 
         const result = _db.exec(`
             SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url), a.name, r.release_year,
-                   COUNT(l.id) plays
+                   COUNT(l.id) plays, r.slug
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             JOIN releases r ON r.id = t.release_id
@@ -383,12 +384,12 @@ const ViewHome = (() => {
         for (let i = 0; i < Math.min(SHELF_DESKTOP, pool.length); i++)
             picked.push(pool[(start + i) % pool.length]);
 
-        grid.innerHTML = picked.map(([id, title, art, artist, year]) => {
+        grid.innerHTML = picked.map(([id, title, art, artist, year, plays, slug]) => {
             const img = art
                 ? `<div class="disc-card-img" style="background-image:url('${cssUrl(art)}')"></div>`
                 : `<div class="disc-card-img" style="background:var(--bg-tertiary)"></div>`;
             const sub = [artist, year].filter(Boolean).join(' · ');
-            return `<a class="disc-card" href="?view=release&id=${encodeURIComponent(id)}">
+            return `<a class="disc-card" href="${releaseHref(id, slug)}">
                 ${img}
                 <div class="disc-card-meta"><div class="disc-card-info">
                     <div class="disc-card-title">${escapeHtml(title || '')}</div>
