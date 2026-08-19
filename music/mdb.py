@@ -313,11 +313,13 @@ def _import_wiki_step(db_path, release_id, release_title, artist_name):
             (release_id,)
         ).fetchone()
         if not row or not row['mbid']:
-            return  # silent — no MBID
+            # silent — no MBID
+            return
         rtype = (row['type'] or '').lower()
         rsec  = (row['type_secondary'] or '').lower()
         if rtype == 'single' or rsec in ('remix', 'dj-mix'):
-            return  # silent — singles/remixes skip Wikipedia
+            # silent — singles/remixes skip Wikipedia
+            return
         mbid         = row['mbid']
         release_year = (row['release_date'] or '')[:4] or None
         candidates, wiki_page_id = fetch_date_candidates(
@@ -355,7 +357,8 @@ class DBRelease:
         if not row:
             raise ValueError(f'Release not found in DB: {raw!r}')
         self._row    = dict(row)
-        self._tracks = None  # lazy
+        # lazy
+        self._tracks = None
 
     def __del__(self):
         if self._owns_conn:
@@ -736,7 +739,8 @@ def _extract_upc_from_initial(source: str, obj) -> 'str | None':
         return obj.upc if hasattr(obj, 'upc') else None
     if source == 'dz':
         return obj.upc if hasattr(obj, 'upc') else None
-    return None  # 'am' — iTunes API doesn't return UPC in lookup response
+    # 'am' — iTunes API doesn't return UPC in lookup response
+    return None
 
 
 def _discover_sources(
@@ -993,7 +997,8 @@ def _build_enrich_diff(cur, release_id: str, mdb_r: MDBRelease, mdb_tracks: list
 
     # Track-level enrichments — collect preview data for bpm/key rows
     bp_new = mx_new = gn_new = 0
-    bpm_preview: list = []   # [(track_number, display_title, bpm, key, camelot)]
+    # [(track_number, display_title, bpm, key, camelot)]
+    bpm_preview: list = []
     for t in mdb_tracks:
         if not t.isrc:
             continue
@@ -1070,7 +1075,8 @@ def _show_enrich_diff(mdb_r: MDBRelease, diffs: list, source_data: dict) -> None
             else:
                 bpms     = sorted({bpm for _, _, bpm, _, _ in preview if bpm})
                 keys     = [k for _, _, _, k, _ in preview if k]
-                unique_k = list(dict.fromkeys(keys))   # preserve order, deduplicate
+                # preserve order, deduplicate
+                unique_k = list(dict.fromkeys(keys))
                 bpm_str  = (f'{bpms[0]} bpm' if len(bpms) == 1
                             else f'{bpms[0]}–{bpms[-1]} bpm') if bpms else ''
                 key_str  = ', '.join(unique_k[:5])
@@ -1106,7 +1112,8 @@ def _select_variants_unified(
     """Show MB release-group variants and offer interactive import."""
     all_releases = mb_fetch_release_group_releases(rg_mbid)
     if len(all_releases) <= 1:
-        return  # nothing to show beyond the release we just imported
+        # nothing to show beyond the release we just imported
+        return
 
     with managed_db(db_path) as conn:
         in_db: list[tuple] = []
@@ -1156,7 +1163,8 @@ def _select_variants_unified(
     # 3. Deduplicate regional variants within the remaining candidate list:
     #    same title + same track count = same music, different pressing region.
     #    Keep the worldwide (XW) release if present, otherwise the earliest date.
-    seen: dict = {}   # (norm_title, track_count) → index in deduped
+    # (norm_title, track_count) → index in deduped
+    seen: dict = {}
     deduped: list = []
     for c in candidates:
         mbid_r, title, date, status, country, n = c
@@ -1305,8 +1313,10 @@ def _select_variants_unified(
     if not raw:
         return
 
-    selected_mbids: list[str] = []   # candidates to import from MB
-    direct_links:   list[str] = []   # existing DB IDs to link directly
+    # candidates to import from MB
+    selected_mbids: list[str] = []
+    # existing DB IDs to link directly
+    direct_links:   list[str] = []
 
     _ulid_re = re.compile(r'^[0-9A-Z]{26}$')
     for token in raw.replace(',', ' ').split():
@@ -1601,7 +1611,8 @@ def import_album_unified(
                             use_aoty=use_aoty,
                             use_wiki=use_wiki,
                             no_gtin=no_gtin,
-                            no_variants=True,   # avoid recursive variant prompts
+                            # avoid recursive variant prompts
+                            no_variants=True,
                             auto=True,
                         )
                         # Now absorb current album as variant of the freshly imported canonical
@@ -1740,7 +1751,8 @@ def cmd_import(args):
     seq    = 0
 
     for group in groups:
-        group_results = []  # (release_id, title, release_date) or None per entry
+        # (release_id, title, release_date) or None per entry
+        group_results = []
 
         for entry in group:
             seq += 1
@@ -1889,7 +1901,8 @@ def cmd_discography(args):
                 if releases:
                     releases_sorted = sorted(releases, key=mb_canonical_score)
                     canonical_r = releases_sorted[0]
-                    import_url = canonical_r.get('id')  # bare MBID
+                    # bare MBID
+                    import_url = canonical_r.get('id')
                     if not import_url:
                         console.print(f'      [yellow]Wikipedia → RG found but no release MBID[/yellow]')
                 else:
@@ -1931,8 +1944,10 @@ def cmd_discography(args):
                 use_aoty=use_aoty,
                 use_wiki=use_wiki,
                 no_gtin=False,
-                no_variants=True,   # never prompt for variants in batch mode
-                auto=True,          # apply enrichment without prompting
+                # never prompt for variants in batch mode
+                no_variants=True,
+                # apply enrichment without prompting
+                auto=True,
             )
 
             # Apply manual date override if provided and more precise than what was stored
@@ -1984,7 +1999,8 @@ def _image_dims(data: bytes) -> 'tuple | None':
             return None
         w, h = struct.unpack('>II', data[16:24])
         return (w, h)
-    if data[:2] == b'\xff\xd8':  # JPEG
+    # JPEG
+    if data[:2] == b'\xff\xd8':
         i = 2
         while i + 4 <= len(data):
             if data[i] != 0xFF:
@@ -2398,7 +2414,8 @@ def cmd_enrich_aoty(args):
                                        (entry[0],)).fetchone()
                 cached_url = cached[0] if cached else None
                 if cached_url == 'not_found':
-                    cached_url = None  # treat sentinel as no cache; do a fresh search
+                    # treat sentinel as no cache; do a fresh search
+                    cached_url = None
                 return executor.submit(fetch_aoty_data, entry[1], entry[3], cached_url)
 
             with ThreadPoolExecutor(max_workers=AOTY_AHEAD) as executor:
@@ -2739,7 +2756,8 @@ def cmd_enrich_deezer_links(args):
         console.print(f'[dim]{len(rows)} releases without Deezer link, processing {len(queue)}[/dim]\n')
 
         # ── Phase 1: batch-fetch UPCs from Spotify (for rows where upc IS NULL) ─
-        sp_upc: dict[str, str] = {}   # release_id → upc
+        # release_id → upc
+        sp_upc: dict[str, str] = {}
         sp_rows = [(r['id'], r['spotify_id']) for r in queue
                    if r['spotify_id'] and not r['upc']]
         if sp_rows:
@@ -3062,7 +3080,8 @@ def cmd_enrich_apple_verify(args):
             unmatched += 1
         conn.commit()
 
-        flagged = []  # (row, status) needing the UPC pass below
+        # (row, status) needing the UPC pass below
+        flagged = []
 
         for chunk_start in range(0, len(with_id), 100):
             chunk = with_id[chunk_start:chunk_start + 100]
@@ -3082,7 +3101,8 @@ def cmd_enrich_apple_verify(args):
             for r in chunk:
                 info = by_id.get(str(r['apple_music_id']))
                 if not info:
-                    status = 'needs_review'  # ID no longer resolves — dead/delisted
+                    # ID no longer resolves — dead/delisted
+                    status = 'needs_review'
                 else:
                     apple_title, apple_artist = info
                     match = (_norm(r['title']) == _norm(apple_title) and
@@ -3298,7 +3318,8 @@ def cmd_enrich_apple_review(args):
             conn.execute("UPDATE apple_match_status SET status=?, checked_at=? WHERE release_id=?",
                          (status, ts, release_id))
 
-        last_undo = None  # (title, release_id, prev_apple_music_id, prev_art_url, prev_art_source, prev_status)
+        # (title, release_id, prev_apple_music_id, prev_art_url, prev_art_source, prev_status)
+        last_undo = None
         reviewed = fixed = kept = skipped = no_match = 0
         try:
             for i in range(len(rows)):
@@ -3343,7 +3364,8 @@ def cmd_enrich_apple_review(args):
                                        f'[dim]apple_music_id restored to {u_am_id or "(none)"}, '
                                        f'status restored to {u_status}[/dim]\n')
                         last_undo = None
-                        continue  # re-show the same item, decision not yet made
+                        # re-show the same item, decision not yet made
+                        continue
 
                     break
 
@@ -3419,7 +3441,8 @@ def cmd_enrich_apple_review(args):
                     else:
                         skipped += 1
                 else:
-                    skipped += 1  # 's' or anything unrecognized — leave queued for next time
+                    # 's' or anything unrecognized — leave queued for next time
+                    skipped += 1
                 reviewed += 1
         finally:
             stop.set()
@@ -4349,7 +4372,8 @@ def cmd_enrich_artists(args):
                             updates = {col: data[key] for key, col in _MB_COL_MAP.items() if key in data}
                             if wiki_url:
                                 upsert_external_link(conn, EL_ARTIST, artist['id'], EL_SVC_WIKIPEDIA, wiki_url)
-                            updates['mb_attempted'] = 1  # mark done regardless of whether fields changed
+                            # mark done regardless of whether fields changed
+                            updates['mb_attempted'] = 1
                             updates['updated_at'] = now
                             set_clause = ', '.join(f'{k} = ?' for k in updates)
                             conn.execute(f'UPDATE artists SET {set_clause} WHERE id = ?',
@@ -4363,7 +4387,8 @@ def cmd_enrich_artists(args):
                                 ).fetchone()[0]
                                 for i, m in enumerate(members):
                                     if m['ended']:
-                                        continue  # only link current members automatically
+                                        # only link current members automatically
+                                        continue
                                     member_id, _ = upsert_artist_mb(conn.cursor(), {'id': m['mbid'], 'name': m['name']})
                                     try:
                                         conn.execute(
@@ -4373,7 +4398,8 @@ def cmd_enrich_artists(args):
                                         )
                                         members_added += 1
                                     except sqlite3.IntegrityError:
-                                        pass  # already linked
+                                        # already linked
+                                        pass
 
                             collabs_added = 0
                             if collaborators:
@@ -4396,7 +4422,8 @@ def cmd_enrich_artists(args):
                                         )
                                         collabs_added += 1
                                     except sqlite3.IntegrityError:
-                                        pass  # already linked
+                                        # already linked
+                                        pass
                             conn.commit()
                             if 'type'           in updates: mb_parts.append(updates['type'])
                             if 'gender'         in updates: mb_parts.append(updates['gender'])
@@ -4556,7 +4583,8 @@ def _gather_release_impact(conn, release_id: str) -> dict:
     track_ids = [r[0] for r in track_rows]
 
     listens = 0
-    per_track = []   # [(title, listen_count)] for tracks that have listens
+    # [(title, listen_count)] for tracks that have listens
+    per_track = []
     if track_ids:
         ph = ','.join('?' * len(track_ids))
         listens = conn.execute(
@@ -4580,7 +4608,8 @@ def _gather_release_impact(conn, release_id: str) -> dict:
         'track_ids':    track_ids,
         'tracks':       len(track_ids),
         'listens':      listens,
-        'per_track':    per_track,        # [(title, count)] for tracks with >0 listens
+        # [(title, count)] for tracks with >0 listens
+        'per_track':    per_track,
         'variant_rows': [(r[0], r[1]) for r in rv_rows],
     }
 
@@ -4641,7 +4670,8 @@ def cmd_delete(args):
     with managed_db(db_path) as conn:
         purge  = getattr(args, 'purge', False)
         yes    = getattr(args, 'yes',   False)
-        entity = args.entity  # 'releases' or 'artists'
+        # 'releases' or 'artists'
+        entity = args.entity
 
         # ── Resolve all IDs ────────────────────────────────────────────────────────
         resolved = []
@@ -4650,7 +4680,8 @@ def cmd_delete(args):
             if not row:
                 console.print(f'  [red]Not found:[/red] {raw}')
                 sys.exit(1)
-            resolved.append((row[0], row[1]))  # (id, display_name)
+            # (id, display_name)
+            resolved.append((row[0], row[1]))
 
         # ── Gather and display impact summary ──────────────────────────────────────
         if entity == 'releases':
@@ -4688,7 +4719,8 @@ def cmd_delete(args):
                         f'\n  [dim]Run \'sync match\' afterwards to re-assign them.[/dim]'
                     )
 
-        else:  # artists
+        # artists
+        else:
             artist_releases = {}
             total_releases = total_tracks = total_listens = 0
             for aid, aname in resolved:
@@ -5049,7 +5081,8 @@ def cmd_artist_merge(args):
                                  [from_row[field], now, to_id])
                     transferred.append(field)
             except IndexError:
-                pass  # column might not exist on older schema
+                # column might not exist on older schema
+                pass
         # Transfer external_links from FROM → TO (INSERT OR IGNORE to not overwrite TO's links)
         conn.execute(
             'INSERT OR IGNORE INTO external_links (entity_type, entity_id, service, link_value)'
@@ -5173,10 +5206,11 @@ def cmd_release_alias(args):
             upsert_release_alias(conn, release['id'], args.alias,
                                  is_definitive=is_def,
                                  language=getattr(args, 'language', None),
-                                 source=args.source)
+                                 source=args.source,
+                                 alias_type=args.type)
             conn.commit()
             def_label = '  [bold](definitive)[/bold]' if is_def else ''
-            console.print(f'  [green]✓[/green]  "{args.alias}"{def_label}  →  {release["title"]}  [dim]({args.source})[/dim]')
+            console.print(f'  [green]✓[/green]  "{args.alias}"{def_label}  →  {release["title"]}  [dim]({args.source}, {args.type})[/dim]')
 
         elif args.release_alias_cmd == 'remove':
             cur = conn.execute(
@@ -5191,7 +5225,7 @@ def cmd_release_alias(args):
 
         elif args.release_alias_cmd == 'list':
             rows = conn.execute(
-                '''SELECT alias, is_definitive, source
+                '''SELECT alias, is_definitive, source, alias_type
                    FROM release_aliases WHERE release_id = ?
                    ORDER BY is_definitive DESC, alias''',
                 [release['id']],
@@ -5200,7 +5234,7 @@ def cmd_release_alias(args):
             if rows:
                 for r in rows:
                     def_tag = '  [bold dim](definitive)[/bold dim]' if r['is_definitive'] else ''
-                    console.print(f'    {r["alias"]}{def_tag}  [dim]({r["source"]})[/dim]')
+                    console.print(f'    {r["alias"]}{def_tag}  [dim]({r["source"]}, {r["alias_type"]})[/dim]')
             else:
                 console.print('    [dim]none[/dim]')
 
@@ -5306,8 +5340,10 @@ def _find_variant_groups(conn, include_linked=False):
         linked_ids.add(row[0])
 
     # Index rows
-    by_mbgrp  = {}   # release_group_mbid → [row]
-    by_artist = {}   # (primary_artist_id, base_title_lower) → [row]
+    # release_group_mbid → [row]
+    by_mbgrp  = {}
+    # (primary_artist_id, base_title_lower) → [row]
+    by_artist = {}
 
     for row in rows:
         rid, title, date, artist_id, artist_name, rg_mbid = row[:6]
@@ -5319,7 +5355,8 @@ def _find_variant_groups(conn, include_linked=False):
         if artist_id:
             by_artist.setdefault((artist_id, bt), []).append(dict(row))
 
-    seen_sets = []   # list of frozensets of ids, to deduplicate
+    # list of frozensets of ids, to deduplicate
+    seen_sets = []
     groups    = []
 
     def _add_group(members):
@@ -5333,7 +5370,8 @@ def _find_variant_groups(conn, include_linked=False):
         seen_sets.append(ids)
 
         if not include_linked and ids.issubset(linked_ids):
-            return  # skip groups that are already fully linked
+            # skip groups that are already fully linked
+            return
 
         # Annotate each member with its existing canonical_id (if any)
         for m in members:
@@ -5511,7 +5549,8 @@ def cmd_release_variants(args):
                             m['release_date'] or '9999',
                         ))
                         console.print()
-                        continue  # re-display updated group
+                        # re-display updated group
+                        continue
 
                     if not raw.isdigit() or not (1 <= int(raw) <= len(group)):
                         console.print(f'  [red]Enter 1–{len(group)}, a, s, or q.[/red]')
@@ -5524,8 +5563,10 @@ def cmd_release_variants(args):
                     continue
 
                 # ── per-release type assignment (stages 1 & 2 for every member) ───────
-                type_updates  = {}   # release_id → (type, type_secondary)
-                edition_links = []   # (variant_id, edition_type, sort_order)
+                # release_id → (type, type_secondary)
+                type_updates  = {}
+                # (variant_id, edition_type, sort_order)
+                edition_links = []
                 hide_ids      = set()
                 aborted       = False
 
@@ -5606,7 +5647,8 @@ def cmd_release_variants(args):
                                 else:
                                     edition_type = ','.join(t for t in chosen_eds if t != 'none') or None
                                 edition_links.append((m['id'], edition_type, sort_i))
-                            stage = 4  # done
+                            # done
+                            stage = 4
 
                     if aborted:
                         break
@@ -5726,7 +5768,8 @@ def cmd_list_import_csv(args):
                 try:
                     rank = int(raw_rank)
                 except ValueError:
-                    continue  # footnote rows ("added 2023", "prior RS", etc.) — not part of the ranked list
+                    # footnote rows ("added 2023", "prior RS", etc.) — not part of the ranked list
+                    continue
                 album  = (row.get(args.album_col) or '').strip()
                 artist = (row.get(args.artist_col) or '').strip()
                 if not album or not artist:
@@ -5837,7 +5880,8 @@ def cmd_list_match(args):
             if len(exact) == 1:
                 found_rid = exact[0]
             elif len(exact) > 1:
-                found_rid = None  # genuine ambiguity (e.g. two editions with the same title) — leave for manual review
+                # genuine ambiguity (e.g. two editions with the same title) — leave for manual review
+                found_rid = None
             else:
                 # Substring fallback only for genuinely unambiguous cases —
                 # e.g. list says "Led Zeppelin IV", DB has the bracketed
@@ -5860,7 +5904,8 @@ def cmd_list_match(args):
                 for r in all_rels:
                     rt_key = ascii_key(r['title'])
                     if t_key == rt_key:
-                        continue  # already handled above
+                        # already handled above
+                        continue
                     if t_key in rt_key and _is_decoration_only(t_key, rt_key):
                         candidates.append(r['id'])
                     elif rt_key in t_key and _is_decoration_only(rt_key, t_key):
@@ -5939,8 +5984,10 @@ def cmd_genre_relations_sync(args):
             genres = genres[:limit]
 
         known_ids = {r['aoty_id'] for r in genres}
-        new_genres = {}   # id -> (name, slug)
-        relations = set()  # (parent_id, child_id)
+        # id -> (name, slug)
+        new_genres = {}
+        # (parent_id, child_id)
+        relations = set()
         errors = 0
 
         console.print(f'[dim]Scraping {len(genres)} AOTY genre pages...[/dim]\n')
@@ -5964,7 +6011,8 @@ def cmd_genre_relations_sync(args):
             for pid, pname, pslug in rel['parents']:
                 if pid not in known_ids and pid not in new_genres:
                     new_genres[pid] = (pname, pslug)
-                    to_scrape.append((pid, pname, pslug))  # walk up to a connected root
+                    # walk up to a connected root
+                    to_scrape.append((pid, pname, pslug))
                 relations.add((pid, gid))
             for cid, cname, cslug in rel['children']:
                 if cid not in known_ids and cid not in new_genres:
@@ -6002,33 +6050,44 @@ _TOP_GENRE_HSL: dict[str, tuple[int, int, int]] = {
     'Metal':                (  4, 76, 49),
     'Jazz':                 ( 33, 72, 54),
     'Folk':                 ( 97, 55, 50),
-    'Experimental':         (233, 38, 52),  # blue-indigo (was 205, too close to Ambient)
+    # blue-indigo (was 205, too close to Ambient)
+    'Experimental':         (233, 38, 52),
     'Punk':                 (160, 60, 50),
     'Classical':            (283, 50, 57),
     'Ambient':              (207, 58, 59),
     'Dance':                (178, 67, 50),
-    'Funk':                 ( 28, 82, 55),  # boosted S to separate from Jazz/Rock
-    'Country':              ( 68, 62, 50),  # yellow-green/pastoral (was 38, too close to Jazz)
-    'Singer-Songwriter':    ( 35, 50, 63),  # muted warm (was 30,64,55 — too close to Marching Band)
+    # boosted S to separate from Jazz/Rock
+    'Funk':                 ( 28, 82, 55),
+    # yellow-green/pastoral (was 38, too close to Jazz)
+    'Country':              ( 68, 62, 50),
+    # muted warm (was 30,64,55 — too close to Marching Band)
+    'Singer-Songwriter':    ( 35, 50, 63),
     'Psychedelia':          (292, 53, 58),
     'Industrial':           (216, 28, 49),
     'Reggae':               (145, 57, 48),
     'Blues':                (223, 58, 54),
     'Darkwave':             (248, 45, 44),
     'Spoken Word':          (200, 18, 60),
-    'Glitch Pop':           (305, 68, 60),  # magenta (was 295, too close to Psychedelia)
+    # magenta (was 295, too close to Psychedelia)
+    'Glitch Pop':           (305, 68, 60),
     'Hypnagogic Pop':       (310, 60, 63),
-    'Ambient Pop':          (217, 44, 68),  # periwinkle (was 200, too close to Ambient/Spoken Word)
+    # periwinkle (was 200, too close to Ambient/Spoken Word)
+    'Ambient Pop':          (217, 44, 68),
     'Sampledelia':          (188, 55, 54),
-    'Mashup':               (240, 52, 58),  # indigo (was 278, too close to Classical)
-    'Vapor':                (300, 50, 70),  # pastel magenta/lilac (was 228, too close to Blues)
+    # indigo (was 278, too close to Classical)
+    'Mashup':               (240, 52, 58),
+    # pastel magenta/lilac (was 228, too close to Blues)
+    'Vapor':                (300, 50, 70),
     'Field Recordings':     ( 28, 30, 48),
-    'Easy Listening':       (182, 42, 67),  # pastel teal (was 52, too close to warm cluster)
+    # pastel teal (was 52, too close to warm cluster)
+    'Easy Listening':       (182, 42, 67),
     'New Age':              (168, 40, 59),
     'Gospel':               ( 50, 60, 57),
-    'CCM':                  (265, 45, 67),  # soft lavender (was 48, too close to warm cluster)
+    # soft lavender (was 48, too close to warm cluster)
+    'CCM':                  (265, 45, 67),
     'Ska':                  (132, 52, 50),
-    'Flamenco':             (348, 72, 44),  # wine-dark red (was 356, identical to Christmas)
+    # wine-dark red (was 356, identical to Christmas)
+    'Flamenco':             (348, 72, 44),
     'Regional':             ( 24, 42, 51),
     'Standards':            ( 42, 46, 58),
     'Comedy':               ( 58, 55, 62),
@@ -6040,12 +6099,15 @@ _TOP_GENRE_HSL: dict[str, tuple[int, int, int]] = {
     'MPB':                  (112, 48, 52),
     'Hymns':                ( 50, 40, 60),
     "Children's Music":     ( 55, 60, 68),
-    'Christmas':            (128, 65, 46),  # holly green (was 355, identical to Flamenco)
-    'ASMR':                 (190, 28, 68),  # very soft blue-gray (was 170, too close to New Age)
+    # holly green (was 355, identical to Flamenco)
+    'Christmas':            (128, 65, 46),
+    # very soft blue-gray (was 170, too close to New Age)
+    'ASMR':                 (190, 28, 68),
     'Musical Parody':       ( 60, 48, 62),
     'Musical Theatre & Entertainment': (45, 55, 63),
 }
-_DEFAULT_HSL = (210, 20, 60)  # fallback gray-blue for unmapped roots
+# fallback gray-blue for unmapped roots
+_DEFAULT_HSL = (210, 20, 60)
 
 
 def _hsl_to_hex(h: float, s: float, l: float) -> str:
@@ -6099,7 +6161,8 @@ def _build_genre_root_map(tree_path: str) -> dict[str, dict[str, float]]:
             return cache[start]
         current = {start: 1.0}
         result: dict[str, float] = {}
-        for _ in range(25):  # max depth guard against cycles
+        # max depth guard against cycles
+        for _ in range(25):
             if not current:
                 break
             nxt: dict[str, float] = {}
@@ -7029,8 +7092,8 @@ def cmd_stats_refresh(args):
 
 
 def cmd_checkpoint(args):
-    """Run the full publish pipeline: genres → certs → stats → wal-checkpoint →
-    integrity → make_prod_db → gzip → jekyll build → verify.
+    """Run the full publish pipeline: genres → certs → optimize → stats →
+    wal-checkpoint → integrity → make_prod_db → gzip → jekyll build → verify.
 
     Run this after a batch of imports; skipping a step leaves the frontend
     serving a stale or truncated database.
@@ -7043,16 +7106,33 @@ def cmd_checkpoint(args):
     def _step(label):
         console.print(Rule(f'[bold]{label}[/bold]', style='bright_blue'))
 
-    _step('1/9  genres refresh')
+    _step('1/10  genres refresh')
     cmd_genres_refresh(argparse.Namespace(db=db_path, tree=None))
 
-    _step('2/9  certs refresh')
+    _step('2/10  certs refresh')
     cmd_certs_refresh(argparse.Namespace(db=db_path))
 
-    _step('3/9  stats refresh')
+    # SQLite's query planner leans on table statistics gathered by ANALYZE,
+    # and those go stale as rows are added/changed — a batch of imports
+    # earlier in a session can leave it choosing a bad join order for
+    # everything stats refresh runs next. Caught in practice: genresIndex
+    # alone went from 38.8s to 0.29s after this, with the SQL unchanged —
+    # SQLite had just started scanning tracks by a weak partial index
+    # instead of the much more selective idx_tracks_release_id. Cheap
+    # (well under a second) and safe to run unconditionally rather than
+    # only when something feels slow, since there's no way to tell from
+    # outside when the planner's estimates have drifted enough to matter.
+    _step('3/10  optimize (refresh query planner statistics)')
+    conn = open_db(db_path)
+    try:
+        conn.execute('PRAGMA optimize;')
+    finally:
+        conn.close()
+
+    _step('4/10  stats refresh')
     cmd_stats_refresh(argparse.Namespace(db=db_path, verbose=False))
 
-    _step('4/9  WAL checkpoint (TRUNCATE)')
+    _step('5/10  WAL checkpoint (TRUNCATE)')
     conn = open_db(db_path)
     try:
         result = conn.execute('PRAGMA wal_checkpoint(TRUNCATE);').fetchone()
@@ -7060,7 +7140,7 @@ def cmd_checkpoint(args):
     finally:
         conn.close()
 
-    _step('5/9  integrity check')
+    _step('6/10  integrity check')
     conn = open_db(db_path)
     try:
         result = conn.execute('PRAGMA integrity_check;').fetchone()
@@ -7088,14 +7168,14 @@ def cmd_checkpoint(args):
     finally:
         conn.close()
 
-    _step('6/9  make_prod_db.py')
+    _step('7/10  make_prod_db.py')
     r = subprocess.run([sys.executable, os.path.join(music_dir, 'make_prod_db.py')],
                        cwd=music_dir)
     if r.returncode != 0:
         console.print('[red]make_prod_db.py failed — aborting checkpoint.[/red]')
         sys.exit(1)
 
-    _step('7/9  gzip master_prod.sqlite')
+    _step('8/10  gzip master_prod.sqlite')
     r = subprocess.run(['gzip', '-k', '-f', '-9', 'master_prod.sqlite'], cwd=music_dir)
     if r.returncode != 0:
         console.print('[red]gzip failed — aborting checkpoint.[/red]')
@@ -7105,14 +7185,14 @@ def cmd_checkpoint(args):
         console.print('[dim]Skipping jekyll build (--skip-jekyll).[/dim]')
         return
 
-    _step('8/9  jekyll build')
+    _step('9/10  jekyll build')
     r = subprocess.run(['bundle', 'exec', 'jekyll', 'build', '--destination', '_site'],
                        cwd=repo_root)
     if r.returncode != 0:
         console.print('[red]jekyll build failed — aborting checkpoint.[/red]')
         sys.exit(1)
 
-    _step('9/9  verify gzip matches _site')
+    _step('10/10  verify gzip matches _site')
     src  = os.path.join(music_dir, 'master_prod.sqlite.gz')
     dest = os.path.join(site_dir, 'music', 'master_prod.sqlite.gz')
     r = subprocess.run(['cmp', src, dest])
@@ -7347,7 +7427,8 @@ def _dedup_show_preview(releases: list[dict], all_tracks: list[list[dict]],
     ))
 
     # --- Attribute table ---
-    n_data_cols = len(releases) + 1  # A B … + D
+    # A B … + D
+    n_data_cols = len(releases) + 1
     t = Table(box=rbox.SIMPLE_HEAD, show_header=True, pad_edge=False,
               show_edge=False, expand=True)
     t.add_column('', style='dim', width=13, no_wrap=True)
@@ -7667,7 +7748,8 @@ def cmd_dedup(args):
             if len(live) == 2:
                 canon_idx = sugg if ch == 'm' else (1 - sugg)
             else:
-                canon_idx = sugg  # 'r' not available for N-way
+                # 'r' not available for N-way
+                canon_idx = sugg
             canonical  = live[canon_idx]
             loser_list = [r for i, r in enumerate(live) if i != canon_idx]
             try:
@@ -8230,7 +8312,8 @@ def cmd_audit_matches(args):
         known_artist_names |= {normalize_text(a) for (a,) in cur.execute('SELECT alias FROM artist_aliases')}
 
         findings = {'variant': [], 'feat': [], 'artist': []}
-        seen_keys = set()  # dedup identical (category, raw, matched) triples
+        # dedup identical (category, raw, matched) triples
+        seen_keys = set()
 
         for row in rows:
             raw_track  = row['raw_track_name'] or ''
@@ -8643,7 +8726,10 @@ def main():
     p_ra_add.add_argument('alias',   metavar='ALIAS', help='Alias title to add')
     p_ra_add.add_argument('--definitive', action='store_true',
                           help='Mark as the authoritative/official alternate title')
-    p_ra_add.add_argument('--source', choices=['manual', 'musicbrainz'], default='manual')
+    p_ra_add.add_argument('--source', default='manual')
+    p_ra_add.add_argument('--type', dest='type', default='dsp',
+                          choices=['transliteration', 'unicode', 'native_script', 'translation', 'dsp'],
+                          help='Alias type (default: dsp)')
     p_ra_add.add_argument('--db', metavar='PATH')
     p_ra_add.set_defaults(func=cmd_release_alias)
 
@@ -8705,8 +8791,7 @@ def main():
                           help='BCP-47 language tag, e.g. "ja" for Japanese')
     p_al_add.add_argument('--sort-order', dest='sort_order', type=int, default=0,
                           help='Sort order within alias type (lower = first)')
-    p_al_add.add_argument('--source', choices=['manual', 'lastfm', 'musicbrainz'],
-                          default='manual')
+    p_al_add.add_argument('--source', default='manual')
     p_al_add.add_argument('--db', metavar='PATH')
     p_al_add.set_defaults(func=cmd_alias)
     p_al_rm = als_.add_parser('remove', help='Remove an alias')

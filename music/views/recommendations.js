@@ -373,6 +373,9 @@ const ViewRecommendations = (() => {
         ];
 
         el.innerHTML = shelves.map(([title, desc, rows]) => _shelf(title, desc, rows)).join('');
+        const rendered = shelves.filter(([, , rows]) => rows.length >= 2).length;
+        const subtitleEl = document.getElementById('recSubtitle');
+        if (subtitleEl) subtitleEl.textContent = `${rendered} shelf${rendered === 1 ? '' : 'ves'}`;
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────
@@ -397,6 +400,7 @@ const ViewRecommendations = (() => {
         container.innerHTML = `
             <header class="rec-header">
                 <h1>Recommendations</h1>
+                <p class="subtitle" id="recSubtitle"></p>
             </header>
             <div id="recShelves" class="rec-shelves"></div>
         `;

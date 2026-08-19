@@ -445,7 +445,8 @@ const ViewHome = (() => {
         for (let year = minYear; year <= maxYear; year++) {
             const el = document.createElement('div');
             el.className = 'commit-year-label';
-            el.textContent = '\u2019' + String(year).slice(2); // '11, '12, …
+            // '11, '12, …
+            el.textContent = '\u2019' + String(year).slice(2);
             grid.appendChild(el);
         }
 

@@ -448,9 +448,12 @@ def _find_track_variant_groups(conn, include_linked: bool = False) -> list:
     rows = [dict(r) for r in rows]
 
     # Build indexes
-    by_isrc       = {}   # isrc → [row]
-    by_release    = {}   # (release_id, base_title) → [row]
-    by_rg_title   = {}   # (release_group_mbid, base_title) → [row]
+    # isrc → [row]
+    by_isrc       = {}
+    # (release_id, base_title) → [row]
+    by_release    = {}
+    # (release_group_mbid, base_title) → [row]
+    by_rg_title   = {}
 
     for row in rows:
         isrc = row['isrc']
@@ -586,7 +589,8 @@ def cmd_track_variants(conn, include_linked: bool = False) -> None:
             continue
         if not raw.isdigit() or not (1 <= int(raw) <= len(group)):
             console.print(f'  [red]Enter 1–{len(group)}, s, or q.[/red]')
-            gi -= 1  # retry same group
+            # retry same group
+            gi -= 1
             continue
 
         canonical = group[int(raw) - 1]

@@ -1,9 +1,12 @@
 const ViewGenres = (() => {
     let _db = null;
-    let _allGenres = [];   // [{id, name, plays, releases}]  (heard genres only)
+    // [{id, name, plays, releases}]  (heard genres only)
+    let _allGenres = [];
     let _query = '';
-    let _sort = 'plays';   // 'plays' | 'name' | 'tree'
-    let _openIds = new Set();  // expanded tree node ids, persisted across mount/back-nav
+    // 'plays' | 'name' | 'tree'
+    let _sort = 'plays';
+    // expanded tree node ids, persisted across mount/back-nav
+    let _openIds = new Set();
 
     // sessionStorage (not the URL) — per-node expand state would make for an
     // unreadable URL, and this only needs to survive back/forward within the
@@ -133,7 +136,8 @@ const ViewGenres = (() => {
         // ancestors-only nodes render as unplayed connective tissue.
         const relevant = new Set();
         const markAncestors = (id, depth) => {
-            if (depth > 30) return;   // guard against a cyclic/malformed tree
+            // guard against a cyclic/malformed tree
+            if (depth > 30) return;
             relevant.add(id);
             (GENRE_TREE[id]?.parents || []).forEach(pid => markAncestors(String(pid), depth + 1));
         };
@@ -145,7 +149,8 @@ const ViewGenres = (() => {
         });
 
         function buildNode(id, ancestry) {
-            if (ancestry.has(id)) return null;  // cycle guard
+            // cycle guard
+            if (ancestry.has(id)) return null;
             const g = genreById.get(id);
             const name = g?.name || GENRE_TREE[id]?.name || 'Unknown';
             const children = (GENRE_TREE[id]?.children || [])
@@ -267,7 +272,8 @@ const ViewGenres = (() => {
     const _depthCache = new Map();
     function _genreDepth(id) {
         if (_depthCache.has(id)) return _depthCache.get(id);
-        _depthCache.set(id, 0);  // cycle guard while this id is being computed
+        // cycle guard while this id is being computed
+        _depthCache.set(id, 0);
         const parents = (GENRE_TREE[id]?.parents || []).map(String);
         const depth = parents.length ? 1 + Math.max(...parents.map(_genreDepth)) : 0;
         _depthCache.set(id, depth);

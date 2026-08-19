@@ -40,7 +40,8 @@ AOTY_TYPE_MAP = {
     'Live Album':  ('album',  'live'),
     'Demo':        ('other',  None),
     'Bootleg':     ('other',  'bootleg'),
-    'Remix':       (None,     'remix'),    # ambiguous primary — sub-prompt fires
+    # ambiguous primary — sub-prompt fires
+    'Remix':       (None,     'remix'),
     'Reissue':     ('album',  'reissue'),
     'Remaster':    ('album',  'remaster'),
 }

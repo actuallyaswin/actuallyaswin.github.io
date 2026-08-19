@@ -8,7 +8,6 @@ const ViewStats = (() => {
         container.innerHTML = `
             <header>
                 <h1>Stats</h1>
-                <p class="subtitle"><a href="?view=soundtracks">Browse video game soundtracks →</a></p>
             </header>
             <div id="statsContent"></div>
         `;

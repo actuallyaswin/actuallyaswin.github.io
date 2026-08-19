@@ -227,7 +227,8 @@ class SpotifyClient:
                 json.dump({'client_id': self.client_id, 'access_token': self._token,
                            'expiry': self._expiry}, f)
         except OSError:
-            pass  # cache write failure is non-fatal
+            # cache write failure is non-fatal
+            pass
 
     def get(self, path: str, params: dict = None) -> dict:
         self._ensure_token()
@@ -285,14 +286,19 @@ _EDITION_RE  = re.compile(
     re.IGNORECASE,
 )
 _FEAT_RE = re.compile(
-    r'\s*[\(\[]\s*feat\..*?[\)\]]'   # (feat. ...) or [feat. ...]
-    r'|\s+[-–—]\s*feat\b.*$',        # - feat. ... or – feat. ...
+    # (feat. ...) or [feat. ...]
+    r'\s*[\(\[]\s*feat\..*?[\)\]]'
+    # - feat. ... or – feat. ...
+    r'|\s+[-–—]\s*feat\b.*$',
     re.IGNORECASE,
 )
 _TRACK_VERSION_RE = re.compile(
-    r'\s*[\(\[]\s*(?:\d{4}\s+)?remaster(?:ed)?\s*[\)\]]'           # (Remastered) / (2023 Remastered)
-    r'|\s*[\(\[]\s*\d+\s*(?:th|st|nd|rd)\s+anniversary\b[^\)\]]*[\)\]]'  # (10th Anniversary ...)
-    r'|\s+[-–—]\s*remaster(?:ed)?\b.*$',                           # - Remastered / – Remastered
+    # (Remastered) / (2023 Remastered)
+    r'\s*[\(\[]\s*(?:\d{4}\s+)?remaster(?:ed)?\s*[\)\]]'
+    # (10th Anniversary ...)
+    r'|\s*[\(\[]\s*\d+\s*(?:th|st|nd|rd)\s+anniversary\b[^\)\]]*[\)\]]'
+    # - Remastered / – Remastered
+    r'|\s+[-–—]\s*remaster(?:ed)?\b.*$',
     re.IGNORECASE,
 )
 
@@ -439,7 +445,8 @@ class MusicBrainzRelease:
 
     @property
     def explicit_count(self) -> int:
-        return 0  # MB does not carry explicit flags
+        # MB does not carry explicit flags
+        return 0
 
     @property
     def total_ms(self) -> int:
@@ -472,7 +479,8 @@ class MusicBrainzRelease:
                 else (2 if len(d) == 7 else 1))
         return (-prec, d, self.track_count,
                 1 if _EDITION_RE.search(self.name) else 0,
-                0)  # explicit_count always 0 for MB releases
+                # explicit_count always 0 for MB releases
+                0)
 
 
 # ── BeatportRelease ────────────────────────────────────────────────────────────
@@ -591,7 +599,8 @@ class BeatportRelease:
 
             tracks.append({
                 'name':           full_name,
-                'duration_ms':    t.get('length_ms'),  # ms duration, always present in __NEXT_DATA__
+                # ms duration, always present in __NEXT_DATA__
+                'duration_ms':    t.get('length_ms'),
                 '_isrcs':         [t['isrc']] if t.get('isrc') else [],
                 '_disc_number':   1,
                 '_track_number':  i + 1,
@@ -604,10 +613,12 @@ class BeatportRelease:
                 '_key_camelot':   camelot_key,
                 '_label_name':    label_obj.get('name', ''),
                 '_remixers':      remixer_credit,
-                '_track_id':      t.get('id'),  # Beatport numeric track ID
+                # Beatport numeric track ID
+                '_track_id':      t.get('id'),
             })
 
-        release_info['results']     = raw_tracks   # keep raw results accessible
+        # keep raw results accessible
+        release_info['results']     = raw_tracks
         release_info['_track_list'] = tracks
         self._data = release_info
 
@@ -651,7 +662,8 @@ class BeatportRelease:
 
     @property
     def explicit_count(self) -> int:
-        return 0  # Beatport does not expose explicit flags
+        # Beatport does not expose explicit flags
+        return 0
 
     @property
     def total_ms(self) -> int:
@@ -732,7 +744,8 @@ class SpotifyRelease:
         self.id      = _extract_sp_id(id_or_url)
         self.url     = f'https://open.spotify.com/album/{self.id}'
         self._cli    = client
-        self._data   = _seed   # may be partial (no _all_tracks key)
+        # may be partial (no _all_tracks key)
+        self._data   = _seed
 
     @classmethod
     def from_search_item(cls, item: dict,
@@ -896,14 +909,19 @@ def compare_releases(*releases: MetadataRelease) -> dict:
 
     return {
         'releases':      list(releases),
-        'similarity':    similarity,      # Jaccard over track title sets
-        'shared_titles': shared_titles,   # titles present in all releases
+        # Jaccard over track title sets
+        'similarity':    similarity,
+        # titles present in all releases
+        'shared_titles': shared_titles,
         'same_titles':   same_titles,
-        'dur_diffs':     dur_diffs,       # [(pos, title, [ms, ...]), ...]
-        'unique_per':    unique_per,      # [(sp_id, [title, ...]), ...]
+        # [(pos, title, [ms, ...]), ...]
+        'dur_diffs':     dur_diffs,
+        # [(sp_id, [title, ...]), ...]
+        'unique_per':    unique_per,
         'ranked':        ranked,
         'canonical':     canon,
-        'reasons':       reasons,         # {sp_id: [reason, ...]} for non-canonical
+        # {sp_id: [reason, ...]} for non-canonical
+        'reasons':       reasons,
     }
 
 
@@ -1195,7 +1213,8 @@ ITUNES_INTERVAL = 3.0
 _itunes_lim = RateLimiter(ITUNES_INTERVAL)
 _ITUNES_ID_RE = re.compile(
     r'(?:music\.apple\.com/[a-z]{2}/album/[^/]+/|itunes\.apple\.com/[a-z]{2}/album/[^/]+/)(\d+)'
-    r'|/(\d{7,12})$',   # bare numeric ID (7-12 digits, distinct from Beatport's shorter IDs)
+    # bare numeric ID (7-12 digits, distinct from Beatport's shorter IDs)
+    r'|/(\d{7,12})$',
     re.IGNORECASE,
 )
 _ITUNES_BARE_RE = re.compile(r'^\d{7,12}$')
@@ -1230,8 +1249,10 @@ def apple_music_fetch_editorial_note(apple_music_id: str, country: str = 'us',
     if not m:
         return None
     text = _AM_TAG_RE.sub('', m.group(1))
-    text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', text)   # paragraph breaks
-    text = re.sub(r'<[^>]+>', '', text)                 # strip remaining tags
+    # paragraph breaks
+    text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', text)
+    # strip remaining tags
+    text = re.sub(r'<[^>]+>', '', text)
     text = html_lib.unescape(text).strip()
     return text or None
 
@@ -1362,7 +1383,8 @@ class ItunesRelease:
     def date(self) -> str:
         self._ensure_full()
         raw = (self._data.get('releaseDate') or '').strip()
-        return raw[:10] if raw else ''  # trim to date-only
+        # trim to date-only
+        return raw[:10] if raw else ''
 
     @property
     def tracks(self) -> list:
@@ -1377,7 +1399,8 @@ class ItunesRelease:
     @property
     def label(self) -> str:
         self._ensure_full()
-        return ''  # Not exposed by iTunes Lookup API
+        # Not exposed by iTunes Lookup API
+        return ''
 
     @property
     def album_type(self) -> str:
@@ -1532,7 +1555,8 @@ class BandcampRelease:
 
     @property
     def label(self) -> str:
-        return ''  # Not reliably extractable without band/artist disambiguation
+        # Not reliably extractable without band/artist disambiguation
+        return ''
 
     @property
     def upc(self) -> 'str | None':
@@ -1856,7 +1880,8 @@ class GeniusTrack:
         self._client  = client
         self.song_id  = song_id
         self._meta:   'dict | None' = None
-        self._lyrics: 'str | None'  = None   # None = not yet fetched; '' = fetched, no lyrics
+        # None = not yet fetched; '' = fetched, no lyrics
+        self._lyrics: 'str | None'  = None
 
     # -- lazy properties -------------------------------------------------------
 
@@ -1932,14 +1957,16 @@ class GeniusTrack:
                 iso = getattr(IsoCode639_1, lang_code.upper())
                 return LinguaLanguage.from_iso_code_639_1(iso)
             except (AttributeError, KeyError):
-                pass  # lang_code not in lingua's IsoCode639_1 enum (e.g. 'bm', 'sco')
+                # lang_code not in lingua's IsoCode639_1 enum (e.g. 'bm', 'sco')
+                pass
         return None
 
 
 # ── Discogs ────────────────────────────────────────────────────────────────────
 
 DISCOGS_BASE = 'https://api.discogs.com'
-_discogs_lim = RateLimiter(1.1)  # ~60 req/min public rate limit
+# ~60 req/min public rate limit
+_discogs_lim = RateLimiter(1.1)
 
 
 class DiscogsClient:

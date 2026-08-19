@@ -3,12 +3,17 @@
 // release_soundtrack_meta (source_type='video_game'), not an aggregate.
 const ViewSoundtracks = (() => {
     let _db = null;
-    let _rows = [];       // [{id, title, slug, art, artist, platform, series, year}]
-    let _groupBy = 'platform'; // 'platform' | 'series'
-    let _cardSort = 'title'; // 'title' | 'year' — order of cards within each group
+    // [{id, title, slug, art, artist, platform, series, year}]
+    let _rows = [];
+    // 'platform' | 'series'
+    let _groupBy = 'platform';
+    // 'title' | 'year' — order of cards within each group
+    let _cardSort = 'title';
     let _query = '';
-    let _seriesFilter = null;  // exact series match, set via ?series= deep link
-    let _platformFilter = null; // exact platform match, set via ?platform= deep link
+    // exact series match, set via ?series= deep link
+    let _seriesFilter = null;
+    // exact platform match, set via ?platform= deep link
+    let _platformFilter = null;
 
     // Which groups are expanded — collapsed by default (16-20+ groups would
     // otherwise dump 170+ cards on the page at once). Persisted per tab via
@@ -220,7 +225,8 @@ const ViewSoundtracks = (() => {
             const chevron = header.querySelector('.lang-chevron');
             if (!panel || !chevron) return;
             const key = header.dataset.vgstKey;
-            const nowOpen = panel.hidden; // opening if it was hidden
+            // opening if it was hidden
+            const nowOpen = panel.hidden;
             panel.hidden = !nowOpen;
             chevron.classList.toggle('expanded', nowOpen);
             if (nowOpen) _openGroups.add(key); else _openGroups.delete(key);
@@ -253,23 +259,28 @@ const ViewSoundtracks = (() => {
                 <p class="subtitle" id="vgstSubtitle"></p>
             </header>
 
-            <div class="list-toolbar">
-                <div class="control-block" style="flex:1;max-width:320px">
+            <div class="page-controls">
+                <div class="control-block control-block-grow">
+                    <span class="control-block-label">Filter</span>
                     <div class="filter-search" style="width:100%">
                         <i data-lucide="search" class="filter-search-icon"></i>
                         <input id="vgstSearch" class="filter-search-input" placeholder="Filter by title, composer, series…"
                                autocomplete="off" value="${escapeHtml(_query)}">
                     </div>
                 </div>
-                <div class="sort-controls">
-                    <span class="disc-sort-label">Group by</span>
-                    <button type="button" class="sort-btn vgst-group-btn${_groupBy === 'platform' ? ' active' : ''}" data-group="platform">Platform</button>
-                    <button type="button" class="sort-btn vgst-group-btn${_groupBy === 'series' ? ' active' : ''}" data-group="series">Series</button>
+                <div class="control-block">
+                    <span class="control-block-label">Group By</span>
+                    <div class="sort-controls">
+                        <button type="button" class="sort-btn vgst-group-btn${_groupBy === 'platform' ? ' active' : ''}" data-group="platform">Platform</button>
+                        <button type="button" class="sort-btn vgst-group-btn${_groupBy === 'series' ? ' active' : ''}" data-group="series">Series</button>
+                    </div>
                 </div>
-                <div class="sort-controls">
-                    <span class="disc-sort-label">Sort by</span>
-                    <button type="button" class="sort-btn vgst-sort-btn${_cardSort === 'title' ? ' active' : ''}" data-sort="title">A–Z</button>
-                    <button type="button" class="sort-btn vgst-sort-btn${_cardSort === 'year' ? ' active' : ''}" data-sort="year">Year</button>
+                <div class="control-block">
+                    <span class="control-block-label">Sort By</span>
+                    <div class="sort-controls">
+                        <button type="button" class="sort-btn vgst-sort-btn${_cardSort === 'title' ? ' active' : ''}" data-sort="title">A–Z</button>
+                        <button type="button" class="sort-btn vgst-sort-btn${_cardSort === 'year' ? ' active' : ''}" data-sort="year">Year</button>
+                    </div>
                 </div>
             </div>
 

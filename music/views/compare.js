@@ -6,7 +6,8 @@ const ViewCompare = (() => {
     let _nameB = null;
     let _chart = null;
     let _themeObserver = null;
-    let _granularity = 'monthly'; // 'monthly' | 'yearly'
+    // 'monthly' | 'yearly'
+    let _granularity = 'monthly';
     let _timelineRenderToken = 0;
 
     function mount(container, db, params) {
@@ -357,7 +358,8 @@ const ViewCompare = (() => {
             return;
         }
 
-        let buckets; // array of { key, label }
+        // array of { key, label }
+        let buckets;
         if (isYearly) {
             const years = [...new Set([...mapA.keys(), ...mapB.keys()])].map(Number).sort((a, b) => a - b);
             const minYear = years[0], maxYear = years[years.length - 1];
@@ -498,7 +500,8 @@ const ViewCompare = (() => {
             return new Promise(resolve => {
                 const img = new Image();
                 img.onload = () => { _artImageCache.set(url, img); resolve(); };
-                img.onerror = () => resolve(); // marker just gets skipped below
+                // marker just gets skipped below
+                img.onerror = () => resolve();
                 img.src = url;
             });
         }));

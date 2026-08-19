@@ -134,7 +134,8 @@ def mb_guess_case_english(title: str) -> str:
         return title
 
     result: list[str] = []
-    force_cap = True  # first token always capitalised
+    # first token always capitalised
+    force_cap = True
 
     for i, token in enumerate(tokens):
         is_last = (i == len(tokens) - 1)
@@ -446,16 +447,26 @@ def is_valid_mbid(s) -> bool:
 
 # Smart/curly punctuation → ASCII equivalents (NFKD won't map these)
 _SMART_PUNCT = str.maketrans({
-    '\u2018': "'",   # LEFT SINGLE QUOTATION MARK  '
-    '\u2019': "'",   # RIGHT SINGLE QUOTATION MARK '
-    '\u201a': "'",   # SINGLE LOW-9 QUOTATION MARK ‚
-    '\u201c': '"',   # LEFT DOUBLE QUOTATION MARK  "
-    '\u201d': '"',   # RIGHT DOUBLE QUOTATION MARK "
-    '\u201e': '"',   # DOUBLE LOW-9 QUOTATION MARK „
-    '\u2026': '...',  # HORIZONTAL ELLIPSIS         …
-    '\u2013': '-',   # EN DASH                     –
-    '\u2014': '-',   # EM DASH                     —
-    '\u2212': '-',   # MINUS SIGN                  −
+    # LEFT SINGLE QUOTATION MARK  '
+    '\u2018': "'",
+    # RIGHT SINGLE QUOTATION MARK '
+    '\u2019': "'",
+    # SINGLE LOW-9 QUOTATION MARK ‚
+    '\u201a': "'",
+    # LEFT DOUBLE QUOTATION MARK  "
+    '\u201c': '"',
+    # RIGHT DOUBLE QUOTATION MARK "
+    '\u201d': '"',
+    # DOUBLE LOW-9 QUOTATION MARK „
+    '\u201e': '"',
+    # HORIZONTAL ELLIPSIS         …
+    '\u2026': '...',
+    # EN DASH                     –
+    '\u2013': '-',
+    # EM DASH                     —
+    '\u2014': '-',
+    # MINUS SIGN                  −
+    '\u2212': '-',
 })
 
 
@@ -671,7 +682,8 @@ def _base_title(title: str) -> str:
         r'\s*:\s*(?:'
         r'music\s+(?:from|for)\s+(?:the\s+)?(?:original\s+)?(?:motion\s+picture|film|movie)(?:\s+sound\s*tracks?)?'
         r'|original\s+(?:motion\s+picture\s+)?(?:sound\s*tracks?|score)(?:\s+from\s+.*)?'
-        r'|sound\s*tracks?'   # bare ": Soundtrack" (e.g. "UNDERTALE: Soundtrack")
+        # bare ": Soundtrack" (e.g. "UNDERTALE: Soundtrack")
+        r'|sound\s*tracks?'
         r').*$',
         '', t, flags=re.I)
     # Bare trailing "Soundtrack", e.g. "Sonic The Hedgehog 1&2 Soundtrack" ->
@@ -763,13 +775,17 @@ def _should_update_date(existing: str, ex_source: str, new: str, new_source: str
     ep = _date_prec(existing)
     np = _date_prec(new)
     if np == 0:
-        return False   # new date unusable
+        # new date unusable
+        return False
     if ep == 0:
-        return True    # nothing stored yet
+        # nothing stored yet
+        return True
     if np > ep:
-        return True    # strictly better precision
+        # strictly better precision
+        return True
     if np < ep:
-        return False   # would downgrade precision
+        # would downgrade precision
+        return False
     # equal precision — prefer higher-priority source
     return _SOURCE_PRIORITY.get(new_source, 0) > _SOURCE_PRIORITY.get(ex_source, 0)
 
@@ -812,12 +828,15 @@ def normalize_upc(upc: 'str | None') -> 'str | None':
         return None
     digits = re.sub(r'\D', '', str(upc))
     if len(digits) == 12:
-        digits = '0' + digits  # UPC-A → EAN-13
+        # UPC-A → EAN-13
+        digits = '0' + digits
     if len(digits) == 14 and digits[0] == '0':
-        digits = digits[1:]    # GTIN-14 indicator-0 → EAN-13
+        # GTIN-14 indicator-0 → EAN-13
+        digits = digits[1:]
     if len(digits) in (8, 13, 14):
         return digits
-    return None  # not a recognized GTIN length
+    # not a recognized GTIN length
+    return None
 
 
 def beatport_is_catalog_addition(bp_data: dict) -> bool:

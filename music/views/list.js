@@ -196,43 +196,66 @@ const ViewList = (() => {
         setPageTitle(lst.short_name || lst.name);
 
         const pct = lst.total ? Math.round((lst.heard / lst.total) * 100) : 0;
-        const gapNote = lst.matched < lst.total
-            ? `<span class="list-progress-gap">${lst.total - lst.matched} not yet in your library</span>`
-            : '';
         const sourceLink = lst.source_url
             ? `<a href="${escapeHtml(lst.source_url)}" target="_blank" rel="noopener" class="list-progress-source">Source ↗</a>`
             : '';
 
         container.innerHTML = `
-            <h1>${escapeHtml(lst.name)}</h1>
-            <p class="list-progress-summary">
-                <span class="list-progress-pct">${pct}%</span>
-                <span class="list-progress-count">${lst.heard} of ${lst.total} heard</span>
-                ${gapNote}
-                ${sourceLink}
-            </p>
-            <p class="list-progress-summary list-progress-summary-secondary">
-                <span class="list-progress-count">${lst.avg_completion}% average completion across matched albums</span>
-            </p>
+            <header class="header-long-title">
+                <h1>${escapeHtml(lst.name)}</h1>
+                <p class="subtitle">${lst.heard} of ${lst.total} heard</p>
+            </header>
 
-            <div class="list-toolbar">
-                <div class="sort-controls">
-                    <span class="disc-sort-label">Sort by</span>
-                    <button type="button" class="sort-btn list-sort-btn" data-sort="rank">List order</button>
-                    <button type="button" class="sort-btn list-sort-btn" data-sort="completion-desc">Most complete</button>
-                    <button type="button" class="sort-btn list-sort-btn" data-sort="completion-asc">Least complete</button>
+            <div class="page-controls">
+                <div class="control-block">
+                    <span class="control-block-label">Sort By</span>
+                    <div class="sort-controls">
+                        <button type="button" class="sort-btn list-sort-btn" data-sort="rank">List order</button>
+                        <button type="button" class="sort-btn list-sort-btn" data-sort="completion-desc">Most complete</button>
+                        <button type="button" class="sort-btn list-sort-btn" data-sort="completion-asc">Least complete</button>
+                    </div>
                 </div>
-                <div class="sort-controls">
-                    <button type="button" id="listGroupBtn" class="sort-btn">Group by ${_groupUnit}</button>
-                    <button type="button" id="listRandomBtn" class="sort-btn">
-                        <i data-lucide="shuffle"></i> Random unheard
-                    </button>
+                <div class="control-block">
+                    <span class="control-block-label">Group</span>
+                    <div class="sort-controls">
+                        <button type="button" id="listGroupBtn" class="sort-btn">Group by ${_groupUnit}</button>
+                    </div>
+                </div>
+                <div class="control-block">
+                    <span class="control-block-label">Shuffle</span>
+                    <div class="sort-controls">
+                        <button type="button" id="listRandomBtn" class="sort-btn">
+                            <i data-lucide="shuffle"></i>Random unheard
+                        </button>
+                    </div>
                 </div>
             </div>
 
-            <section>
-                <div id="listGrid"></div>
-            </section>
+            <div class="list-with-sidebar">
+                <section>
+                    <div id="listGrid"></div>
+                </section>
+                <aside class="view-sidebar" id="listSidebar">
+                    <div class="sidebar-section">
+                        <div class="sidebar-progress-card">
+                            <div class="sidebar-progress-top">
+                                <span class="sidebar-progress-label">You've heard<br>${lst.heard} of ${lst.total}</span>
+                                <span class="sidebar-progress-pct">${pct}<sup>%</sup></span>
+                            </div>
+                            <div class="sidebar-progress-track">
+                                <div class="sidebar-progress-fill" style="width:${pct}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="sidebar-section">
+                        <dl class="nerds-list" style="border:none;border-radius:0">
+                            ${lst.matched < lst.total ? `<div class="nerds-row"><dt>Not in library</dt><dd>${lst.total - lst.matched}</dd></div>` : ''}
+                            <div class="nerds-row"><dt>Avg completion</dt><dd>${lst.avg_completion}%</dd></div>
+                        </dl>
+                    </div>
+                    ${sourceLink ? `<div class="sidebar-section">${sourceLink}</div>` : ''}
+                </aside>
+            </div>
 
             <footer>
                 <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>

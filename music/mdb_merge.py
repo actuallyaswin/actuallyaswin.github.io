@@ -68,19 +68,25 @@ from mdb_ops import (
 @dataclass
 class MDBLabel:
     name: str
-    catalog_number: str | None = None  # From MB label-info or Beatport (indie labels only)
-    mbid: str | None = None            # From MB label MBID
+    # From MB label-info or Beatport (indie labels only)
+    catalog_number: str | None = None
+    # From MB label MBID
+    mbid: str | None = None
 
 
 @dataclass
 class MDBArtistCredit:
     name: str
-    credited_name: str | None = None   # As credited on this release (may differ from canonical)
-    join_phrase: str = ''              # " & ", " ft. ", "" for last in list
-    role: str = 'main'                 # 'main' | 'featured' | 'remixer'
+    # As credited on this release (may differ from canonical)
+    credited_name: str | None = None
+    # " & ", " ft. ", "" for last in list
+    join_phrase: str = ''
+    # 'main' | 'featured' | 'remixer'
+    role: str = 'main'
     mbid: str | None = None
     spotify_id: str | None = None
-    beatport_id: str | None = None     # Beatport numeric artist ID (as string)
+    # Beatport numeric artist ID (as string)
+    beatport_id: str | None = None
 
 
 @dataclass
@@ -88,46 +94,68 @@ class MDBTrack:
     isrc: str | None
     track_number: int
     disc_number: int = 1
-    title: str = ''                    # Base title, ETI-free (e.g. "You & Me")
-    mix_name: str | None = None        # Version label ("Flume Remix", "Original Mix")
-    duration_ms: int | None = None     # Spotify (precise ms) > MB (rounded) > Beatport
+    # Base title, ETI-free (e.g. "You & Me")
+    title: str = ''
+    # Version label ("Flume Remix", "Original Mix")
+    mix_name: str | None = None
+    # Spotify (precise ms) > MB (rounded) > Beatport
+    duration_ms: int | None = None
     is_explicit: bool = False
-    mbid: str | None = None            # MusicBrainz recording ID
+    # MusicBrainz recording ID
+    mbid: str | None = None
     spotify_id: str | None = None
-    bpm: int | None = None             # Beatport only
-    musical_key: str | None = None     # Beatport only ("F Major", "D# Minor")
-    key_camelot: str | None = None     # Camelot Wheel notation ("8A", "9B") — Beatport only
-    beatport_genre: str | None = None  # Beatport per-track genre ("House", "Electronica")
+    # Beatport only
+    bpm: int | None = None
+    # Beatport only ("F Major", "D# Minor")
+    musical_key: str | None = None
+    # Camelot Wheel notation ("8A", "9B") — Beatport only
+    key_camelot: str | None = None
+    # Beatport per-track genre ("House", "Electronica")
+    beatport_genre: str | None = None
     beatport_sub_genre: str | None = None
-    beatport_track_id: int | None = None  # Beatport numeric track ID
+    # Beatport numeric track ID
+    beatport_track_id: int | None = None
     spotify_popularity: int | None = None
-    artists: list = field(default_factory=list)    # list[MDBArtistCredit]
-    sources: set = field(default_factory=set)      # {'mb', 'sp', 'bp', ...}
-    source_map: dict = field(default_factory=dict) # field → source
+    # list[MDBArtistCredit]
+    artists: list = field(default_factory=list)
+    # {'mb', 'sp', 'bp', ...}
+    sources: set = field(default_factory=set)
+    # field → source
+    source_map: dict = field(default_factory=dict)
 
 
 @dataclass
 class MDBRelease:
     title: str
-    primary_artist: MDBArtistCredit | None    # → releases.primary_artist_id
-    release_date: str | None                  # YYYY-MM-DD | YYYY-MM | YYYY
-    date_source: str                          # 'majority' | 'musicbrainz' | 'spotify' | ...
-    primary_type: str | None                  # 'album' | 'ep' | 'single' | ...
-    type_secondary: str | None                # 'remix' | 'live' | 'soundtrack' | ...
+    # → releases.primary_artist_id
+    primary_artist: MDBArtistCredit | None
+    # YYYY-MM-DD | YYYY-MM | YYYY
+    release_date: str | None
+    # 'majority' | 'musicbrainz' | 'spotify' | ...
+    date_source: str
+    # 'album' | 'ep' | 'single' | ...
+    primary_type: str | None
+    # 'remix' | 'live' | 'soundtrack' | ...
+    type_secondary: str | None
     label: MDBLabel | None
-    upc: str | None                           # Canonical form (longest available)
+    # Canonical form (longest available)
+    upc: str | None
     release_group_mbid: str | None
     mbid: str | None
     spotify_id: str | None
     beatport_id: int | None
     apple_music_id: str | None
     album_art_url: str | None
-    album_art_source: str | None              # 'beatport' | 'coverartarchive' | 'spotify'
+    # 'beatport' | 'coverartarchive' | 'spotify'
+    album_art_source: str | None
     spotify_popularity: int | None
     total_tracks: int | None
-    tracks: list                              # list[MDBTrack]
-    conflicts: list                           # list[str] — human-readable conflict log
-    source_map: dict                          # release-level field → source
+    # list[MDBTrack]
+    tracks: list
+    # list[str] — human-readable conflict log
+    conflicts: list
+    # release-level field → source
+    source_map: dict
 
 
 # -- ReleaseMerge class --------------------------------------------------------
@@ -425,7 +453,8 @@ class ReleaseMerge:
         # Apple Music date (ISO-8601 with T — strip to YYYY-MM-DD)
         am_obj = self._sources.get('am')
         d_am = am_obj.date if hasattr(am_obj, 'date') else (am.get('releaseDate') or '')
-        d_am = d_am[:10] if d_am else ''  # trim "2013-06-11T07:00:00Z" → "2013-06-11"
+        # trim "2013-06-11T07:00:00Z" → "2013-06-11"
+        d_am = d_am[:10] if d_am else ''
         if d_am and _date_prec(d_am) > 0:
             candidates.setdefault(d_am, []).append('am')
 
@@ -587,7 +616,8 @@ class ReleaseMerge:
                 if isrc:
                     mb_by_isrc[isrc] = t
 
-        sp_by_isrc: dict = {}  # isrc → (simple_track, full_track)
+        # isrc → (simple_track, full_track)
+        sp_by_isrc: dict = {}
         for t in sp_tracks:
             full = self._sp_full.get(t.get('id'), t)
             isrc = (full.get('external_ids') or {}).get('isrc', '')
@@ -815,7 +845,8 @@ class ReleaseMerge:
             artists = self._merge_track_artists(mb_t, sp_t, bp_t)
 
             tracks.append(MDBTrack(
-                isrc=None,  # no ISRCs available
+                # no ISRCs available
+                isrc=None,
                 track_number=track_num,
                 disc_number=disc_num,
                 title=title,

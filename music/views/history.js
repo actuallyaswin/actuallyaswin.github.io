@@ -27,20 +27,26 @@ const ViewHistory = (() => {
 
         if (params.q) {
             _query = params.q;
-            _window = 'all'; // a deep link with a query cares about all-time matches, not the last 30 days
+            // a deep link with a query cares about all-time matches, not the last 30 days
+            _window = 'all';
         }
 
         container.innerHTML = `
-            <header><h1>History</h1></header>
+            <header>
+                <h1>History</h1>
+                <p class="subtitle" id="historyCount"></p>
+            </header>
             <div class="page-controls">
                 <div class="control-block">
                     <span class="control-block-label">Period</span>
                     <div class="sort-controls">
-                        ${Object.keys(WINDOWS).map(k =>
-                            `<button class="sort-btn${k===_window?' active':''}" data-win="${k}">${
-                                {week:'Week',month:'Month','3mo':'3 Mo',year:'Year',all:'All'}[k]
-                            }</button>`
-                        ).join('')}
+                        <select id="periodFilter" class="year-filter-select">
+                            ${Object.keys(WINDOWS).map(k =>
+                                `<option value="${k}"${k===_window?' selected':''}>${
+                                    {week:'Week',month:'Month','3mo':'3 Mo',year:'Year',all:'All'}[k]
+                                }</option>`
+                            ).join('')}
+                        </select>
                     </div>
                 </div>
                 <div class="control-block">
@@ -51,14 +57,14 @@ const ViewHistory = (() => {
                         <button class="sort-btn${_source==='spotify'?' active':''}" data-src="spotify">Spotify</button>
                     </div>
                 </div>
-                <div class="control-block" style="flex:1;max-width:260px">
+                <div class="control-block control-block-grow">
+                    <span class="control-block-label">Search</span>
                     <div class="filter-search" style="width:100%">
                         <i data-lucide="search" class="filter-search-icon"></i>
                         <input id="historySearch" class="filter-search-input" placeholder="Search track, artist…"
                                autocomplete="off" value="${escapeHtml(_query)}">
                     </div>
                 </div>
-                <span id="historyCount" style="font-size:0.75rem;color:var(--text-tertiary);margin-left:auto;white-space:nowrap"></span>
             </div>
             <div class="list-with-sidebar">
                 <div class="list-scroll" id="historyScroll">
@@ -267,8 +273,8 @@ const ViewHistory = (() => {
     }
 
     function _setupControls() {
-        setupToggleGroup('[data-win]', btn => {
-            _window = btn.dataset.win;
+        document.getElementById('periodFilter')?.addEventListener('change', e => {
+            _window = e.target.value;
             _load();
         });
         setupToggleGroup('[data-src]', btn => {

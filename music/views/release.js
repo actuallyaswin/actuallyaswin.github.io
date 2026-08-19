@@ -248,7 +248,8 @@ const ViewRelease = (() => {
             `)[0];
             if (linksResult) linksResult.values.forEach(([svc, val]) => extLinks.set(svc, val));
         } catch (_) {}
-        const wikiPageId   = extLinks.get(0) || null;   // EL_SVC_WIKIPEDIA
+        // EL_SVC_WIKIPEDIA
+        const wikiPageId   = extLinks.get(0) || null;
 
         let vgSeries = null, vgPlatform = null, vgRegion = null, vgLanguage = null, soundtrackMedium = null;
         if (typeSecondary === 'soundtrack') {
@@ -296,6 +297,7 @@ const ViewRelease = (() => {
             WHERE release_id = '${safeId}'
               AND alias_norm != lower('${(title || '').replace(/'/g, "''")}')
               AND language IS NOT NULL
+              AND alias_type IN ('transliteration', 'unicode', 'native_script', 'translation')
             ORDER BY is_definitive DESC LIMIT 1
         `)[0];
         const titleAlias = titleAliasResult && titleAliasResult.values[0]?.[0];
@@ -395,7 +397,8 @@ const ViewRelease = (() => {
         if (!artistResult || artistResult.values.length === 0) {
             artistSpan.textContent = 'Various Artists';
         } else {
-            const allArtists = artistResult.values; // [[name, id], ...]
+            // [[name, id], ...]
+            const allArtists = artistResult.values;
             // Seed _artistsWithReleases with any header artist that has a primary release.
             // loadTracks() will extend this set for track-level credits after it runs.
             const headerIdList = allArtists.map(([, id]) => `'${id}'`).join(',');
@@ -434,7 +437,8 @@ const ViewRelease = (() => {
 
                 // Suppress members of supergroups: if group G has members M1, M2 all on this
                 // release, render "G (M1 and M2)" and hide M1/M2 as standalone entries
-                const groupMemberMap = new Map(); // groupId -> [{id, name}, ...]
+                // groupId -> [{id, name}, ...]
+                const groupMemberMap = new Map();
                 const memberResult = _db.exec(`
                     SELECT am.group_artist_id, am.member_artist_id, a.name
                     FROM artist_members am
@@ -599,7 +603,8 @@ const ViewRelease = (() => {
             const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
             if (!isNaN(d)) return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
         }
-        return parts[0]; // fallback to year
+        // fallback to year
+        return parts[0];
     }
 
     function _formatAlbumDuration(ms) {
@@ -624,6 +629,7 @@ const ViewRelease = (() => {
             SELECT alias, is_definitive, language
             FROM release_aliases
             WHERE release_id = '${safeId}'
+              AND alias_type IN ('transliteration', 'unicode', 'native_script', 'translation')
             ORDER BY is_definitive DESC, alias
         `)[0];
 
@@ -667,7 +673,8 @@ const ViewRelease = (() => {
             const split = title.lastIndexOf(' (');
             if (split !== -1) {
                 const base = title.slice(0, split);
-                const eti  = title.slice(split);          // includes the leading space
+                // includes the leading space
+                const eti  = title.slice(split);
                 return `${escapeHtml(base)}<span class="tracklist-eti">${escapeHtml(eti)}</span>`;
             }
         }
@@ -1022,8 +1029,10 @@ const ViewRelease = (() => {
             const candidates = canonByKey.get(key);
             if (!candidates) return false;
             return candidates.some(c => {
-                if (t.isrc && c.isrc) return false; // both known, already handled above as non-match
-                if (t.durationMs == null || c.durationMs == null) return true; // no signal to refute the title match
+                // both known, already handled above as non-match
+                if (t.isrc && c.isrc) return false;
+                // no signal to refute the title match
+                if (t.durationMs == null || c.durationMs == null) return true;
                 return Math.abs(t.durationMs - c.durationMs) <= DURATION_TOLERANCE_MS;
             });
         };

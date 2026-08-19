@@ -159,13 +159,15 @@ function renderGenreTags(rows) {
 }
 
 function updateCountLabels(viewMode) {
-    document.querySelectorAll('[data-count]').forEach(btn => {
-        const count = parseInt(btn.dataset.count);
+    const sel = document.getElementById('countFilter');
+    if (!sel) return;
+    Array.from(sel.options).forEach(opt => {
+        const count = parseInt(opt.value);
         if (viewMode === 'collage') {
             const n = COLLAGE_SIZES[count];
-            btn.textContent = `${n}×${n}`;
+            opt.textContent = `${n}×${n}`;
         } else {
-            btn.textContent = count;
+            opt.textContent = count;
         }
     });
 }

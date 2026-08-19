@@ -4,8 +4,10 @@ const ViewArtist = (() => {
     let _currentChart = null;
     let _chartData = { monthly: null, yearly: null, monthlyRaw: null };
     let _chartState = { granularity: 'monthly', type: 'distribution' };
-    let _discSort = 'date'; // 'date' | 'listens'
-    let _discView = localStorage.getItem('artistDiscView') || 'grid'; // 'grid' | 'list'
+    // 'date' | 'listens'
+    let _discSort = 'date';
+    // 'grid' | 'list'
+    let _discView = localStorage.getItem('artistDiscView') || 'grid';
     let _discData = { own: null, collabs: null };
     let _themeObserver = null;
     let _artistName = null;

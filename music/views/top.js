@@ -1,13 +1,20 @@
 const ViewTop = (() => {
     let _db = null;
-    let entityType = 'artists';   // 'artists' | 'albums' | 'tracks'
+    // 'artists' | 'albums' | 'tracks'
+    let entityType = 'artists';
     let sortBy = 'listens';
-    let range = 'all';             // artists only (existing Week/Month/Year/All)
-    let countLimit = 10;           // List/Tiles item count (existing 10/20/50/100)
-    let viewMode = 'list';         // 'list' | 'tiles' | 'collage'
-    let gridShape = { rows: 3, cols: 3 };  // Collage mode only
-    let releaseYear = 'all';       // albums/tracks only (existing Released filter)
-    let genreFilter = 'all';       // aoty_id as string, or 'all'
+    // artists only (existing Week/Month/Year/All)
+    let range = 'all';
+    // List/Tiles item count (existing 10/20/50/100)
+    let countLimit = 10;
+    // 'list' | 'tiles' | 'collage'
+    let viewMode = 'list';
+    // Collage mode only
+    let gridShape = { rows: 3, cols: 3 };
+    // albums/tracks only (existing Released filter)
+    let releaseYear = 'all';
+    // aoty_id as string, or 'all'
+    let genreFilter = 'all';
     let cachedResults = [];
 
     // Collage-mode theme: 'quilt' (plain grid), 'captioned' (grid + bottom-
@@ -16,7 +23,8 @@ const ViewTop = (() => {
     // "Topster" chart style). Topster ignores gridShape/aspect controls
     // entirely; its layout is derived purely from topsterCount via
     // _computeTopsterTiers().
-    let collageTheme = 'quilt';   // 'quilt' | 'captioned' | 'topster'
+    // 'quilt' | 'captioned' | 'topster'
+    let collageTheme = 'quilt';
     let topsterCount = 36;
 
     // Tracks-only virtualized-list state (List mode keeps its existing
@@ -55,10 +63,10 @@ const ViewTop = (() => {
         artists: {
             title: 'Top Artists',
             sortOptions: [
-                { key: 'listens',     icon: 'headphones', title: 'Sort by listens' },
-                { key: 'minutes',     icon: 'clock',       title: 'Sort by minutes' },
-                { key: 'discoveries', icon: 'sparkles',    title: 'Latest discoveries — artists with newest average listen date' },
-                { key: 'oldies',      icon: 'history',     title: 'Golden oldies — artists with oldest average listen date' },
+                { key: 'listens',     icon: 'headphones', label: 'Listens',     title: 'Sort by listens' },
+                { key: 'minutes',     icon: 'clock',       label: 'Minutes',     title: 'Sort by minutes' },
+                { key: 'discoveries', icon: 'sparkles',    label: 'Discoveries', title: 'Latest discoveries — artists with newest average listen date' },
+                { key: 'oldies',      icon: 'history',     label: 'Oldies',      title: 'Golden oldies — artists with oldest average listen date' },
             ],
             hasRange: true,
             hasYearFilter: false,
@@ -106,10 +114,10 @@ const ViewTop = (() => {
         albums: {
             title: 'Top Albums',
             sortOptions: [
-                { key: 'listens',     icon: 'headphones', title: 'Sort by listens' },
-                { key: 'minutes',     icon: 'clock',       title: 'Sort by minutes' },
-                { key: 'discoveries', icon: 'sparkles',    title: 'Latest discoveries — albums with newest average listen date' },
-                { key: 'oldies',      icon: 'history',     title: 'Golden oldies — albums with oldest average listen date' },
+                { key: 'listens',     icon: 'headphones', label: 'Listens',     title: 'Sort by listens' },
+                { key: 'minutes',     icon: 'clock',       label: 'Minutes',     title: 'Sort by minutes' },
+                { key: 'discoveries', icon: 'sparkles',    label: 'Discoveries', title: 'Latest discoveries — albums with newest average listen date' },
+                { key: 'oldies',      icon: 'history',     label: 'Oldies',      title: 'Golden oldies — albums with oldest average listen date' },
             ],
             hasRange: false,
             hasYearFilter: true,
@@ -158,10 +166,10 @@ const ViewTop = (() => {
         tracks: {
             title: 'Top Tracks',
             sortOptions: [
-                { key: 'listens',     icon: 'headphones', title: 'Sort by listens' },
-                { key: 'minutes',     icon: 'clock',       title: 'Sort by minutes' },
-                { key: 'discoveries', icon: 'sparkles',    title: 'Latest discoveries — tracks with newest average listen date' },
-                { key: 'oldies',      icon: 'history',     title: 'Golden oldies — tracks with oldest average listen date' },
+                { key: 'listens',     icon: 'headphones', label: 'Listens',     title: 'Sort by listens' },
+                { key: 'minutes',     icon: 'clock',       label: 'Minutes',     title: 'Sort by minutes' },
+                { key: 'discoveries', icon: 'sparkles',    label: 'Discoveries', title: 'Latest discoveries — tracks with newest average listen date' },
+                { key: 'oldies',      icon: 'history',     label: 'Oldies',      title: 'Golden oldies — tracks with oldest average listen date' },
             ],
             hasRange: false,
             hasYearFilter: true,
@@ -257,7 +265,10 @@ const ViewTop = (() => {
             ${_displayControlsHtml()}
         `;
         return `
-            <header><h1>${ENTITY_CONFIG[entityType]?.title || 'Top'}</h1></header>
+            <header>
+                <h1>${ENTITY_CONFIG[entityType]?.title || 'Top'}</h1>
+                <p class="subtitle" id="topSubtitle"></p>
+            </header>
             <div class="page-controls">${primaryControls}</div>
             ${viewMode === 'collage' ? `<div class="page-controls" id="collageControlsRow">${_collageControlsHtml()}</div>` : ''}
             <div id="topContainer" class="image-grid">
@@ -274,9 +285,9 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Type</span>
                 <div class="sort-controls">
-                    <button class="sort-btn${entityType === 'artists' ? ' active' : ''}" data-type="artists" title="Artists"><i data-lucide="mic-2"></i></button>
-                    <button class="sort-btn${entityType === 'albums'  ? ' active' : ''}" data-type="albums"  title="Albums"><i data-lucide="disc-3"></i></button>
-                    <button class="sort-btn${entityType === 'tracks'  ? ' active' : ''}" data-type="tracks"  title="Tracks"><i data-lucide="music"></i></button>
+                    <button class="sort-btn${entityType === 'artists' ? ' active' : ''}" data-type="artists" title="Artists"><i data-lucide="mic-2"></i>Artists</button>
+                    <button class="sort-btn${entityType === 'albums'  ? ' active' : ''}" data-type="albums"  title="Albums"><i data-lucide="disc-3"></i>Albums</button>
+                    <button class="sort-btn${entityType === 'tracks'  ? ' active' : ''}" data-type="tracks"  title="Tracks"><i data-lucide="music"></i>Tracks</button>
                 </div>
             </div>`;
     }
@@ -289,34 +300,36 @@ const ViewTop = (() => {
                 <span class="control-block-label">Sort By</span>
                 <div class="sort-controls">
                     ${cfg.sortOptions.map(o => `
-                        <button class="sort-btn${sortBy === o.key ? ' active' : ''}" data-sort="${o.key}" title="${o.title}"><i data-lucide="${o.icon}"></i></button>
+                        <button class="sort-btn${sortBy === o.key ? ' active' : ''}" data-sort="${o.key}" title="${o.title}"><i data-lucide="${o.icon}"></i>${o.label}</button>
                     `).join('')}
                 </div>
             </div>`;
     }
 
     function _rangeControlsHtml() {
+        const OPTS = [['week','Week'],['month','Month'],['year','Year'],['all','All']];
         return `
             <div class="control-block" id="rangeControlBlock">
                 <span class="control-block-label">Range</span>
                 <div class="sort-controls">
-                    <button class="sort-btn${range === 'week'  ? ' active' : ''}" data-range="week">Week</button>
-                    <button class="sort-btn${range === 'month' ? ' active' : ''}" data-range="month">Month</button>
-                    <button class="sort-btn${range === 'year'  ? ' active' : ''}" data-range="year">Year</button>
-                    <button class="sort-btn${range === 'all'   ? ' active' : ''}" data-range="all">All</button>
+                    <select id="rangeFilter" class="year-filter-select">
+                        ${OPTS.map(([v,l]) => `<option value="${v}"${range===v?' selected':''}>${l}</option>`).join('')}
+                    </select>
                 </div>
             </div>`;
     }
 
     function _countControlsHtml() {
-        if (viewMode === 'collage') return '';  // collage mode has its own tier-count control
-        const countBtns = [10, 20, 50, 100].map(n =>
-            `<button class="sort-btn${countLimit === n ? ' active' : ''}" data-count="${n}">${n}</button>`
-        ).join('');
+        // collage mode has its own tier-count control
+        if (viewMode === 'collage') return '';
         return `
             <div class="control-block">
                 <span class="control-block-label">#</span>
-                <div class="sort-controls">${countBtns}</div>
+                <div class="sort-controls">
+                    <select id="countFilter" class="year-filter-select">
+                        ${[10, 20, 50, 100].map(n => `<option value="${n}"${countLimit===n?' selected':''}>${n}</option>`).join('')}
+                    </select>
+                </div>
             </div>`;
     }
 
@@ -360,7 +373,7 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Theme</span>
                 <div class="sort-controls">
-                    ${_COLLAGE_THEMES.map(t => `<button class="sort-btn${collageTheme === t.key ? ' active' : ''}" data-collage-theme="${t.key}" title="${t.label}"><i data-lucide="${t.icon}"></i></button>`).join('')}
+                    ${_COLLAGE_THEMES.map(t => `<button class="sort-btn${collageTheme === t.key ? ' active' : ''}" data-collage-theme="${t.key}" title="${t.label}"><i data-lucide="${t.icon}"></i>${t.label}</button>`).join('')}
                 </div>
             </div>`;
 
@@ -370,7 +383,9 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Count</span>
                 <div class="sort-controls">
-                    ${_TOPSTER_COUNTS.map(n => `<button class="sort-btn${topsterCount === n ? ' active' : ''}" data-topster-count="${n}">${n}</button>`).join('')}
+                    <select id="topsterCountFilter" class="year-filter-select">
+                        ${_TOPSTER_COUNTS.map(n => `<option value="${n}"${topsterCount===n?' selected':''}>${n}</option>`).join('')}
+                    </select>
                 </div>
             </div>
             <div class="control-block">
@@ -386,13 +401,15 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Grid</span>
                 <div class="sort-controls">
-                    ${_GRID_PRESETS.map(n => `<button class="sort-btn${isFixedActive(n) ? ' active' : ''}" data-grid-fixed="${n}">${n}×${n}</button>`).join('')}
+                    <select id="gridFixedFilter" class="year-filter-select">
+                        ${_GRID_PRESETS.map(n => `<option value="${n}"${isFixedActive(n)?' selected':''}>${n}×${n}</option>`).join('')}
+                    </select>
                 </div>
             </div>
             <div class="control-block">
                 <span class="control-block-label">Shape</span>
                 <div class="sort-controls">
-                    ${_ASPECT_PRESETS.map(p => `<button class="sort-btn" data-grid-aspect="${p.key}" title="${p.label}"><i data-lucide="${p.icon}"></i></button>`).join('')}
+                    ${_ASPECT_PRESETS.map(p => `<button class="sort-btn" data-grid-aspect="${p.key}" title="${p.label}"><i data-lucide="${p.icon}"></i>${p.label}</button>`).join('')}
                     <button class="sort-btn" data-grid-custom title="Custom">Custom</button>
                 </div>
             </div>
@@ -440,9 +457,9 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Display</span>
                 <div class="sort-controls">
-                    <button class="sort-btn${viewMode === 'list'    ? ' active' : ''}" data-view="list"    title="List"><i data-lucide="layout-list"></i></button>
-                    <button class="sort-btn${viewMode === 'tiles'   ? ' active' : ''}" data-view="tiles"   title="Tiles"><i data-lucide="layout-grid"></i></button>
-                    <button class="sort-btn${viewMode === 'collage' ? ' active' : ''}" data-view="collage" title="Collage"><i data-lucide="grid-3x3"></i></button>
+                    <button class="sort-btn${viewMode === 'list'    ? ' active' : ''}" data-view="list"    title="List"><i data-lucide="layout-list"></i>List</button>
+                    <button class="sort-btn${viewMode === 'tiles'   ? ' active' : ''}" data-view="tiles"   title="Tiles"><i data-lucide="layout-grid"></i>Tiles</button>
+                    <button class="sort-btn${viewMode === 'collage' ? ' active' : ''}" data-view="collage" title="Collage"><i data-lucide="grid-3x3"></i>Collage</button>
                 </div>
             </div>`;
     }
@@ -467,13 +484,18 @@ const ViewTop = (() => {
             releaseYear = 'all';
             genreFilter = 'all';
             _syncUrl();
-            unmount();  // tear down tracks' virtualized-scroll listener/RAF before switching away
+            // tear down tracks' virtualized-scroll listener/RAF before switching away
+            unmount();
             mount(document.getElementById('view-container'), _db, Object.fromEntries(new URLSearchParams(location.search)));
         });
         setupToggleGroup('[data-sort]', btn => { sortBy = btn.dataset.sort; _syncUrl(); _load(); });
-        setupToggleGroup('[data-range]', btn => { range = btn.dataset.range; _syncUrl(); _load(); });
-        setupToggleGroup('[data-count]', btn => { countLimit = parseInt(btn.dataset.count); _syncUrl(); _applyCount(); });
         setupToggleGroup('[data-view]', btn => { viewMode = btn.dataset.view; _syncUrl(); _rerenderForModeChange(); });
+
+        const rangeSel = document.getElementById('rangeFilter');
+        if (rangeSel) rangeSel.addEventListener('change', () => { range = rangeSel.value; _syncUrl(); _load(); });
+
+        const countSel = document.getElementById('countFilter');
+        if (countSel) countSel.addEventListener('change', () => { countLimit = parseInt(countSel.value); _syncUrl(); _applyCount(); });
 
         const yearSel = document.getElementById('yearFilter');
         if (yearSel) yearSel.addEventListener('change', () => { releaseYear = yearSel.value; _syncUrl(); _load(); });
@@ -492,15 +514,15 @@ const ViewTop = (() => {
             // were called again without first destroying all old nodes).
             _rerenderForModeChange();
         }));
-        document.querySelectorAll('[data-topster-count]').forEach(btn => btn.addEventListener('click', () => {
-            topsterCount = parseInt(btn.dataset.topsterCount);
+        document.getElementById('topsterCountFilter')?.addEventListener('change', e => {
+            topsterCount = parseInt(e.target.value);
             _syncUrl(); _renderCollage(); _updateGridButtonStates();
-        }));
-        document.querySelectorAll('[data-grid-fixed]').forEach(btn => btn.addEventListener('click', () => {
-            const n = parseInt(btn.dataset.gridFixed);
+        });
+        document.getElementById('gridFixedFilter')?.addEventListener('change', e => {
+            const n = parseInt(e.target.value);
             gridShape = { rows: n, cols: n };
             _syncUrl(); _renderCollage(); _updateGridButtonStates();
-        }));
+        });
         document.querySelectorAll('[data-grid-aspect]').forEach(btn => btn.addEventListener('click', () => {
             const preset = _ASPECT_PRESETS.find(p => p.key === btn.dataset.gridAspect);
             const approxCellCount = gridShape.rows * gridShape.cols || 25;
@@ -561,18 +583,18 @@ const ViewTop = (() => {
         });
     }
 
-    // Fixed-size buttons' "active" state reflects the current gridShape —
-    // re-synced after every grid-shape change (fixed/aspect/custom) rather
-    // than only on initial render, since aspect presets and Custom can also
-    // land on a shape that happens to match a fixed-size button.
+    // Grid-size dropdown reflects the current gridShape — re-synced after
+    // every shape change (fixed/aspect/custom) rather than only on initial
+    // render, since aspect presets and Custom can also land on a shape that
+    // happens to match one of the fixed-size dropdown options.
     function _updateGridButtonStates() {
-        document.querySelectorAll('[data-grid-fixed]').forEach(btn => {
-            const n = parseInt(btn.dataset.gridFixed);
-            btn.classList.toggle('active', gridShape.rows === n && gridShape.cols === n);
-        });
-        document.querySelectorAll('[data-topster-count]').forEach(btn => {
-            btn.classList.toggle('active', parseInt(btn.dataset.topsterCount) === topsterCount);
-        });
+        const gridSel = document.getElementById('gridFixedFilter');
+        if (gridSel) {
+            const match = _GRID_PRESETS.find(n => gridShape.rows === n && gridShape.cols === n);
+            gridSel.value = match != null ? String(match) : gridSel.value;
+        }
+        const topsterSel = document.getElementById('topsterCountFilter');
+        if (topsterSel) topsterSel.value = String(topsterCount);
     }
 
     function _rerenderForModeChange() {
@@ -626,7 +648,10 @@ const ViewTop = (() => {
     function _load() {
         const result = ENTITY_CONFIG[entityType].query();
         cachedResults = result ? result.values.map(ENTITY_CONFIG[entityType].buildCardFields) : [];
-        if (_scrollEl) _scrollEl.scrollTop = 0;  // only set for the tracks virtualized list
+        // only set for the tracks virtualized list
+        if (_scrollEl) _scrollEl.scrollTop = 0;
+        const subtitleEl = document.getElementById('topSubtitle');
+        if (subtitleEl) subtitleEl.textContent = `${formatNumber(cachedResults.length)} ${entityType}`;
         _render();
     }
 
@@ -652,7 +677,16 @@ const ViewTop = (() => {
         const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
 
         if (viewMode === 'list') {
-            container.className = 'wide-grid';
+            // Same "ranked list + summary sidebar" shell as Top Tracks/History,
+            // rather than a bare full-width grid — every ranked list view
+            // gets the same right-rail summary.
+            container.className = '';
+            container.innerHTML = `
+                <div class="list-with-sidebar">
+                    <div class="wide-grid" id="topListGrid"></div>
+                    <aside class="view-sidebar" id="topSidebar"></aside>
+                </div>`;
+            const listEl = document.getElementById('topListGrid');
             cachedResults.forEach((f, i) => {
                 let meta;
                 if (isTemporalSort && f.avgTs) {
@@ -672,8 +706,9 @@ const ViewTop = (() => {
                     cert: f.cert || null,
                 });
                 if (i >= countLimit) card.style.display = 'none';
-                container.appendChild(card);
+                listEl.appendChild(card);
             });
+            _renderListSidebar();
         } else {
             container.className = 'image-grid';
             cachedResults.forEach((f, i) => {
@@ -690,6 +725,58 @@ const ViewTop = (() => {
             });
         }
         lucide.createIcons();
+    }
+
+    // Summary sidebar for Top Artists/Top Albums list mode — same shape as
+    // Top Tracks' sidebar (_renderTrackSidebar) and History's, just fed from
+    // cachedResults instead of a virtualized row set. Scoped to the visible
+    // (countLimit-limited) slice, since Count actually hides cards here.
+    function _renderListSidebar() {
+        const el = document.getElementById('topSidebar');
+        if (!el) return;
+        const visible = cachedResults.slice(0, countLimit);
+
+        const totalPlays = visible.reduce((s, f) => s + (f.totalListens || 0), 0);
+        const totalMins  = visible.reduce((s, f) => s + (f.totalMinutes || 0), 0);
+        const avgPlays   = visible.length ? Math.round(totalPlays / visible.length) : 0;
+
+        const summaryRows = [
+            [ENTITY_CONFIG[entityType].title.replace('Top ', ''), visible.length.toLocaleString()],
+            ['Total plays',    formatNumber(totalPlays)],
+            ['Listening time', `${Math.round(totalMins / 60).toLocaleString()} hr`],
+            ['Avg plays',      formatNumber(avgPlays)],
+        ];
+
+        // Each album card carries an artist name — worth a "Top Artists"
+        // breakdown, same as Tracks. Artists list has no comparable
+        // secondary dimension, so it stays Summary-only.
+        let secondary = '';
+        if (entityType === 'albums') {
+            const artistCount = {};
+            visible.forEach(f => { if (f.artistName) artistCount[f.artistName] = (artistCount[f.artistName] || 0) + 1; });
+            const topArtists = Object.entries(artistCount).sort(([,a],[,b]) => b-a).slice(0, 7);
+            if (topArtists.length) {
+                secondary = `
+                    <div class="sidebar-section">
+                        <p class="sidebar-heading">Top Artists</p>
+                        ${topArtists.map(([name, count], i) => `
+                            <div class="sidebar-row">
+                                <span class="track-rank">${i + 1}</span>
+                                <span class="sidebar-row-name">${escapeHtml(name)}</span>
+                                <span class="sidebar-row-count">${count} album${count === 1 ? '' : 's'}</span>
+                            </div>`).join('')}
+                    </div>`;
+            }
+        }
+
+        el.innerHTML = `
+            <div class="sidebar-section">
+                <p class="sidebar-heading">Summary</p>
+                <dl class="nerds-list" style="border:none;border-radius:0">
+                    ${summaryRows.map(([k,v]) => `<div class="nerds-row"><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
+                </dl>
+            </div>
+            ${secondary}`;
     }
 
     function _renderCollage() {
@@ -730,7 +817,8 @@ const ViewTop = (() => {
         const gridEl = document.createElement('div');
         gridEl.className = 'topster-grid';
         const maxCols = Math.max(...tiers.map(t => t.cols));
-        gridEl.style.width = `${maxCols * 130}px`;  // fixed total width so narrower-column tiers get bigger cells, wider-column tiers get smaller ones — the shrinking-tile hierarchy from the reference format
+        // fixed total width so narrower-column tiers get bigger cells, wider-column tiers get smaller ones — the shrinking-tile hierarchy from the reference format
+        gridEl.style.width = `${maxCols * 130}px`;
         const listEl = document.createElement('div');
         listEl.className = 'topster-list';
 
@@ -760,11 +848,13 @@ const ViewTop = (() => {
     }
 
     function _applyCount() {
-        const container = document.getElementById('topContainer');
+        const listGrid = document.getElementById('topListGrid');
+        const container = listGrid || document.getElementById('topContainer');
         if (!container) return;
         Array.from(container.children).forEach((el, i) => {
             el.style.display = i < countLimit ? '' : 'none';
         });
+        if (listGrid) _renderListSidebar();
     }
 
     function _renderTrackList() {

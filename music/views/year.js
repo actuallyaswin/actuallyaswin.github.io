@@ -47,11 +47,6 @@ const ViewYear = (() => {
     function unmount() {}
 
     function buildTemplate() {
-        const countBtns = [10, 20, 50, 100].map(n => {
-            const label = viewMode === 'collage' ? (() => { const s = COLLAGE_SIZES[n]; return `${s}×${s}`; })() : n;
-            return `<button class="sort-btn${countLimit === n ? ' active' : ''}" data-count="${n}">${label}</button>`;
-        }).join('');
-
         return `            <header>
                 <div class="year-navigation">
                     <button id="prevYear" class="year-nav-arrow" aria-label="Previous year">←</button>
@@ -67,27 +62,34 @@ const ViewYear = (() => {
                 <div class="control-block">
                     <span class="control-block-label">Sort By</span>
                     <div class="sort-controls">
-                        <button class="sort-btn${sortBy === 'listens' ? ' active' : ''}" data-sort="listens" title="Sort by listens"><i data-lucide="headphones"></i></button>
-                        <button class="sort-btn${sortBy === 'minutes' ? ' active' : ''}" data-sort="minutes" title="Sort by minutes"><i data-lucide="clock"></i></button>
+                        <button class="sort-btn${sortBy === 'listens' ? ' active' : ''}" data-sort="listens" title="Sort by listens"><i data-lucide="headphones"></i>Listens</button>
+                        <button class="sort-btn${sortBy === 'minutes' ? ' active' : ''}" data-sort="minutes" title="Sort by minutes"><i data-lucide="clock"></i>Minutes</button>
                     </div>
                 </div>
                 <div class="control-block">
                     <span class="control-block-label">#</span>
-                    <div class="sort-controls">${countBtns}</div>
+                    <div class="sort-controls">
+                        <select id="countFilter" class="year-filter-select">
+                            ${[10, 20, 50, 100].map(n => {
+                                const label = viewMode === 'collage' ? (() => { const s = COLLAGE_SIZES[n]; return `${s}×${s}`; })() : n;
+                                return `<option value="${n}"${countLimit===n?' selected':''}>${label}</option>`;
+                            }).join('')}
+                        </select>
+                    </div>
                 </div>
                 <div class="control-block">
                     <span class="control-block-label">Display</span>
                     <div class="sort-controls">
-                        <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
-                        <button class="sort-btn${viewMode === 'tiles' ? ' active' : ''}" data-view="tiles" title="Tiles"><i data-lucide="layout-grid"></i></button>
-                        <button class="sort-btn${viewMode === 'collage' ? ' active' : ''}" data-view="collage" title="Collage"><i data-lucide="grid-3x3"></i></button>
+                        <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i>List</button>
+                        <button class="sort-btn${viewMode === 'tiles' ? ' active' : ''}" data-view="tiles" title="Tiles"><i data-lucide="layout-grid"></i>Tiles</button>
+                        <button class="sort-btn${viewMode === 'collage' ? ' active' : ''}" data-view="collage" title="Collage"><i data-lucide="grid-3x3"></i>Collage</button>
                     </div>
                 </div>
                 <div class="control-block">
                     <span class="control-block-label">Filter</span>
                     <div class="sort-controls">
-                        <button class="sort-btn${filterMode === 'this-year' ? ' active' : ''}" data-filter="this-year">THIS YEAR</button>
-                        <button class="sort-btn${filterMode === 'all-years' ? ' active' : ''}" data-filter="all-years">ALL YEARS</button>
+                        <button class="sort-btn${filterMode === 'this-year' ? ' active' : ''}" data-filter="this-year">This Year</button>
+                        <button class="sort-btn${filterMode === 'all-years' ? ' active' : ''}" data-filter="all-years">All Years</button>
                     </div>
                 </div>
             </div>
@@ -406,8 +408,8 @@ const ViewYear = (() => {
             loadArtists();
         });
 
-        setupToggleGroup('[data-count]', btn => {
-            countLimit = parseInt(btn.dataset.count);
+        document.getElementById('countFilter')?.addEventListener('change', e => {
+            countLimit = parseInt(e.target.value);
             applyCount();
         });
 

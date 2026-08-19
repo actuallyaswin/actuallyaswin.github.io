@@ -28,9 +28,12 @@ DB_PATH = os.path.join(_DIR, 'master.sqlite')
 
 # ── external_links enum constants ─────────────────────────────────────────────
 
-EL_ARTIST  = 0  # entity_type: artist
-EL_RELEASE = 1  # entity_type: release
-EL_TRACK   = 2  # entity_type: track
+# entity_type: artist
+EL_ARTIST  = 0
+# entity_type: release
+EL_RELEASE = 1
+# entity_type: track
+EL_TRACK   = 2
 
 EL_SVC_WIKIPEDIA   = 0
 EL_SVC_MUSICBRAINZ = 1
@@ -40,11 +43,16 @@ EL_SVC_DEEZER      = 4
 EL_SVC_TIDAL       = 5
 EL_SVC_BANDCAMP    = 6
 EL_SVC_BEATPORT    = 7
-EL_SVC_GENIUS      = 8   # link_value = slug (e.g. 'Bad-bunny'), used for hrefs
-EL_SVC_GENIUS_ID   = 9   # link_value = integer ID (e.g. '690350'), used for API calls
-EL_SVC_DISCOGS     = 10  # link_value = Discogs release/artist integer ID
-EL_SVC_RYM              = 11  # link_value = full RateYourMusic artist/release URL
-EL_SVC_RESIDENT_ADVISOR = 12  # link_value = full ra.co dj/artist URL
+# link_value = slug (e.g. 'Bad-bunny'), used for hrefs
+EL_SVC_GENIUS      = 8
+# link_value = integer ID (e.g. '690350'), used for API calls
+EL_SVC_GENIUS_ID   = 9
+# link_value = Discogs release/artist integer ID
+EL_SVC_DISCOGS     = 10
+# link_value = full RateYourMusic artist/release URL
+EL_SVC_RYM              = 11
+# link_value = full ra.co dj/artist URL
+EL_SVC_RESIDENT_ADVISOR = 12
 
 # ── ULID / slug ────────────────────────────────────────────────────────────────
 
@@ -485,7 +493,8 @@ def _bootstrap_tables(conn: sqlite3.Connection) -> None:
     an existing database.
     """
     if conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]:
-        return  # not a fresh database; normal migration path applies
+        # not a fresh database; normal migration path applies
+        return
 
     for stmt in SCHEMA.split(';'):
         if not stmt.strip():
@@ -493,7 +502,8 @@ def _bootstrap_tables(conn: sqlite3.Connection) -> None:
         try:
             conn.execute(stmt)
         except sqlite3.OperationalError:
-            pass  # index over a column added by a later ALTER; retried at the end
+            # index over a column added by a later ALTER; retried at the end
+            pass
     conn.commit()
 
 
@@ -807,16 +817,17 @@ def upsert_artist_alias(conn: sqlite3.Connection, artist_id: str, alias: str,
 
 def upsert_release_alias(conn: sqlite3.Connection, release_id: str, alias: str,
                          is_definitive: int = 0, language: str = None,
-                         source: str = 'manual') -> None:
+                         source: str = 'manual', alias_type: str = 'dsp') -> None:
     from mdb_strings import normalize_text
     conn.execute(
-        'INSERT INTO release_aliases (release_id, alias, alias_norm, is_definitive, language, source)'
-        ' VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT INTO release_aliases (release_id, alias, alias_norm, is_definitive, language, source, alias_type)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?)'
         ' ON CONFLICT(release_id, alias) DO UPDATE SET'
         '   alias_norm    = excluded.alias_norm,'
         '   is_definitive = excluded.is_definitive,'
-        '   language      = COALESCE(excluded.language, language)',
-        (release_id, alias, normalize_text(alias), is_definitive, language, source),
+        '   language      = COALESCE(excluded.language, language),'
+        '   alias_type    = excluded.alias_type',
+        (release_id, alias, normalize_text(alias), is_definitive, language, source, alias_type),
     )
 
 
@@ -1059,7 +1070,8 @@ def upsert_artist_mb(cur, mb_artist: dict) -> 'tuple[str, bool]':
                 cur.execute('UPDATE artists SET mbid = ?, updated_at = ? WHERE id = ?',
                             (mbid, now, row[0]))
             except sqlite3.IntegrityError:
-                pass  # MBID already on a different row — leave it
+                # MBID already on a different row — leave it
+                pass
         return row[0], False
 
     # New artist
@@ -1331,7 +1343,8 @@ def populate_genre_relations(conn: sqlite3.Connection, tree_path: str) -> tuple[
     # Walk entries, maintaining a parent-stack keyed by depth
     inserted       = 0
     skipped        = 0
-    parent_stack   = {}  # depth → name
+    # depth → name
+    parent_stack   = {}
 
     for depth, name in entries:
         parent_stack[depth] = name
@@ -1341,7 +1354,8 @@ def populate_genre_relations(conn: sqlite3.Connection, tree_path: str) -> tuple[
                 del parent_stack[d]
 
         if depth == 0:
-            continue  # top-level genre — no parent to link
+            # top-level genre — no parent to link
+            continue
 
         parent_name = parent_stack.get(depth - 1)
         if not parent_name:
@@ -1576,7 +1590,8 @@ def _rematch_by_name_one_release(conn: sqlite3.Connection,
             artist_name_set |= _name_forms(r['alias'])
 
     if not artist_name_set:
-        return 0  # no artists found for this release
+        # no artists found for this release
+        return 0
 
     aph = ','.join('?' * len(artist_name_set))
     artist_names = list(artist_name_set)
@@ -1673,7 +1688,8 @@ def _rematch_by_name_one_release(conn: sqlite3.Connection,
     clean_map = {}
     for t in db_tracks:
         k = _mb_key(t['title'])
-        if k:  # skip non-ASCII-only titles (empty key = unsafe catch-all)
+        # skip non-ASCII-only titles (empty key = unsafe catch-all)
+        if k:
             eti_map.setdefault(k, t['id'])
         ck = _clean_key(t['title'])
         if ck:
@@ -1699,11 +1715,13 @@ def _rematch_by_name_one_release(conn: sqlite3.Connection,
         conn.commit()
 
     # Phase 3: fuzzy ascii_key matching (full MB-normalized title, not stripped clean title)
-    _FUZZY_THRESHOLD = 85  # rapidfuzz uses 0-100 scale
+    # rapidfuzz uses 0-100 scale
+    _FUZZY_THRESHOLD = 85
     fuzzy_map = {}
     for t in db_tracks:
         k = _mb_key(t['title'])
-        if k:  # skip non-ASCII-only titles
+        # skip non-ASCII-only titles
+        if k:
             fuzzy_map.setdefault(k, t['id'])
 
     still_unmatched = conn.execute(f'''
@@ -2076,7 +2094,8 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
     key_artist = ascii_key(artist)
     norm_album  = normalize_text(album)
     norm_artist = normalize_text(artist)
-    use_norm = not key_album  # ascii_key produced nothing — title is non-Latin
+    # ascii_key produced nothing — title is non-Latin
+    use_norm = not key_album
 
     rows = conn.execute('''
         SELECT r.id, r.title, r.release_date, r.type, r.type_secondary,
