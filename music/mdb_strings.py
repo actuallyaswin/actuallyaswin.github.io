@@ -445,6 +445,8 @@ def is_valid_mbid(s) -> bool:
 
 # -- Text normalization -------------------------------------------------------
 
+_WS_RE = re.compile(r'\s+')
+
 # Smart/curly punctuation → ASCII equivalents (NFKD won't map these)
 _SMART_PUNCT = str.maketrans({
     # LEFT SINGLE QUOTATION MARK  '
@@ -506,7 +508,7 @@ def normalize_text(s: str) -> str:
     if not s:
         return ''
     s = _fold_accents(str(s))
-    return re.sub(r'\s+', ' ', s).strip().lower()
+    return _WS_RE.sub(' ', s).strip().lower()
 
 
 def ascii_key(s: str) -> str:
@@ -523,7 +525,38 @@ def ascii_key(s: str) -> str:
     t = re.sub(r'&', ' and ', str(s or ''))
     t = _fold_accents(t)
     t = re.sub(r'[^a-z0-9 ]', ' ', t.lower())
-    return re.sub(r'\s+', ' ', t).strip()
+    return _WS_RE.sub(' ', t).strip()
+
+
+def mb_key(title: str) -> str:
+    """ascii_key of a title normalized to MB parenthetical ETI format.
+
+    'My Melody - TEED Club Mix' → 'My Melody (TEED club mix)' → ascii_key.
+    Used for track matching so remixes match their correct disc entry instead
+    of a plain-title track with the same base name.
+    Strips MB '(With X)' collaborator credits — scrobbles never include them.
+    """
+    title = re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
+    title = strip_scrobble_source_noise(title)
+    r = parse_track_title(title)
+    full = r.clean_title
+    if r.feat_artists:
+        full += ' (feat. ' + ', '.join(r.feat_artists) + ')'
+    if r.eti:
+        full += ' (' + r.eti + ')'
+    return ascii_key(full)
+
+
+def clean_key(title: str) -> str:
+    """ascii_key of clean title only — strips feat. artists and ETI.
+
+    Fallback for when the DB stores 'Suit & Tie' but the scrobble says
+    'Suit & Tie featuring JAY Z'.
+    """
+    title = re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
+    title = strip_scrobble_source_noise(title)
+    r = parse_track_title(title)
+    return ascii_key(r.clean_title)
 
 
 # -- Variant-type detection ---------------------------------------------------

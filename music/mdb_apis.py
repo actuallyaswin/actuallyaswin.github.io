@@ -90,6 +90,36 @@ class MetadataRelease(Protocol):
     def canonical_score(self) -> tuple: ...
     def _ensure_full(self) -> None: ...
 
+
+class _LazyRelease:
+    """Base for provider release wrappers that fetch their full metadata on
+    first access and cache it in self._data.  Subclasses implement
+    _fetch_full() to return the data dict rather than assigning self._data
+    directly, so the cache check itself lives in one place."""
+
+    _data: 'dict | None' = None
+
+    def _ensure_full(self) -> None:
+        if self._data is not None:
+            return
+        self._data = self._fetch_full()
+
+    def _fetch_full(self) -> dict:
+        raise NotImplementedError
+
+
+def _parse_provider_id(regex: 're.Pattern', bare_regex: 're.Pattern',
+                        value: str, provider: str) -> str:
+    """Extract a provider ID from a URL match, falling back to a bare
+    numeric ID. Raises ValueError (malformed input) if neither matches."""
+    m = regex.search(str(value))
+    if m:
+        return next(g for g in m.groups() if g is not None)
+    s = str(value).strip()
+    if bare_regex.match(s):
+        return s
+    raise ValueError(f'Cannot parse {provider} ID from: {value!r}')
+
 # ── API constants ──────────────────────────────────────────────────────────────
 
 MB_API  = 'https://musicbrainz.org/ws/2'
@@ -416,7 +446,7 @@ def caa_fetch_front_image_urls(release_mbid: str) -> list:
 
 # ── MusicBrainzRelease ────────────────────────────────────────────────────────
 
-class MusicBrainzRelease:
+class MusicBrainzRelease(_LazyRelease):
     """
     Lazy-loading wrapper around a MusicBrainz release.
 
@@ -439,9 +469,7 @@ class MusicBrainzRelease:
 
     # -- lazy helpers --
 
-    def _ensure_full(self) -> None:
-        if self._data is not None:
-            return
+    def _fetch_full(self) -> dict:
         data = _mb_get(f'/release/{self.id}', {
             'inc': 'recordings isrcs artists release-groups labels media',
         })
@@ -465,7 +493,7 @@ class MusicBrainzRelease:
                     '_artist_credit':    t.get('artist-credit') or rec.get('artist-credit') or [],
                 })
         data['_track_list'] = tracks
-        self._data = data
+        return data
 
     # -- properties --
 
@@ -550,7 +578,7 @@ _bp_lim       = RateLimiter(BP_INTERVAL, service='beatport')
 _BP_RELEASE_RE = re.compile(r'beatport\.com/release/([^/?#]+)/(\d+)', re.IGNORECASE)
 
 
-class BeatportRelease:
+class BeatportRelease(_LazyRelease):
     """
     Wrapper around a Beatport release page, scraping the embedded __NEXT_DATA__ JSON.
 
@@ -579,9 +607,7 @@ class BeatportRelease:
         self.url   = f'https://www.beatport.com/release/{self._slug}/{self.beatport_id}'
         self._data: 'dict | None' = None
 
-    def _ensure_full(self) -> None:
-        if self._data is not None:
-            return
+    def _fetch_full(self) -> dict:
         html = _http_get(self.url, headers={'User-Agent': BP_UA}, lim=_bp_lim,
                          timeout=15).decode('utf-8', errors='replace')
 
@@ -631,6 +657,16 @@ class BeatportRelease:
             # Fallback: reversed order (handles older responses without url field)
             ordered_tracks = list(reversed(raw_tracks))
 
+        if not ordered_tracks and len(release_track_urls) > 1:
+            # release.tracks lists more than one track URL but nothing came back
+            # from either query — not transient; a caller with another source
+            # still gets a correct release, and a Beatport-only caller gets a
+            # clear error instead of a silently empty tracklist.
+            raise SourceDataUnavailable(
+                f'Beatport release {self.beatport_id} lists {len(release_track_urls)} '
+                f'tracks but returned none — try another source.'
+            )
+
         tracks = []
         for i, t in enumerate(ordered_tracks):
             mix_name  = (t.get('mix_name') or '').strip()
@@ -678,7 +714,7 @@ class BeatportRelease:
         # keep raw results accessible
         release_info['results']     = raw_tracks
         release_info['_track_list'] = tracks
-        self._data = release_info
+        return release_info
 
     @property
     def name(self) -> str:
@@ -1367,7 +1403,7 @@ def itunes_fetch_artwork_url(itunes_id: str, timeout: int = 8) -> 'str | None':
     return re.sub(r'\b\d+x\d+bb\b', '3000x3000bb', art)
 
 
-class ItunesRelease:
+class ItunesRelease(_LazyRelease):
     """
     Lazy-loading wrapper around an Apple Music / iTunes album.
 
@@ -1380,19 +1416,12 @@ class ItunesRelease:
     """
 
     def __init__(self, id_or_url: str):
-        m = _ITUNES_ID_RE.search(str(id_or_url))
-        if m:
-            self.itunes_id = m.group(1) or m.group(2)
-        elif _ITUNES_BARE_RE.match(str(id_or_url).strip()):
-            self.itunes_id = str(id_or_url).strip()
-        else:
-            raise ValueError(f'Cannot parse iTunes collection ID from: {id_or_url!r}')
+        self.itunes_id = _parse_provider_id(_ITUNES_ID_RE, _ITUNES_BARE_RE,
+                                             id_or_url, 'iTunes collection')
         self.url   = f'https://music.apple.com/album/{self.itunes_id}'
         self._data: 'dict | None' = None
 
-    def _ensure_full(self) -> None:
-        if self._data is not None:
-            return
+    def _fetch_full(self) -> dict:
         url = (f'{ITUNES_LOOKUP}?id={self.itunes_id}&entity=song'
                f'&limit=200&country=US')
         raw = _http_get_json(url, headers={'User-Agent': MB_UA}, lim=_itunes_lim)
@@ -1449,7 +1478,7 @@ class ItunesRelease:
                 f'{album.get("trackCount")} — Apple is withholding per-track data '
                 f'for this release; try another source.'
             )
-        self._data = album
+        return album
 
     # -- properties --
 
@@ -1542,7 +1571,7 @@ _BC_URL_RE  = re.compile(r'https?://[^./]+\.bandcamp\.com/album/[^/?#]+', re.IGN
 _BC_ART_RE  = re.compile(r'"art_id"\s*:\s*(\d+)')
 
 
-class BandcampRelease:
+class BandcampRelease(_LazyRelease):
     """
     Lazy-loading wrapper around a Bandcamp album page.
 
@@ -1558,10 +1587,7 @@ class BandcampRelease:
         self.url   = url
         self._data: 'dict | None' = None
 
-    def _ensure_full(self) -> None:
-        if self._data is not None:
-            return
-
+    def _fetch_full(self) -> dict:
         import html as _html_mod
 
         raw_html = _http_get(self.url, headers={'User-Agent': BC_UA}, lim=_bc_lim,
@@ -1573,15 +1599,13 @@ class BandcampRelease:
             tralbum = json.loads(_html_mod.unescape(m.group(1)))
             band_m  = re.search(r'\bdata-band="([^"]+)"', raw_html)
             band    = json.loads(_html_mod.unescape(band_m.group(1))) if band_m else {}
-            self._data = self._normalise({'tralbum': tralbum, 'band': band})
-            return
+            return self._normalise({'tralbum': tralbum, 'band': band})
 
         # Strategy 2: <script>var TralbumData = {...};</script>
         m = re.search(r'TralbumData\s*=\s*(\{.*?\})\s*;?\s*\n', raw_html, re.DOTALL)
         if m:
             tralbum = json.loads(m.group(1))
-            self._data = self._normalise({'tralbum': tralbum, 'band': {}})
-            return
+            return self._normalise({'tralbum': tralbum, 'band': {}})
 
         raise SourceDataUnavailable(f'Could not extract tralbum JSON from Bandcamp page: {self.url}')
 
@@ -1726,9 +1750,10 @@ DZ_API      = 'https://api.deezer.com'
 DZ_INTERVAL = 1.0
 _dz_lim     = RateLimiter(DZ_INTERVAL, service='deezer')
 _DZ_URL_RE  = re.compile(r'deezer\.com/(?:[a-z]{2}/)?album/(\d+)', re.IGNORECASE)
+_DZ_BARE_RE = re.compile(r'^\d+$')
 
 
-class DeezerRelease:
+class DeezerRelease(_LazyRelease):
     """
     Lazy-loading wrapper around a Deezer album.
 
@@ -1739,28 +1764,27 @@ class DeezerRelease:
     """
 
     def __init__(self, url_or_id: str):
-        m = _DZ_URL_RE.search(str(url_or_id))
-        if m:
-            self.deezer_id = m.group(1)
-        elif re.match(r'^\d+$', str(url_or_id).strip()):
-            self.deezer_id = str(url_or_id).strip()
-        else:
-            raise ValueError(f'Cannot parse Deezer album ID from: {url_or_id!r}')
+        self.deezer_id = _parse_provider_id(_DZ_URL_RE, _DZ_BARE_RE,
+                                             url_or_id, 'Deezer album')
         self.url   = f'https://www.deezer.com/album/{self.deezer_id}'
         self._data: 'dict | None' = None
 
-    def _ensure_full(self) -> None:
-        if self._data is not None:
-            return
+    def _fetch_full(self) -> dict:
         album = _http_get_json(f'{DZ_API}/album/{self.deezer_id}', lim=_dz_lim)
         if album.get('error'):
             # Deezer returns HTTP 200 with an error payload instead of a real
-            # 404 for a missing id. Only code 800 ("no data") is mapped to
-            # SourceNotFound; any other code is an unrecognized API error,
-            # left as SourceDataUnavailable rather than guessed at.
+            # HTTP status: code 800 ("no data") means the id doesn't exist,
+            # code 4 ("Quota limit exceeded") means the app-level rate limit
+            # was hit — both distinguishable only by this code, not by
+            # anything in the HTTP response itself. Any other code is an
+            # unrecognized API error, left as SourceDataUnavailable rather
+            # than guessed at.
             err = album['error']
-            if isinstance(err, dict) and err.get('code') == 800:
+            code = err.get('code') if isinstance(err, dict) else None
+            if code == 800:
                 raise SourceNotFound(f'Deezer has no album {self.deezer_id}: {err}')
+            if code == 4:
+                raise SourceRateLimited(f'Deezer quota exceeded for album {self.deezer_id}: {err}')
             raise SourceDataUnavailable(f'Deezer API error for album {self.deezer_id}: {err}')
 
         tracks_resp = _http_get_json(
@@ -1781,8 +1805,18 @@ class DeezerRelease:
                 ],
             })
 
+        if not track_list and (album.get('nb_tracks') or 0) > 1:
+            # nb_tracks reports more than one track but the tracks endpoint
+            # came back empty — not transient; a caller with another source
+            # still gets a correct release, and a Deezer-only caller gets a
+            # clear error instead of a silently empty tracklist.
+            raise SourceDataUnavailable(
+                f'Deezer album {self.deezer_id} reports nb_tracks='
+                f'{album.get("nb_tracks")} but returned no tracks — try another source.'
+            )
+
         album['_track_list'] = track_list
-        self._data = album
+        return album
 
     # -- properties --
 

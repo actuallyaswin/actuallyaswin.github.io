@@ -97,6 +97,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--dry-run', action='store_true',
                     help='report what would change without writing')
+    ap.add_argument('--no-backup', action='store_true',
+                    help='skip the pre-repair .bak copy (for callers that already '
+                         'have their own backup/rollback safety net)')
     ap.add_argument('--db', type=Path, default=DB)
     args = ap.parse_args()
 
@@ -137,7 +140,7 @@ def main():
         conn.close()
         return 0
 
-    if planned:
+    if planned and not args.no_backup:
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         backup = args.db.with_name(f'{args.db.name}.bak-{stamp}')
         conn.close()

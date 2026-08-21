@@ -4,13 +4,10 @@ DB persistence (save_aoty_data, save_release_date) lives in mdb_ops.
 """
 
 import difflib
-import json
 import logging
 import re
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
 try:
     import requests
@@ -23,6 +20,7 @@ from mdb_strings import MONTHS, _should_update_date
 from mdb_apis import (
     _aoty_lim, _wiki_lim,
     AOTY_SEARCH, AOTY_UA, AOTY_RETRY, MB_UA,
+    _http_get_json,
     mb_fetch_release_data,
 )
 
@@ -304,11 +302,8 @@ def _wiki_get_html(wiki_url: 'str | None' = None, page_id: 'int | None' = None) 
         params = {'action': 'parse', 'page': title,
                   'prop': 'text', 'section': 0, 'format': 'json'}
     api_url = 'https://en.wikipedia.org/w/api.php?' + urllib.parse.urlencode(params)
-    _wiki_lim.wait()
-    req = urllib.request.Request(api_url, headers={'User-Agent': MB_UA})
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            d = json.loads(r.read())
+        d = _http_get_json(api_url, headers={'User-Agent': MB_UA}, lim=_wiki_lim, timeout=10)
         return (d.get('parse') or {}).get('text', {}).get('*')
     except Exception as e:
         log.warning('Wikipedia fetch failed (treated as no data): %s', e)
@@ -323,11 +318,8 @@ def _wiki_url_to_id(wiki_url: str) -> 'int | None':
                    'action': 'query', 'titles': title,
                    'redirects': '1', 'indexpageids': '1', 'format': 'json',
                }))
-    _wiki_lim.wait()
-    req = urllib.request.Request(api_url, headers={'User-Agent': MB_UA})
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            d = json.loads(r.read())
+        d = _http_get_json(api_url, headers={'User-Agent': MB_UA}, lim=_wiki_lim, timeout=10)
         ids = d.get('query', {}).get('pageids', [])
         pid = int(ids[0]) if ids else None
         return pid if pid and pid > 0 else None
@@ -473,15 +465,13 @@ def fetch_date_candidates(mbid: str, release_name: str = None,
             # Gemini unavailable → keyword search fallback via Wikipedia opensearch
             query = f'{release_name} {artist_name or ""}'.strip()
             try:
-                _wiki_lim.wait()
                 search_url = ('https://en.wikipedia.org/w/api.php?'
                               + urllib.parse.urlencode({
                                   'action': 'opensearch', 'search': query,
                                   'limit': 3, 'format': 'json', 'redirects': 'resolve',
                               }))
-                req = urllib.request.Request(search_url, headers={'User-Agent': MB_UA})
-                with urllib.request.urlopen(req, timeout=8) as r:
-                    results = json.loads(r.read())
+                results = _http_get_json(search_url, headers={'User-Agent': MB_UA},
+                                          lim=_wiki_lim, timeout=8)
                 # results[3] = URLs, results[1] = titles
                 if results and len(results) > 3 and results[3]:
                     first_url = results[3][0]

@@ -355,8 +355,9 @@ class ReleaseMerge:
         # Popularity
         spotify_popularity = sp.get('popularity')
 
-        # Total tracks — max(MB, SP); BP/AM/BC excluded when they have gaps
-        total_tracks = self._merge_total_tracks(mb, sp, bp, conflicts)
+        # Total tracks — max(MB, SP, BP, DZ); AM/BC excluded (AM's trackCount
+        # is unreliable, BC exposes no reported total at all)
+        total_tracks = self._merge_total_tracks(mb, sp, bp, dz, conflicts)
 
         # Tracks
         tracks = self._build_tracks(conflicts)
@@ -567,10 +568,11 @@ class ReleaseMerge:
                     return best['url'], 'spotify'
         return None, None
 
-    def _merge_total_tracks(self, mb, sp, bp, conflicts):
+    def _merge_total_tracks(self, mb, sp, bp, dz, conflicts):
         mb_count = sum(len(m.get('tracks') or []) for m in (mb.get('media') or [])) or None
         sp_count = sp.get('total_tracks') or None
         bp_count = (bp.get('track_count') or len(self._bp_tracks())) or None
+        dz_count = dz.get('nb_tracks') or None
 
         counts = [c for c in [mb_count, sp_count] if c is not None]
         if len(set(counts)) > 1:
@@ -582,7 +584,15 @@ class ReleaseMerge:
                 conflicts.append(
                     f"track_count: BP has {bp_count} tracks, MB/SP have {best} — BP missing tracks"
                 )
-        return max(filter(None, [mb_count, sp_count, bp_count]), default=None)
+
+        if dz_count is not None:
+            best = max(filter(None, [mb_count, sp_count]), default=dz_count)
+            if dz_count < best:
+                conflicts.append(
+                    f"track_count: DZ has {dz_count} tracks, MB/SP have {best} — DZ missing tracks"
+                )
+
+        return max(filter(None, [mb_count, sp_count, bp_count, dz_count]), default=None)
 
     def _merge_primary_artist(self, mb, sp):
         for credit in (mb.get('artist-credit') or []):
@@ -792,7 +802,7 @@ class ReleaseMerge:
         self, mb_tracks: list, sp_tracks: list, bp_tracks: list, bc_tracks: list,
         am_tracks: list, conflicts: list
     ) -> list[MDBTrack]:
-        """Fallback when no source has ISRCs — build tracks by position from MB.
+        """Fallback when no source has ISRCs — build tracks by position from the anchor tracklist.
 
         Matches Spotify tracks by normalised title to fill in duration_ms and
         spotify_id; Beatport by position for BPM/key.  Used for releases like
@@ -818,12 +828,12 @@ class ReleaseMerge:
         anchor_source = 'mb' if mb_tracks else ('bc' if bc_tracks else 'am')
 
         tracks: list[MDBTrack] = []
-        for mb_t in sorted(anchor_tracks, key=lambda t: (t.get('_disc_number', 1), t.get('_track_number', 0))):
-            title     = mb_t.get('name', '')
+        for anchor_t in sorted(anchor_tracks, key=lambda t: (t.get('_disc_number', 1), t.get('_track_number', 0))):
+            title     = anchor_t.get('name', '')
             mix_name  = None
-            track_num = mb_t.get('_track_number', 0)
-            disc_num  = mb_t.get('_disc_number', 1)
-            mbid      = mb_t.get('_mb_recording_id')
+            track_num = anchor_t.get('_track_number', 0)
+            disc_num  = anchor_t.get('_disc_number', 1)
+            mbid      = anchor_t.get('_mb_recording_id')
 
             # Try to supplement from Spotify by title match
             sp_pair  = sp_by_title.get(normalize_text(title))
@@ -834,14 +844,14 @@ class ReleaseMerge:
 
             duration_ms = (
                 (sp_full_t.get('duration_ms') if sp_full_t else None)
-                or mb_t.get('duration_ms')
+                or anchor_t.get('duration_ms')
                 or (bp_t.get('duration_ms') if bp_t else None)
             )
             spotify_id  = sp_t.get('id') if sp_t else None
             bpm         = bp_t.get('_bpm') if bp_t else None
             musical_key = bp_t.get('_key') if bp_t else None
             key_camelot = bp_t.get('_key_camelot') if bp_t else None
-            is_explicit = bool((sp_full_t or {}).get('explicit', False) or mb_t.get('_is_explicit', False))
+            is_explicit = bool((sp_full_t or {}).get('explicit', False) or anchor_t.get('_is_explicit', False))
 
             sources: set = {anchor_source}
             if sp_t:
@@ -849,7 +859,7 @@ class ReleaseMerge:
             if bp_t:
                 sources.add('bp')
 
-            artists = self._merge_track_artists(mb_t, sp_t, bp_t)
+            artists = self._merge_track_artists(anchor_t, sp_t, bp_t)
             if not artists:
                 # MB/Spotify per-track credits are the only sources
                 # _merge_track_artists reads from — an AM- or BC-anchored
@@ -860,6 +870,8 @@ class ReleaseMerge:
                 primary = self._merge_primary_artist(self._mb_data(), self._sp_data())
                 if primary:
                     artists = [primary]
+
+            bp_track_id = bp_t.get('_track_id') if bp_t else None
 
             tracks.append(MDBTrack(
                 # no ISRCs available
@@ -877,7 +889,7 @@ class ReleaseMerge:
                 key_camelot=key_camelot,
                 beatport_genre=bp_t.get('_genre') if bp_t else None,
                 beatport_sub_genre=bp_t.get('_sub_genre') if bp_t else None,
-                beatport_track_id=bp_t.get('_track_id') if bp_t else None,
+                beatport_track_id=int(bp_track_id) if bp_track_id else None,
                 spotify_popularity=(sp_full_t or {}).get('popularity') if sp_full_t else None,
                 artists=artists,
                 sources=sources,

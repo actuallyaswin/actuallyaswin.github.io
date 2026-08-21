@@ -40,15 +40,14 @@ from mdb_strings import (
     is_valid_mbid as _is_valid_mbid,
     normalize_text as _norm,
     ascii_key as _ascii_key,
-    parse_track_title as _parse_track_title,
-    strip_scrobble_source_noise as _strip_scrobble_source_noise,
     detect_variant_type as _detect_variant_type,
     _PRIMARY_TYPES, _SECONDARY_TYPES, _EDITION_TYPES,
     extract_mbid as _extract_mbid,
     extract_spotify_id as _extract_spotify_id,
+    mb_key as _mb_key,
 )
 from mdb_apis import SpotifyRelease, _bare_track_title
-from mdb_cli  import render_diff
+from mdb_cli  import render_diff, _prompt_choice
 from mdb_ops  import (
     bulk_rematch, bulk_rematch_by_name, bulk_rematch_by_aliases, bulk_rematch_by_title, db_search_releases as _db_search_releases,
     DB_PATH, init_schema, open_db as _mdb_open_db,
@@ -142,51 +141,6 @@ _SP_HISTORY_DEFAULT = os.path.join(
 LASTFM_API = 'https://ws.audioscrobbler.com/2.0/'
 SP_TOKEN   = 'https://accounts.spotify.com/api/token'
 SP_SEARCH  = 'https://api.spotify.com/v1/search'
-
-
-def _mb_key(title: str) -> str:
-    """ascii_key of a title normalized to MB parenthetical ETI format.
-
-    'My Melody - TEED Club Mix' → 'My Melody (TEED club mix)' → ascii_key.
-    Used for track matching so remixes match their correct disc entry instead
-    of a plain-title track with the same base name.
-    Strips MB '(With X)' collaborator credits — scrobbles never include them.
-    """
-    title = re.sub(r'\s*\(With [^)]+\)', '', title).strip()
-    title = _strip_scrobble_source_noise(title)
-    r = _parse_track_title(title)
-    full = r.clean_title
-    if r.feat_artists:
-        full += ' (feat. ' + ', '.join(r.feat_artists) + ')'
-    if r.eti:
-        full += ' (' + r.eti + ')'
-    return _ascii_key(full)
-
-def _prompt_choice(label, options, current=None, allow_hide=False):
-    """Mirror of mdb.py _prompt_choice. Returns (value, quit, hide)."""
-    default = current if current and current in options else options[0]
-    console.print(f'\n  [bold]{label}[/bold]')
-    cols, col_w = 3, 18
-    for row_start in range(0, len(options), cols):
-        row = options[row_start:row_start + cols]
-        parts = []
-        for j, opt in enumerate(row, row_start):
-            marker = '*' if opt == default else ' '
-            parts.append(f'[dim]{marker}[{j}][/dim] {opt:<{col_w}}')
-        console.print('  ' + '  '.join(parts))
-    hide_hint = '  \\[h]ide' if allow_hide else ''
-    console.print(f'  [dim]Enter=keep ({default}){hide_hint}  q=quit:[/dim] ', end='')
-    raw = input().strip().lower()
-    if raw == 'q':
-        return None, True, False
-    if allow_hide and raw == 'h':
-        return None, False, True
-    if raw == '' or not raw.isdigit():
-        return default, False, False
-    idx = int(raw)
-    if 0 <= idx < len(options):
-        return options[idx], False, False
-    return default, False, False
 
 
 def _write_variant_links(conn, canonical, type_updates, edition_links, hide_ids):
@@ -541,10 +495,16 @@ def _dedupe_explicit_variants(sp_results: list) -> list:
     return [max(g, key=lambda r: r.explicit_count) for g in groups]
 
 
+def _variant_badge(title: str, color: str = 'yellow') -> str:
+    """Rich-markup badge for a release/candidate's detected variant type
+    (e.g. "deluxe", "live"), or '' if none detected."""
+    vtype = _detect_variant_type(title)
+    return f'  [{color}]{vtype}[/{color}]' if vtype else ''
+
+
 def _print_db_result(i: int, row: dict) -> None:
     """Print one DB release candidate — compact single line."""
-    vtype     = _detect_variant_type(row['title'])
-    vtype_str = f'  [yellow]{vtype}[/yellow]' if vtype else ''
+    vtype_str = _variant_badge(row['title'])
     date_str  = f'  {row["release_date"]}' if row.get('release_date') else ''
     console.print(
         f'  [dim]db[/dim]  [bold]{i}.[/bold]  [bold]{row["title"]}[/bold]'
@@ -857,8 +817,7 @@ def cmd_fetch(args):
 
 def _print_sp_result(i, r: 'SpotifyRelease') -> None:
     """Print one Spotify search candidate — compact single line."""
-    vtype     = _detect_variant_type(r.name)
-    vtype_str = f'  [yellow]{vtype}[/yellow]' if vtype else ''
+    vtype_str = _variant_badge(r.name)
     console.print(
         f'  [dim]sp[/dim]  [bold]{i}.[/bold]  [bold]{r.name}[/bold]'
         f'  [dim]{r.year or "?"}  {r.artist}[/dim]'
@@ -877,8 +836,7 @@ def _print_release_card(i, m):
         expl_str = '  [red]explicit[/red]'
     else:
         expl_str = f'  [red]{explicit_count}[/red][dim]/{total_tracks} explicit[/dim]'
-    vtype     = _detect_variant_type(m['title'])
-    vtype_str = f'  [cyan]{vtype}[/cyan]' if vtype else ''
+    vtype_str = _variant_badge(m['title'], color='cyan')
     t = (m.get('type') or '').capitalize()
     s = (m.get('type_secondary') or '').capitalize()
     mb_type = f'{t} · {s}' if t and s else t or s or ''
@@ -939,6 +897,359 @@ def _cmd_match_release(conn, ulid: str) -> None:
         console.print(f'  [green]✓ {matched} listens matched to {rel["title"]}[/green]')
     else:
         console.print('  [yellow]No new matches — track names may not align[/yellow]')
+
+
+def _fetch_album_batch(conn, artist_clause: str, artist_params: list,
+                       method_filter: str, sort_recent: bool, eff_limit: int) -> list:
+    """Fetch the next batch of unresolved albums for `sync match`.
+
+    sort_recent=True walks the listen timeline and groups contiguous listening
+    sessions of the same album (LAG() detects session boundaries), ordered by
+    most-recent session first. sort_recent=False groups by album/artist across
+    all history, ordered by total listen count.
+    """
+    if sort_recent:
+        return conn.execute(f'''
+            SELECT   raw_album_name,
+                     raw_artist_name,
+                     COUNT(*)                      AS listen_count,
+                     COUNT(DISTINCT raw_source_id) AS unique_tracks,
+                     MAX(timestamp)                AS last_listened
+            FROM (
+                SELECT timestamp, raw_artist_name, raw_album_name, raw_source_id,
+                       SUM(boundary) OVER (ORDER BY timestamp) AS run_id
+                FROM (
+                    SELECT timestamp, raw_artist_name, raw_album_name, raw_source_id,
+                           CASE
+                               WHEN raw_album_name  != LAG(raw_album_name)  OVER (ORDER BY timestamp)
+                                 OR raw_artist_name != LAG(raw_artist_name) OVER (ORDER BY timestamp)
+                                 OR LAG(raw_album_name) OVER (ORDER BY timestamp) IS NULL
+                               THEN 1 ELSE 0 END AS boundary
+                    FROM   listens
+                    WHERE  track_id IS NULL
+                      {artist_clause}
+                      AND  NOT EXISTS (
+                               SELECT 1 FROM legacy_track_map ltm
+                               WHERE  ltm.lastfm_id = 'album|||'
+                                          || lower(raw_artist_name)
+                                          || '|||'
+                                          || lower(raw_album_name)
+                                 AND  ltm.match_method IN {method_filter}
+                           )
+                )
+            )
+            GROUP BY run_id, raw_artist_name, raw_album_name
+            ORDER BY last_listened DESC
+            LIMIT    ?
+        ''', [*artist_params, eff_limit]).fetchall()
+
+    return conn.execute(f'''
+        SELECT   l.raw_album_name,
+                 l.raw_artist_name,
+                 COUNT(*)                      AS listen_count,
+                 COUNT(DISTINCT l.raw_source_id) AS unique_tracks,
+                 MAX(l.timestamp)              AS last_listened
+        FROM     listens l
+        WHERE    l.track_id IS NULL
+          {artist_clause}
+          AND    NOT EXISTS (
+                     SELECT 1 FROM legacy_track_map ltm
+                     WHERE  ltm.lastfm_id = 'album|||'
+                                || lower(l.raw_artist_name)
+                                || '|||'
+                                || lower(l.raw_album_name)
+                       AND  ltm.match_method IN {method_filter}
+                 )
+        GROUP BY l.raw_album_name, l.raw_artist_name
+        ORDER BY listen_count DESC
+        LIMIT    ?
+    ''', [*artist_params, eff_limit]).fetchall()
+
+
+def _try_auto_match_release(conn, artist: str, album: str, db_results: list) -> int:
+    """Auto-match an album against its single unambiguous DB candidate.
+
+    Conditions: exactly 1 DB result, exact ascii_key title match (or the
+    scrobbled album name is a known release_aliases entry, e.g. "Cross" for a
+    release titled "✝"), >= 90% of scrobbled track names found in that
+    release's tracklist. Prints either the success line or a partial-match
+    hint either way. Returns the number of listens matched (0 if not
+    auto-matched, meaning the caller should fall through to the normal flow).
+    """
+    album_is_alias_hit = bool(db_results) and conn.execute(
+        'SELECT 1 FROM release_aliases WHERE release_id = ? AND lower(alias) = lower(?)',
+        [db_results[0]['id'], album]
+    ).fetchone() is not None
+    if not (
+        len(db_results) == 1
+        and (_ascii_key(db_results[0]['title']) == _ascii_key(album) or album_is_alias_hit)
+    ):
+        return 0
+
+    release = db_results[0]
+    rate, unmatched_names = _check_track_match_rate(conn, release['id'], artist, album)
+    if rate >= _AUTO_MATCH_THRESHOLD:
+        matched = bulk_rematch_by_name(conn, [release['id']], artist, album)
+        if matched:
+            pct = int(rate * 100)
+            console.print(
+                f'[dim]  → [=][/dim]  [bold]{album}[/bold]  [dim]{artist}[/dim]'
+            )
+            console.print(
+                f'      [green]Successfully matched {matched} listens[/green]'
+                f'  [dim]({pct}% track match)[/dim]'
+            )
+            return matched
+        # matched == 0 means bulk_rematch_by_name found nothing despite
+        # the track-rate check passing — fall through to manual prompt.
+        return 0
+
+    # Rate below threshold — show manual prompt with rate hint
+    pct = int(rate * 100)
+    unmatched_str = ', '.join(f'"{n}"' for n in unmatched_names)
+    console.print(
+        f'  [dim yellow]~ partial match[/dim yellow]  '
+        f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
+        f'[dim]({pct}% track match)[/dim]'
+    )
+    if unmatched_names:
+        console.print(f'  [dim yellow]  unmatched: {unmatched_str}[/dim yellow]')
+    return 0
+
+
+def _try_artist_sweep_album(conn, artist: str, album: str, count: int, db_results: list,
+                            sp_auto: list, *, use_wiki: bool, interactive_flag: bool,
+                            needs_manual: list) -> dict:
+    """Non-interactive `--artist` sweep handling for one album.
+
+    Returns {'handled': bool, 'auto_matched': bool}. handled=False means
+    --interactive is set and the caller should fall through to the normal
+    interactive prompt.
+    """
+    if (
+        not db_results
+        and len(sp_auto) == 1
+        and _ascii_key(sp_auto[0].name) == _ascii_key(album)
+    ):
+        console.print(
+            f'[dim]  → [*][/dim]  [bold]{album}[/bold]  [dim]{artist}[/dim]'
+            f'  [dim]({count} listens)[/dim]'
+        )
+        _do_multi_import(conn, [sp_auto[0]], raw_artist=artist, raw_album=album, use_wiki=use_wiki)
+        return {'handled': True, 'auto_matched': True}
+
+    if not interactive_flag:
+        sp_hint = (
+            f'{len(sp_auto)} Spotify result{"s" if len(sp_auto) != 1 else ""}'
+            if sp_auto else 'no Spotify results'
+        )
+        db_hint = f', {len(db_results)} DB' if db_results else ''
+        console.print(
+            f'  [dim yellow]? manual[/dim yellow]  '
+            f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
+            f'[dim]({count} listens, {sp_hint}{db_hint})[/dim]'
+        )
+        needs_manual.append({
+            'artist': artist, 'album': album, 'count': count,
+            'db': db_results, 'sp': sp_auto,
+        })
+        return {'handled': True, 'auto_matched': False}
+
+    # --interactive: fall through to normal prompt
+    return {'handled': False, 'auto_matched': False}
+
+
+def _print_album_header(conn, artist: str, album: str, count: int, tracks: int,
+                        row, sort_recent: bool) -> None:
+    """Print the '← N listens' rule and a compact most-played-tracks preview line."""
+    preview_lim = min(count if sort_recent else tracks, 8)
+    ts_clause   = 'AND timestamp <= ?' if sort_recent else ''
+    ts_params   = [row['last_listened']] if sort_recent else []
+    preview = conn.execute(f'''
+        SELECT raw_artist_name, raw_track_name, raw_source_id, COUNT(*) AS cnt
+        FROM   listens
+        WHERE  track_id IS NULL
+          AND  raw_artist_name = ?
+          AND  raw_album_name  = ?
+          {ts_clause}
+        GROUP  BY raw_artist_name, raw_track_name
+        ORDER  BY MAX(timestamp) DESC
+        LIMIT  ?
+    ''', [artist, album, *ts_params, preview_lim]).fetchall()
+
+    track_snippets = '  ·  '.join(
+        f'"{p["raw_track_name"]}"{"  ×" + str(p["cnt"]) if p["cnt"] > 1 else ""}'
+        for p in preview[:5]
+    )
+    more = f'  +{len(preview)-5} more' if len(preview) > 5 else ''
+    # Truncate the joined line before Rich wraps mid-token
+    snippet_line = track_snippets + more
+    max_w = (console.width or 80) - 6
+    if len(snippet_line) > max_w:
+        snippet_line = snippet_line[:max_w - 1] + '…'
+
+    console.rule(style='dim')
+    console.print(
+        f'[dim]  ←[/dim]  [bold white]{count:,} listens[/bold white]'
+        f'  [dim]({tracks} unique tracks)  ·  "{album}" by {artist}[/dim]'
+    )
+    if snippet_line.strip():
+        console.print(f'     [dim]{snippet_line}[/dim]')
+    console.print()
+
+
+def _build_match_hint(total_results: int, sp_results: list) -> str:
+    """Build the Rich-markup input hint shown before an album prompt."""
+    if total_results == 1:
+        return '  [dim]Enter  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+    elif total_results > 1:
+        diff_hint = '  \\[d]iff' if len(sp_results) >= 2 else ''
+        return (
+            f'  [dim]\\[1-{total_results}]  \\[1 2] multi'
+            f'{diff_hint}  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+        )
+    else:
+        return '  [dim]URL / db:ULID  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+
+
+def _prompt_for_album(conn, artist: str, album: str, db_results: list, sp_results: list,
+                      sp_labels: dict, hint: str, use_wiki: bool) -> str:
+    """Interactive input loop for a single album prompt (sync match).
+
+    Returns 'quit' if the user quit (caller must drain enrichments and close
+    conn before exiting cmd_match), or 'done' once this album has been
+    resolved, skipped, or hidden.
+    """
+    total_results = len(db_results) + len(sp_results)
+
+    while True:
+        try:
+            raw = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            console.print('  [dim]Quit — progress saved.[/dim]')
+            return 'quit'
+
+        choice = raw.lower()
+
+        if choice == 'q':
+            console.print('  [dim]Quit — progress saved.[/dim]')
+            return 'quit'
+
+        elif choice == 'h':
+            skip_key = f"album|||{_norm(artist)}|||{_norm(album)}"
+            conn.execute('''
+                INSERT OR REPLACE INTO legacy_track_map
+                    (lastfm_id, track_id, match_method, confidence)
+                VALUES (?, NULL, 'hide', 1.0)
+            ''', [skip_key])
+            conn.commit()
+            console.print('  [dim]Hidden.[/dim]')
+            return 'done'
+
+        elif choice == 's':
+            defer_key = f"album|||{_norm(artist)}|||{_norm(album)}"
+            conn.execute('''
+                INSERT OR REPLACE INTO legacy_track_map
+                    (lastfm_id, track_id, match_method, confidence)
+                VALUES (?, NULL, 'skip', 1.0)
+            ''', [defer_key])
+            conn.commit()
+            console.print('  [dim]Skipped.[/dim]')
+            return 'done'
+
+        elif raw.startswith('http') or re.search(r'\b(sp:|mb:|musicbrainz\.org|[0-9a-f]{8}-[0-9a-f]{4})', raw):
+            to_match, to_import = _parse_mixed_tokens(raw, db_results, sp_results)
+            if to_match is None:
+                console.print('  [yellow]Unrecognised input — paste URLs, sp:ID, UUIDs, or numbers[/yellow]')
+                console.print(hint, end='')
+                continue
+            if to_match and not to_import:
+                release_ids = [r['id'] for r in to_match]
+                matched = bulk_rematch_by_name(conn, release_ids, artist, album)
+                if matched:
+                    console.print(f'  [green]✓ {matched} listens matched[/green]')
+                else:
+                    console.print('  [yellow]No new matches — track names may differ[/yellow]')
+            elif to_import:
+                _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album, use_wiki=use_wiki)
+                if to_match:
+                    # Also rematch against already-imported DB releases
+                    release_ids = [r['id'] for r in to_match]
+                    bulk_rematch_by_name(conn, release_ids, artist, album)
+            return 'done'
+
+        elif choice == 'd' and len(sp_results) >= 2:
+            render_diff(*sp_results, compact=True, id_labels=sp_labels)
+            console.print(hint, end='')
+
+        elif raw.lower().startswith('db:') or re.match(r'^[0-9A-Z]{26}$', raw):
+            rel = _resolve_release(conn, raw)
+            if rel:
+                matched = bulk_rematch_by_name(conn, [rel['id']], artist, album)
+                if matched:
+                    console.print(f'  [green]✓ {matched} listens matched[/green]')
+                else:
+                    console.print('  [yellow]No new matches — track names may differ[/yellow]')
+                return 'done'
+            else:
+                console.print(f'  [red]Release {raw!r} not found in DB[/red]')
+                console.print(hint, end='')
+
+        elif total_results:
+            # Enter with a single result → auto-select it
+            if choice == '' and total_results == 1:
+                indices_raw = '1'
+            else:
+                indices_raw = raw
+            to_match, to_import = _parse_mixed_tokens(indices_raw, db_results, sp_results)
+            if to_match is None:
+                console.print(
+                    f'  [yellow]Enter 1–{total_results}, '
+                    f'multiple like "1 2", URLs, or s/h/q[/yellow]'
+                )
+                console.print(hint, end='')
+                continue
+
+            if to_match and not to_import:
+                # All DB — just rematch
+                release_ids = [r['id'] for r in to_match]
+                matched = bulk_rematch_by_name(conn, release_ids, artist, album)
+                if matched:
+                    console.print(f'  [green]✓ {matched} listens matched[/green]')
+                else:
+                    console.print('  [yellow]No new matches — track names may differ[/yellow]')
+                return 'done'
+            elif to_import:
+                if len(to_import) > 1:
+                    sp_only = [x for x in to_import if isinstance(x, SpotifyRelease)]
+                    if len(sp_only) >= 2:
+                        render_diff(*sp_only, compact=True, id_labels=sp_labels)
+                    console.print(
+                        f'  [dim]Import all {len(to_import)}? '
+                        f'\\[Y/n]:[/dim] ',
+                        end='',
+                    )
+                    try:
+                        confirm = input().strip().lower()
+                    except (KeyboardInterrupt, EOFError):
+                        console.print()
+                        return 'done'
+                    if confirm in ('n', 'no'):
+                        console.print(hint, end='')
+                        continue
+                _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album, use_wiki=use_wiki)
+                if to_match:
+                    release_ids = [r['id'] for r in to_match]
+                    bulk_rematch_by_name(conn, release_ids, artist, album)
+                return 'done'
+            else:
+                console.print(hint, end='')
+                continue
+
+        else:
+            console.print('  [yellow]Paste a URL, or enter s / h / q[/yellow]')
+            console.print(hint, end='')
 
 
 def cmd_match(args):
@@ -1003,6 +1314,7 @@ def cmd_match(args):
     auto_matched_albums   = 0
     auto_matched_listens  = 0
     needs_manual: list    = []
+    total_unresolved      = 0
 
     while True:
         # Top unresolved albums, excluding permanently-hidden (and deferred unless --skipped)
@@ -1018,64 +1330,8 @@ def cmd_match(args):
             artist_clause = f'AND _norm_artist(raw_artist_name) IN ({placeholders})'
             artist_params = list(artist_norms)
 
-        if sort_recent:
-            # Walk the listen timeline and surface contiguous runs of the same album,
-            # ordered by the most recent session first.  LAG() detects boundaries.
-            rows = conn.execute(f'''
-                SELECT   raw_album_name,
-                         raw_artist_name,
-                         COUNT(*)                      AS listen_count,
-                         COUNT(DISTINCT raw_source_id) AS unique_tracks,
-                         MAX(timestamp)                AS last_listened
-                FROM (
-                    SELECT timestamp, raw_artist_name, raw_album_name, raw_source_id,
-                           SUM(boundary) OVER (ORDER BY timestamp) AS run_id
-                    FROM (
-                        SELECT timestamp, raw_artist_name, raw_album_name, raw_source_id,
-                               CASE
-                                   WHEN raw_album_name  != LAG(raw_album_name)  OVER (ORDER BY timestamp)
-                                     OR raw_artist_name != LAG(raw_artist_name) OVER (ORDER BY timestamp)
-                                     OR LAG(raw_album_name) OVER (ORDER BY timestamp) IS NULL
-                                   THEN 1 ELSE 0 END AS boundary
-                        FROM   listens
-                        WHERE  track_id IS NULL
-                          {artist_clause}
-                          AND  NOT EXISTS (
-                                   SELECT 1 FROM legacy_track_map ltm
-                                   WHERE  ltm.lastfm_id = 'album|||'
-                                              || lower(raw_artist_name)
-                                              || '|||'
-                                              || lower(raw_album_name)
-                                     AND  ltm.match_method IN {method_filter}
-                               )
-                    )
-                )
-                GROUP BY run_id, raw_artist_name, raw_album_name
-                ORDER BY last_listened DESC
-                LIMIT    ?
-            ''', [*artist_params, eff_limit]).fetchall()
-        else:
-            rows = conn.execute(f'''
-                SELECT   l.raw_album_name,
-                         l.raw_artist_name,
-                         COUNT(*)                      AS listen_count,
-                         COUNT(DISTINCT l.raw_source_id) AS unique_tracks,
-                         MAX(l.timestamp)              AS last_listened
-                FROM     listens l
-                WHERE    l.track_id IS NULL
-                  {artist_clause}
-                  AND    NOT EXISTS (
-                             SELECT 1 FROM legacy_track_map ltm
-                             WHERE  ltm.lastfm_id = 'album|||'
-                                        || lower(l.raw_artist_name)
-                                        || '|||'
-                                        || lower(l.raw_album_name)
-                               AND  ltm.match_method IN {method_filter}
-                         )
-                GROUP BY l.raw_album_name, l.raw_artist_name
-                ORDER BY listen_count DESC
-                LIMIT    ?
-            ''', [*artist_params, eff_limit]).fetchall()
+        rows = _fetch_album_batch(conn, artist_clause, artist_params,
+                                  method_filter, sort_recent, eff_limit)
 
         if not rows:
             console.print('[green]All listens resolved (or skipped)![/green]')
@@ -1112,49 +1368,13 @@ def cmd_match(args):
             db_results = _db_search_releases(conn, artist, album)
 
             # ── Auto-match check ─────────────────────────────────────────────
-            # Conditions: exactly 1 DB result, exact ascii_key title match (or
-            # the scrobbled album name is a known release_aliases entry, e.g.
-            # "Cross" for a release titled "✝"), ≥90% of scrobbled track names
-            # found in that release's tracklist.
-            album_is_alias_hit = bool(db_results) and conn.execute(
-                'SELECT 1 FROM release_aliases WHERE release_id = ? AND lower(alias) = lower(?)',
-                [db_results[0]['id'], album]
-            ).fetchone() is not None
-            if (
-                len(db_results) == 1
-                and (_ascii_key(db_results[0]['title']) == _ascii_key(album) or album_is_alias_hit)
-            ):
-                release = db_results[0]
-                rate, unmatched_names = _check_track_match_rate(conn, release['id'], artist, album)
-                if rate >= _AUTO_MATCH_THRESHOLD:
-                    matched = bulk_rematch_by_name(conn, [release['id']], artist, album)
-                    if matched:
-                        pct = int(rate * 100)
-                        console.print(
-                            f'[dim]  → [=][/dim]  [bold]{album}[/bold]  [dim]{artist}[/dim]'
-                        )
-                        console.print(
-                            f'      [green]Successfully matched {matched} listens[/green]'
-                            f'  [dim]({pct}% track match)[/dim]'
-                        )
-                        auto_matched_albums  += 1
-                        auto_matched_listens += matched
-                        _pre_search(album_i)
-                        _pre_search(album_i + 1)
-                        continue
-                    # matched == 0 means bulk_rematch_by_name found nothing despite
-                    # the track-rate check passing — fall through to manual prompt.
-                else:
-                    # Rate below threshold — show manual prompt with rate hint
-                    pct = int(rate * 100)
-                    unmatched_str = ', '.join(f'"{n}"' for n in unmatched_names)
-                    console.print(
-                        f'  [dim yellow]~ partial match[/dim yellow]  '
-                        f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
-                        f'[dim]({pct}% track match)[/dim]'
-                    )
-                    if unmatched_names:
-                        console.print(f'  [dim yellow]  unmatched: {unmatched_str}[/dim yellow]')
+            auto_matched = _try_auto_match_release(conn, artist, album, db_results)
+            if auto_matched:
+                auto_matched_albums  += 1
+                auto_matched_listens += auto_matched
+                _pre_search(album_i)
+                _pre_search(album_i + 1)
+                continue
             # ── End auto-match check ─────────────────────────────────────────
 
             # ── Artist sweep: non-interactive auto-import ─────────────────────
@@ -1170,37 +1390,14 @@ def cmd_match(args):
                 else:
                     sp_auto = []
 
-                if (
-                    not db_results
-                    and len(sp_auto) == 1
-                    and _ascii_key(sp_auto[0].name) == _ascii_key(album)
-                ):
-                    console.print(
-                        f'[dim]  → [*][/dim]  [bold]{album}[/bold]  [dim]{artist}[/dim]'
-                        f'  [dim]({count} listens)[/dim]'
-                    )
-                    _do_multi_import(conn, [sp_auto[0]], raw_artist=artist, raw_album=album, use_wiki=use_wiki)
-                    auto_matched_albums += 1
-                    _pre_search(album_i)
-                    _pre_search(album_i + 1)
-                    console.print()
-                    continue
-
-                if not interactive_flag:
-                    sp_hint = (
-                        f'{len(sp_auto)} Spotify result{"s" if len(sp_auto) != 1 else ""}'
-                        if sp_auto else 'no Spotify results'
-                    )
-                    db_hint = f', {len(db_results)} DB' if db_results else ''
-                    console.print(
-                        f'  [dim yellow]? manual[/dim yellow]  '
-                        f'[bold]{artist}[/bold]  [dim]—  {album}[/dim]  '
-                        f'[dim]({count} listens, {sp_hint}{db_hint})[/dim]'
-                    )
-                    needs_manual.append({
-                        'artist': artist, 'album': album, 'count': count,
-                        'db': db_results, 'sp': sp_auto,
-                    })
+                sweep = _try_artist_sweep_album(
+                    conn, artist, album, count, db_results, sp_auto,
+                    use_wiki=use_wiki, interactive_flag=interactive_flag,
+                    needs_manual=needs_manual,
+                )
+                if sweep['handled']:
+                    if sweep['auto_matched']:
+                        auto_matched_albums += 1
                     _pre_search(album_i)
                     _pre_search(album_i + 1)
                     console.print()
@@ -1209,41 +1406,7 @@ def cmd_match(args):
             # ── End artist sweep ──────────────────────────────────────────────
 
             # ── Album context (← line + compact track preview) ─────────────────
-            # Track preview: most-played tracks on one dim line
-            preview_lim = min(count if sort_recent else tracks, 8)
-            ts_clause   = 'AND timestamp <= ?' if sort_recent else ''
-            ts_params   = [row['last_listened']] if sort_recent else []
-            preview = conn.execute(f'''
-                SELECT raw_artist_name, raw_track_name, raw_source_id, COUNT(*) AS cnt
-                FROM   listens
-                WHERE  track_id IS NULL
-                  AND  raw_artist_name = ?
-                  AND  raw_album_name  = ?
-                  {ts_clause}
-                GROUP  BY raw_artist_name, raw_track_name
-                ORDER  BY MAX(timestamp) DESC
-                LIMIT  ?
-            ''', [artist, album, *ts_params, preview_lim]).fetchall()
-
-            track_snippets = '  ·  '.join(
-                f'"{p["raw_track_name"]}"{"  ×" + str(p["cnt"]) if p["cnt"] > 1 else ""}'
-                for p in preview[:5]
-            )
-            more = f'  +{len(preview)-5} more' if len(preview) > 5 else ''
-            # Truncate the joined line before Rich wraps mid-token
-            snippet_line = track_snippets + more
-            max_w = (console.width or 80) - 6
-            if len(snippet_line) > max_w:
-                snippet_line = snippet_line[:max_w - 1] + '…'
-
-            console.rule(style='dim')
-            console.print(
-                f'[dim]  ←[/dim]  [bold white]{count:,} listens[/bold white]'
-                f'  [dim]({tracks} unique tracks)  ·  "{album}" by {artist}[/dim]'
-            )
-            if snippet_line.strip():
-                console.print(f'     [dim]{snippet_line}[/dim]')
-            console.print()
+            _print_album_header(conn, artist, album, count, tracks, row, sort_recent)
 
             # DB results (already-imported releases that match this album)
             for idx, db_row in enumerate(db_results, 1):
@@ -1286,154 +1449,16 @@ def cmd_match(args):
             _pre_search(album_i + 1)
 
             # Build hint (escape brackets so Rich doesn't consume them as markup)
-            if total_results == 1:
-                if db_results:
-                    hint = '  [dim]Enter  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
-                else:
-                    hint = '  [dim]Enter  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
-            elif total_results > 1:
-                diff_hint = '  \\[d]iff' if len(sp_results) >= 2 else ''
-                hint = (
-                    f'  [dim]\\[1-{total_results}]  \\[1 2] multi'
-                    f'{diff_hint}  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
-                )
-            else:
-                hint = '  [dim]URL / db:ULID  \\[s]kip  \\[h]ide  \\[q]uit:[/dim] '
+            hint = _build_match_hint(total_results, sp_results)
 
             console.print(hint, end='')
 
-            while True:
-                try:
-                    raw = input().strip()
-                except (KeyboardInterrupt, EOFError):
-                    console.print()
-                    console.print('  [dim]Quit — progress saved.[/dim]')
-                    _drain_enrichments()
-                    conn.close()
-                    return
-
-                choice = raw.lower()
-
-                if choice == 'q':
-                    console.print('  [dim]Quit — progress saved.[/dim]')
-                    _drain_enrichments()
-                    conn.close()
-                    return
-
-                elif choice == 'h':
-                    skip_key = f"album|||{_norm(artist)}|||{_norm(album)}"
-                    conn.execute('''
-                        INSERT OR REPLACE INTO legacy_track_map
-                            (lastfm_id, track_id, match_method, confidence)
-                        VALUES (?, NULL, 'hide', 1.0)
-                    ''', [skip_key])
-                    conn.commit()
-                    console.print('  [dim]Hidden.[/dim]')
-                    break
-
-                elif choice == 's':
-                    defer_key = f"album|||{_norm(artist)}|||{_norm(album)}"
-                    conn.execute('''
-                        INSERT OR REPLACE INTO legacy_track_map
-                            (lastfm_id, track_id, match_method, confidence)
-                        VALUES (?, NULL, 'skip', 1.0)
-                    ''', [defer_key])
-                    conn.commit()
-                    console.print('  [dim]Skipped.[/dim]')
-                    break
-
-                elif raw.startswith('http') or re.search(r'\b(sp:|mb:|musicbrainz\.org|[0-9a-f]{8}-[0-9a-f]{4})', raw):
-                    to_match, to_import = _parse_mixed_tokens(raw, db_results, sp_results)
-                    if to_match is None:
-                        console.print('  [yellow]Unrecognised input — paste URLs, sp:ID, UUIDs, or numbers[/yellow]')
-                        console.print(hint, end='')
-                        continue
-                    if to_match and not to_import:
-                        release_ids = [r['id'] for r in to_match]
-                        matched = bulk_rematch_by_name(conn, release_ids, artist, album)
-                        if matched:
-                            console.print(f'  [green]✓ {matched} listens matched[/green]')
-                        else:
-                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
-                    elif to_import:
-                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album, use_wiki=use_wiki)
-                        if to_match:
-                            # Also rematch against already-imported DB releases
-                            release_ids = [r['id'] for r in to_match]
-                            bulk_rematch_by_name(conn, release_ids, artist, album)
-                    break
-
-                elif choice == 'd' and len(sp_results) >= 2:
-                    render_diff(*sp_results, compact=True, id_labels=sp_labels)
-                    console.print(hint, end='')
-
-                elif raw.lower().startswith('db:') or re.match(r'^[0-9A-Z]{26}$', raw):
-                    rel = _resolve_release(conn, raw)
-                    if rel:
-                        matched = bulk_rematch_by_name(conn, [rel['id']], artist, album)
-                        if matched:
-                            console.print(f'  [green]✓ {matched} listens matched[/green]')
-                        else:
-                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
-                        break
-                    else:
-                        console.print(f'  [red]Release {raw!r} not found in DB[/red]')
-                        console.print(hint, end='')
-
-                elif total_results:
-                    # Enter with a single result → auto-select it
-                    if choice == '' and total_results == 1:
-                        indices_raw = '1'
-                    else:
-                        indices_raw = raw
-                    to_match, to_import = _parse_mixed_tokens(indices_raw, db_results, sp_results)
-                    if to_match is None:
-                        console.print(
-                            f'  [yellow]Enter 1–{total_results}, '
-                            f'multiple like "1 2", URLs, or s/h/q[/yellow]'
-                        )
-                        console.print(hint, end='')
-                        continue
-
-                    if to_match and not to_import:
-                        # All DB — just rematch
-                        release_ids = [r['id'] for r in to_match]
-                        matched = bulk_rematch_by_name(conn, release_ids, artist, album)
-                        if matched:
-                            console.print(f'  [green]✓ {matched} listens matched[/green]')
-                        else:
-                            console.print('  [yellow]No new matches — track names may differ[/yellow]')
-                        break
-                    elif to_import:
-                        if len(to_import) > 1:
-                            sp_only = [x for x in to_import if isinstance(x, SpotifyRelease)]
-                            if len(sp_only) >= 2:
-                                render_diff(*sp_only, compact=True, id_labels=sp_labels)
-                            console.print(
-                                f'  [dim]Import all {len(to_import)}? '
-                                f'\\[Y/n]:[/dim] ',
-                                end='',
-                            )
-                            try:
-                                confirm = input().strip().lower()
-                            except (KeyboardInterrupt, EOFError):
-                                console.print()
-                                break
-                            if confirm in ('n', 'no'):
-                                console.print(hint, end='')
-                                continue
-                        _do_multi_import(conn, to_import, raw_artist=artist, raw_album=album, use_wiki=use_wiki)
-                        if to_match:
-                            release_ids = [r['id'] for r in to_match]
-                            bulk_rematch_by_name(conn, release_ids, artist, album)
-                        break
-                    else:
-                        console.print(hint, end='')
-                        continue
-
-                else:
-                    console.print('  [yellow]Paste a URL, or enter s / h / q[/yellow]')
-                    console.print(hint, end='')
+            action = _prompt_for_album(conn, artist, album, db_results, sp_results,
+                                       sp_labels, hint, use_wiki)
+            if action == 'quit':
+                _drain_enrichments()
+                conn.close()
+                return
 
             console.print()
 
@@ -1466,7 +1491,7 @@ def cmd_match(args):
     final_unresolved = conn.execute(
         'SELECT COUNT(*) FROM listens WHERE track_id IS NULL'
     ).fetchone()[0]
-    total_matched = (total_unresolved if 'total_unresolved' in dir() else 0) - final_unresolved
+    total_matched = total_unresolved - final_unresolved
     if auto_matched_albums or total_matched > 0:
         console.print(
             f'\n[dim]──[/dim] [dim]{auto_matched_albums} albums matched'
@@ -1814,7 +1839,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list, use_wiki: bool = 
         )
 
         cur_type = m.get('type') or 'album'
-        chosen_type, quit_now, _ = _prompt_choice(
+        chosen_type, quit_now, _, _ = _prompt_choice(
             'Stage 1 — Primary type', _PRIMARY_TYPES, current=cur_type
         )
         if quit_now:
@@ -1822,7 +1847,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list, use_wiki: bool = 
             break
 
         cur_sec = m.get('type_secondary') or 'none'
-        chosen_sec, quit_now, _ = _prompt_choice(
+        chosen_sec, quit_now, _, _ = _prompt_choice(
             'Stage 2 — Secondary type', _SECONDARY_TYPES, current=cur_sec
         )
         if quit_now:
@@ -1837,7 +1862,7 @@ def _prompt_variants(conn: sqlite3.Connection, imported: list, use_wiki: bool = 
             if auto_ed in ('live', 'remix'):
                 auto_ed = None
             cur_ed = auto_ed or 'none'
-            chosen_ed, quit_now, do_hide = _prompt_choice(
+            chosen_ed, quit_now, do_hide, _ = _prompt_choice(
                 'Stage 3 — Edition type', _EDITION_TYPES, current=cur_ed, allow_hide=True
             )
             if quit_now:

@@ -14,11 +14,11 @@ from mdb_strings import (
     ascii_key,
     normalize_text,
     normalize_upc,
-    parse_track_title as _parse_track_title,
-    strip_scrobble_source_noise as _strip_scrobble_source_noise,
     _should_update_date,
     is_soundtrack_title,
     _base_title,
+    mb_key as _mb_key,
+    clean_key as _clean_key,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -1711,29 +1711,6 @@ def _rematch_by_name_one_release(conn: sqlite3.Connection,
         f'SELECT id, title FROM tracks WHERE release_id IN ({rph})', release_ids
     ).fetchall()
 
-    def _mb_key(title: str) -> str:
-        """ascii_key of a title normalized to MB parenthetical ETI format.
-        'My Melody - TEED Club Mix' → 'My Melody (TEED club mix)' → ascii_key.
-        Strips MB '(With X)' collaborator credits — scrobbles never include them."""
-        title = re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
-        title = _strip_scrobble_source_noise(title)
-        r = _parse_track_title(title)
-        full = r.clean_title
-        if r.feat_artists:
-            full += f" (feat. {', '.join(r.feat_artists)})"
-        if r.eti:
-            full += f" ({r.eti})"
-        return ascii_key(full)
-
-    def _clean_key(title: str) -> str:
-        """ascii_key of clean title only — strips feat. artists and ETI.
-        Fallback for when the DB stores 'Suit & Tie' but the scrobble says
-        'Suit & Tie featuring JAY Z'."""
-        title = re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
-        title = _strip_scrobble_source_noise(title)
-        r = _parse_track_title(title)
-        return ascii_key(r.clean_title)
-
     eti_map = {}
     clean_map = {}
     for t in db_tracks:
@@ -1862,6 +1839,28 @@ def link_track_variant(conn: sqlite3.Connection, canonical_id: str,
     return moved
 
 
+def _fetch_unresolved_listens(conn: sqlite3.Connection) -> list:
+    """Fetch listens still needing a track match, with all three raw fields
+    present (required by every name/alias/title matching pass)."""
+    return conn.execute('''
+        SELECT id, raw_track_name, raw_artist_name, raw_album_name
+        FROM listens
+        WHERE track_id IS NULL
+          AND raw_track_name IS NOT NULL
+          AND raw_artist_name IS NOT NULL
+          AND raw_album_name IS NOT NULL
+    ''').fetchall()
+
+
+def _apply_listen_matches(conn: sqlite3.Connection, updates: list) -> int:
+    """Write (track_id, listen_id) pairs to listens.track_id and commit.
+    Returns the number of rows updated."""
+    if updates:
+        conn.executemany('UPDATE listens SET track_id = ? WHERE id = ?', updates)
+        conn.commit()
+    return len(updates)
+
+
 def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
     """Match unresolved listens where raw names match canonical track/release/artist titles directly.
 
@@ -1917,14 +1916,7 @@ def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
     if not lookup:
         return 0
 
-    unmatched = conn.execute('''
-        SELECT id, raw_track_name, raw_artist_name, raw_album_name
-        FROM listens
-        WHERE track_id IS NULL
-          AND raw_track_name IS NOT NULL
-          AND raw_artist_name IS NOT NULL
-          AND raw_album_name IS NOT NULL
-    ''').fetchall()
+    unmatched = _fetch_unresolved_listens(conn)
 
     updates = []
     for listen_id, raw_track, raw_artist, raw_album in unmatched:
@@ -1933,11 +1925,7 @@ def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
         if track_id:
             updates.append((track_id, listen_id))
 
-    if updates:
-        conn.executemany('UPDATE listens SET track_id = ? WHERE id = ?', updates)
-        conn.commit()
-
-    return len(updates)
+    return _apply_listen_matches(conn, updates)
 
 
 def title_then_alias_match(raw_album_norm: str, title_norm: str, alias_norms: list) -> bool:
@@ -2049,14 +2037,7 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
         for artist_norm in filter(None, (artist_name_norm, artist_alias_norm)):
             lookup.setdefault((artist_norm, release_norm, key_track), track_id)
 
-    unmatched = conn.execute('''
-        SELECT id, raw_track_name, raw_artist_name, raw_album_name
-        FROM listens
-        WHERE track_id IS NULL
-          AND raw_track_name IS NOT NULL
-          AND raw_artist_name IS NOT NULL
-          AND raw_album_name IS NOT NULL
-    ''').fetchall()
+    unmatched = _fetch_unresolved_listens(conn)
 
     updates = []
     still_unmatched = []
@@ -2134,11 +2115,7 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
                     updates.append((track_id, listen_id))
                     break
 
-    if updates:
-        conn.executemany('UPDATE listens SET track_id = ? WHERE id = ?', updates)
-        conn.commit()
-
-    return len(updates)
+    return _apply_listen_matches(conn, updates)
 
 
 def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> list:
@@ -2179,6 +2156,21 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
     ).fetchall():
         aliases_by_release.setdefault(release_id, []).append(alias_norm or normalize_text(alias))
 
+    # Preload artist aliases keyed by lower(artist name) — same idea as the
+    # release-alias preload above, avoiding a per-row subquery.
+    artist_aliases_by_name: dict[str, list[str]] = {}
+    for name_lower, alias_norm in conn.execute('''
+        SELECT lower(a.name), aa.alias_norm
+        FROM   artists a
+        JOIN   artist_aliases aa ON aa.artist_id = a.id
+    ''').fetchall():
+        artist_aliases_by_name.setdefault(name_lower, []).append(alias_norm)
+
+    def _artist_name_forms(artist_name: 'str | None') -> list:
+        names = [normalize_text(artist_name or '')]
+        names += artist_aliases_by_name.get((artist_name or '').lower(), [])
+        return names
+
     results = []
     for row in rows:
         row = dict(row)
@@ -2188,12 +2180,7 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
             if normalize_text(row['title']) != norm_album and norm_album not in release_aliases:
                 continue
             # Artist: try normalize_text on name and aliases
-            artist_names = [normalize_text(row['artist_name'] or '')]
-            alias_rows = conn.execute(
-                'SELECT alias_norm FROM artist_aliases WHERE artist_id IN (SELECT id FROM artists WHERE lower(name) = lower(?))',
-                [row['artist_name'] or '']
-            ).fetchall()
-            artist_names += [r[0] for r in alias_rows]
+            artist_names = _artist_name_forms(row['artist_name'])
             if norm_artist and not any(norm_artist == n for n in artist_names):
                 continue
         else:
@@ -2214,13 +2201,7 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
             # aliases, not just the artist's stored name, since such
             # releases' scrobbles often use an alias.
             if title_then_alias_match(norm_album, normalize_text(row['title']), release_aliases):
-                artist_names = [normalize_text(row['artist_name'] or '')]
-                alias_rows = conn.execute(
-                    'SELECT alias_norm FROM artist_aliases WHERE artist_id IN'
-                    ' (SELECT id FROM artists WHERE lower(name) = lower(?))',
-                    [row['artist_name'] or '']
-                ).fetchall()
-                artist_names += [r[0] for r in alias_rows]
+                artist_names = _artist_name_forms(row['artist_name'])
                 if not norm_artist or any(norm_artist == n for n in artist_names):
                     results.append(row)
                     continue
