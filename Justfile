@@ -68,13 +68,7 @@ verify-build:
 # off-repo backup, not something the SPA reads from, so it doesn't need to
 # be current every checkpoint. Run `just turso-push` separately, ~monthly.
 db-checkpoint:
-    cd music && {{mdb_python}} mdb.py certs refresh
-    cd music && {{mdb_python}} mdb.py stats refresh
-    cd music && sqlite3 master.sqlite "PRAGMA wal_checkpoint(TRUNCATE);"
-    cd music && {{mdb_python}} make_prod_db.py
-    cd music && gzip -k -f -9 master_prod.sqlite
-    bundle exec jekyll build --destination _site
-    @echo "Regenerated music/master_prod.sqlite.gz and rebuilt _site/"
+    cd music && {{mdb_python}} mdb.py checkpoint
 
 # Push master.sqlite to Turso (the durable off-repo backup copy). Not part of
 # db-checkpoint — run this manually on its own cadence (~monthly), since it's

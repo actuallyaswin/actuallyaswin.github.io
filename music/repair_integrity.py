@@ -37,6 +37,7 @@ _DELETE_ORPHANS = [
     ('release_variants',        'variant_id',   'releases', 'id'),
     ('release_soundtrack_meta', 'release_id', 'releases', 'id'),
     ('release_service_links',   'release_id', 'releases', 'id'),
+    ('apple_match_status',      'release_id', 'releases', 'id'),
     ('track_artists',           'track_id',   'tracks',   'id'),
     ('track_artists',           'artist_id',  'artists',  'id'),
     ('artist_members',          'group_artist_id',  'artists', 'id'),
@@ -104,6 +105,7 @@ def main():
         return 1
 
     conn = sqlite3.connect(args.db)
+    conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute('PRAGMA foreign_keys=OFF')  # we are the thing doing the fixing
 
     before = len(conn.execute('PRAGMA foreign_key_check').fetchall())
@@ -142,6 +144,7 @@ def main():
         shutil.copyfile(args.db, backup)
         print(f'backup written to {backup.name}')
         conn = sqlite3.connect(args.db)
+        conn.execute("PRAGMA busy_timeout = 10000")
         conn.execute('PRAGMA foreign_keys=OFF')
 
     try:

@@ -18,14 +18,6 @@ const ViewList = (() => {
         return res ? JSON.parse(res.values[0][0]) : null;
     }
 
-    function _donutColor(pct) {
-        if (pct <= 0)   return 'var(--border)';
-        if (pct < 0.5)  return '#3b82f6';
-        if (pct < 0.75) return '#f59e0b';
-        if (pct < 1.0)  return '#f97316';
-        return '#22c55e';
-    }
-
     // Unmatched entries (not in the library at all) sort as least-complete —
     // distinct from a matched-but-unheard album, which is exactly 0.
     function _completionOf(e) {
@@ -37,12 +29,7 @@ const ViewList = (() => {
     function _cardHtml(e) {
         const heardClass = e.release_id ? (e.heard ? '' : ' unplayed') : ' canon-unmatched';
         const rankLabel = e.position_label || `#${e.rank}`;
-        const hasTracks = e.release_id && e.total_tracks > 0;
-        const trackPct = hasTracks ? e.listened_tracks / e.total_tracks : 0;
-        const donut = hasTracks
-            ? `<div class="donut-wrap" style="--p:${Math.round(trackPct * 100)};--c:${_donutColor(trackPct)}"
-                   data-tooltip="${e.listened_tracks} / ${e.total_tracks} tracks"><div class="donut"></div></div>`
-            : '';
+        const donut = donutHtml(e.listened_tracks, e.total_tracks);
         const inner = `
             <div class="disc-card-img" style="background-image:url('${cssUrl(e.art || getFallbackImageUrl())}')"></div>
             <span class="canon-list-rank">${escapeHtml(rankLabel)}</span>

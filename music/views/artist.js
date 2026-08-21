@@ -344,6 +344,7 @@ const ViewArtist = (() => {
             if (extLinks.get(4))    phtml += renderLinkPill('deezer',      `https://www.deezer.com/artist/${extLinks.get(4)}`, 'Deezer');
             if (extLinks.get(5))    phtml += renderLinkPill('tidal',       `https://tidal.com/browse/artist/${extLinks.get(5)}`, 'Tidal');
             if (extLinks.get(7))    phtml += renderLinkPill('beatport',    `https://www.beatport.com/artist/-/${extLinks.get(7)}`, 'Beatport');
+            if (extLinks.get(13))   phtml += renderLinkPill('traxsource',  extLinks.get(13), 'Traxsource');
             if (extLinks.get(6))    phtml += renderLinkPill('bandcamp',    extLinks.get(6), 'Bandcamp');
             if (mbid)               phtml += renderLinkPill('musicbrainz', `https://musicbrainz.org/artist/${mbid}`, 'MusicBrainz');
             if (wikiPageId)         phtml += renderLinkPill('wikipedia',   wikipediaHref(wikiPageId), 'Wikipedia');
@@ -452,21 +453,9 @@ const ViewArtist = (() => {
         { key: 'other',       label: 'Other',               test: () => true },
     ];
 
-    function _discDonutColor(pct) {
-        if (pct <= 0)   return 'var(--border)';
-        if (pct < 0.5)  return '#3b82f6';
-        if (pct < 0.75) return '#f59e0b';
-        if (pct < 1.0)  return '#f97316';
-        return '#22c55e';
-    }
-
     function _makeDiscCard(row, collab) {
         const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
                totalListens, primaryArtistName, slug, totalTracks, listenedTracks] = row;
-
-        const pct   = totalTracks > 0 ? listenedTracks / totalTracks : 0;
-        const pctInt = Math.round(pct * 100);
-        const color = _discDonutColor(pct);
 
         let subParts = [];
         const year = releaseDate ? releaseDate.slice(0, 4) : null;
@@ -479,7 +468,6 @@ const ViewArtist = (() => {
         card.href = releaseHref(id, slug);
 
         const imgSrc = albumArtUrl || getFallbackImageUrl();
-        const tooltipText = totalTracks > 0 ? `${listenedTracks} / ${totalTracks} tracks` : '';
 
         card.innerHTML = `
             <div class="disc-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
@@ -488,7 +476,7 @@ const ViewArtist = (() => {
                     <div class="disc-card-title">${escapeHtml(title)}</div>
                     <div class="disc-card-sub">${subParts.join(' · ')}</div>
                 </div>
-                ${totalTracks > 0 ? `<div class="donut-wrap" style="--p:${pctInt};--c:${color}" data-tooltip="${tooltipText}"><div class="donut"></div></div>` : ''}
+                ${donutHtml(listenedTracks, totalTracks)}
             </div>
         `;
         return card;
@@ -498,9 +486,6 @@ const ViewArtist = (() => {
         const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
                totalListens, primaryArtistName, slug, totalTracks, listenedTracks] = row;
 
-        const pct    = totalTracks > 0 ? listenedTracks / totalTracks : 0;
-        const pctInt = Math.round(pct * 100);
-        const color  = _discDonutColor(pct);
         const year   = releaseDate ? releaseDate.slice(0, 4) : '';
 
         const rowEl = document.createElement('a');
@@ -509,7 +494,6 @@ const ViewArtist = (() => {
 
         const imgSrc = albumArtUrl || getFallbackImageUrl();
         const subLabel = collab && primaryArtistName ? escapeHtml(primaryArtistName) : '';
-        const tooltipText = totalTracks > 0 ? `${listenedTracks} / ${totalTracks} tracks` : '';
 
         rowEl.innerHTML = `
             <div class="disc-list-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
@@ -520,7 +504,7 @@ const ViewArtist = (() => {
             <div class="disc-list-right">
                 <span class="disc-list-year">${year}</span>
                 <span class="disc-list-frac">${totalTracks > 0 ? `${listenedTracks}/${totalTracks}` : ''}</span>
-                ${totalTracks > 0 ? `<div class="donut-wrap donut-sm" style="--p:${pctInt};--c:${color}" data-tooltip="${tooltipText}"><div class="donut"></div></div>` : ''}
+                ${donutHtml(listenedTracks, totalTracks, { small: true })}
             </div>
         `;
         return rowEl;

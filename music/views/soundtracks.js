@@ -41,14 +41,6 @@ const ViewSoundtracks = (() => {
     // Platform labels + icon markup now live in platform-icons.js
     // (shared with views/release.js) — see platformLabel()/platformIconMarkup().
 
-    function _donutColor(pct) {
-        if (pct <= 0)   return 'var(--border)';
-        if (pct < 0.5)  return '#3b82f6';
-        if (pct < 0.75) return '#f59e0b';
-        if (pct < 1.0)  return '#f97316';
-        return '#22c55e';
-    }
-
     function _cache(key) {
         const res = _db.exec('SELECT value_json FROM stats_cache WHERE key = ?', [key])[0];
         return res ? JSON.parse(res.values[0][0]) : null;
@@ -64,9 +56,9 @@ const ViewSoundtracks = (() => {
                         SELECT r.primary_artist_id WHERE r.primary_artist_id IS NOT NULL
                    )) as artist,
                    sm.platform, sm.series, r.release_year,
-                   (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND t.hidden = 0) as total_tracks,
+                   (SELECT COUNT(*) FROM tracks t WHERE t.release_id = r.id AND ${SCROBBLABLE_TRACK_FILTER}) as total_tracks,
                    (SELECT COUNT(*) FROM tracks t
-                        WHERE t.release_id = r.id AND t.hidden = 0
+                        WHERE t.release_id = r.id AND ${SCROBBLABLE_TRACK_FILTER}
                           AND EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id)) as tracks_heard
             FROM releases r
             JOIN release_soundtrack_meta sm ON sm.release_id = r.id
@@ -105,12 +97,7 @@ const ViewSoundtracks = (() => {
         const tag = _groupBy === 'series'
             ? (row.platform ? platformLabel(row.platform) : '')
             : (row.series || '');
-        const hasTracks = row.totalTracks > 0;
-        const pct = hasTracks ? row.tracksHeard / row.totalTracks : 0;
-        const donut = hasTracks
-            ? `<div class="donut-wrap" style="--p:${Math.round(pct * 100)};--c:${_donutColor(pct)}"
-                   data-tooltip="${row.tracksHeard} / ${row.totalTracks} tracks"><div class="donut"></div></div>`
-            : '';
+        const donut = donutHtml(row.tracksHeard, row.totalTracks);
         return `<a href="${releaseHref(row.id, row.slug)}" class="disc-card${row.tracksHeard === 0 ? ' unplayed' : ''}" title="${escapeHtml(row.title)}">
             <div class="disc-card-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')"></div>
             <div class="disc-card-meta">

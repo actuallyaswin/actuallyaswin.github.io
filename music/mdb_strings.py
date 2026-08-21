@@ -467,7 +467,30 @@ _SMART_PUNCT = str.maketrans({
     '\u2014': '-',
     # MINUS SIGN                  −
     '\u2212': '-',
+    # Latin-Extended letters NFKD does NOT decompose (they are not a base
+    # letter + combining mark, they are their own codepoints), so without an
+    # explicit mapping they'd survive normalization and silently fail to
+    # match a plain-ASCII scrobble of the same name. Covers the common cases
+    # likely to appear in artist or track names; not an exhaustive
+    # Unicode-confusables table.
+    '\u0141': 'L', '\u0142': 'l',
+    '\u0110': 'D', '\u0111': 'd',
+    '\u00d8': 'O', '\u00f8': 'o',
+    '\u00de': 'Th', '\u00fe': 'th',
+    '\u0126': 'H', '\u0127': 'h',
+    '\u014a': 'N', '\u014b': 'n',
+    '\u0166': 'T', '\u0167': 't',
 })
+
+
+def _fold_accents(s: str) -> str:
+    """Shared normalization core for normalize_text/ascii_key: apply the
+    smart-punct/non-decomposable-letter translation table, NFKD-decompose,
+    then strip the resulting combining marks. Split out so the two callers
+    cannot drift out of sync with each other."""
+    s = str(s or '').translate(_SMART_PUNCT)
+    s = unicodedata.normalize('NFKD', s)
+    return ''.join(c for c in s if not unicodedata.combining(c))
 
 
 def normalize_text(s: str) -> str:
@@ -482,9 +505,7 @@ def normalize_text(s: str) -> str:
     """
     if not s:
         return ''
-    s = str(s).translate(_SMART_PUNCT)
-    s = unicodedata.normalize('NFKD', s)
-    s = ''.join(c for c in s if not unicodedata.combining(c))
+    s = _fold_accents(str(s))
     return re.sub(r'\s+', ' ', s).strip().lower()
 
 
@@ -499,10 +520,8 @@ def ascii_key(s: str) -> str:
 
     Used to build lookup dicts for fuzzy title matching (e.g. MusicBrainz track lookups).
     """
-    t = str(s or '').translate(_SMART_PUNCT)
-    t = re.sub(r'&', ' and ', t)
-    t = unicodedata.normalize('NFKD', t)
-    t = ''.join(c for c in t if not unicodedata.combining(c))
+    t = re.sub(r'&', ' and ', str(s or ''))
+    t = _fold_accents(t)
     t = re.sub(r'[^a-z0-9 ]', ' ', t.lower())
     return re.sub(r'\s+', ' ', t).strip()
 

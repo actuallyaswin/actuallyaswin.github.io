@@ -17,7 +17,8 @@ const ViewCollectionPhysical = (() => {
 
     // Sample the left-edge pixels of an image and return averaged { bg, text }.
     // Returns null on CORS failure or load error.
-    const _colorCache = new Map(); // release_id → { bg, text }
+    // release_id → { bg, text }
+    const _colorCache = new Map();
     function _sampleEdgeColor(url) {
         return new Promise(resolve => {
             const img = new Image();
@@ -155,7 +156,7 @@ const ViewCollectionPhysical = (() => {
         }
         const body = _drawer.querySelector('#drawer-body');
         const libLink = item.release_id
-            ? `<a class="drawer-link" href="index.html?view=release&id=${encodeURIComponent(item.release_id)}" target="_blank">
+            ? `<a class="drawer-link" href="index.html${releaseHref(item.release_id, item.release_slug)}" target="_blank">
                  <i data-lucide="library"></i> View in library
                </a>`
             : '';
@@ -272,6 +273,7 @@ const ViewCollectionPhysical = (() => {
                    ci.sleeve_condition,
                    ci.coarse_genre,
                    ci.release_id,
+                   r.slug                                    AS release_slug,
                    ci.discogs_folder,
                    CAST(substr(ci.date_added, 1, 4) AS INTEGER) AS year,
                    sm.source_type,

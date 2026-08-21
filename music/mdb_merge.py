@@ -268,6 +268,9 @@ class ReleaseMerge:
     def _bc_tracks(self) -> list:
         return self._bc_data().get('_track_list') or []
 
+    def _am_tracks(self) -> list:
+        return self._am_data().get('_track_list') or []
+
     # -- Public API -------------------------------------------------------------
 
     def release(self) -> MDBRelease:
@@ -654,13 +657,15 @@ class ReleaseMerge:
 
         all_isrcs = (set(mb_by_isrc) | set(sp_by_isrc) | set(bp_by_isrc) | set(dz_by_isrc)) - {'', None}
 
-        # Fallback for releases where no source has ISRCs (e.g. self-released mixtapes
-        # on MusicBrainz, or Bandcamp-only releases with no MB/Spotify match at all).
-        # Build tracks positionally from MB (or Bandcamp when MB has none), supplemented
-        # by Spotify duration data matched on normalised title.
+        # Fallback for releases where no source has ISRCs (self-released
+        # mixtapes on MusicBrainz, Bandcamp-only releases with no MB/Spotify
+        # match, or Apple-Music-only imports — iTunes Lookup never exposes
+        # ISRCs). Build tracks positionally from MB (or Bandcamp, or Apple
+        # Music, in that priority order, whichever has a tracklist),
+        # supplemented by Spotify duration data matched on normalized title.
         if not all_isrcs:
             merged = self._build_tracks_positional(
-                mb_tracks, sp_tracks, bp_tracks, self._bc_tracks(), conflicts
+                mb_tracks, sp_tracks, bp_tracks, self._bc_tracks(), self._am_tracks(), conflicts
             )
             merged.sort(key=lambda t: (t.disc_number, t.track_number))
             return merged
@@ -784,15 +789,17 @@ class ReleaseMerge:
         return merged
 
     def _build_tracks_positional(
-        self, mb_tracks: list, sp_tracks: list, bp_tracks: list, bc_tracks: list, conflicts: list
+        self, mb_tracks: list, sp_tracks: list, bp_tracks: list, bc_tracks: list,
+        am_tracks: list, conflicts: list
     ) -> list[MDBTrack]:
         """Fallback when no source has ISRCs — build tracks by position from MB.
 
         Matches Spotify tracks by normalised title to fill in duration_ms and
         spotify_id; Beatport by position for BPM/key.  Used for releases like
         self-released mixtapes that lack ISRC registration.  When MB has no
-        tracklist at all (e.g. a Bandcamp-only import), Bandcamp's own track
-        list is used as the anchor instead.
+        tracklist at all, Bandcamp's own track list is used as the anchor
+        instead, and Apple Music's (iTunes Lookup never has ISRCs, so an
+        AM-only import always lands here) as the last-resort anchor.
         """
         # Spotify title lookup (normalised) for duration/id supplementation
         sp_by_title: dict = {}
@@ -807,8 +814,8 @@ class ReleaseMerge:
         for t in bp_tracks:
             bp_by_pos[(t.get('_disc_number', 1), t.get('_track_number', 0))] = t
 
-        anchor_tracks = mb_tracks or bc_tracks
-        anchor_source = 'mb' if mb_tracks else 'bc'
+        anchor_tracks = mb_tracks or bc_tracks or am_tracks
+        anchor_source = 'mb' if mb_tracks else ('bc' if bc_tracks else 'am')
 
         tracks: list[MDBTrack] = []
         for mb_t in sorted(anchor_tracks, key=lambda t: (t.get('_disc_number', 1), t.get('_track_number', 0))):
@@ -834,7 +841,7 @@ class ReleaseMerge:
             bpm         = bp_t.get('_bpm') if bp_t else None
             musical_key = bp_t.get('_key') if bp_t else None
             key_camelot = bp_t.get('_key_camelot') if bp_t else None
-            is_explicit = bool((sp_full_t or {}).get('explicit', False))
+            is_explicit = bool((sp_full_t or {}).get('explicit', False) or mb_t.get('_is_explicit', False))
 
             sources: set = {anchor_source}
             if sp_t:
@@ -843,6 +850,16 @@ class ReleaseMerge:
                 sources.add('bp')
 
             artists = self._merge_track_artists(mb_t, sp_t, bp_t)
+            if not artists:
+                # MB/Spotify per-track credits are the only sources
+                # _merge_track_artists reads from — an AM- or BC-anchored
+                # track with no Spotify title match falls through with zero
+                # credits otherwise (iTunes Lookup never exposes a per-track
+                # artist, only the collection-level one). Fall back to the
+                # release's own primary artist rather than leave it uncredited.
+                primary = self._merge_primary_artist(self._mb_data(), self._sp_data())
+                if primary:
+                    artists = [primary]
 
             tracks.append(MDBTrack(
                 # no ISRCs available
@@ -864,7 +881,7 @@ class ReleaseMerge:
                 spotify_popularity=(sp_full_t or {}).get('popularity') if sp_full_t else None,
                 artists=artists,
                 sources=sources,
-                source_map={'title': 'mb', 'duration_ms': 'sp' if sp_full_t else 'mb'},
+                source_map={'title': anchor_source, 'duration_ms': 'sp' if sp_full_t else anchor_source},
             ))
         return tracks
 

@@ -152,8 +152,7 @@ def _mb_key(title: str) -> str:
     of a plain-title track with the same base name.
     Strips MB '(With X)' collaborator credits — scrobbles never include them.
     """
-    import re as _re
-    title = _re.sub(r'\s*\(With [^)]+\)', '', title).strip()
+    title = re.sub(r'\s*\(With [^)]+\)', '', title).strip()
     title = _strip_scrobble_source_noise(title)
     r = _parse_track_title(title)
     full = r.clean_title
@@ -1474,6 +1473,30 @@ def cmd_match(args):
             f'  ·  {auto_matched_listens:,} listens resolved'
             f'  ·  {final_unresolved:,} remain[/dim]'
         )
+
+    if getattr(args, 'json', False):
+        # Only meaningful in --artist (non-interactive sweep) mode; in the
+        # interactive prompt flow there's no clean "final result" to report,
+        # so print an empty-needs_manual summary rather than skip the flag.
+        json_needs_manual = []
+        for item in needs_manual:
+            sp_list = item.get('sp') or []
+            db_list = item.get('db') or []
+            json_needs_manual.append({
+                'artist': item['artist'],
+                'album': item['album'],
+                'count': item['count'],
+                'db_matches': len(db_list),
+                'sp_matches': len(sp_list),
+                'sp_hint': sp_list[0].name if sp_list else None,
+            })
+        print(json.dumps({
+            'auto_matched_albums': auto_matched_albums,
+            'auto_matched_listens': auto_matched_listens,
+            'needs_manual': json_needs_manual,
+            'final_unresolved': final_unresolved,
+        }))
+
     conn.close()
 
 
@@ -1978,6 +2001,9 @@ def main():
                          'needs-manual summary)')
     pm.add_argument('--wiki',        action='store_true',
                     help='Enable Wikipedia date lookup during import (slower; off by default)')
+    pm.add_argument('--json',        action='store_true',
+                    help='Print a final JSON summary line (most useful with --artist); '
+                         '{"auto_matched_albums","auto_matched_listens","needs_manual","final_unresolved"}')
 
     # status
     sub.add_parser('status', help='Show matched / unmatched breakdown')

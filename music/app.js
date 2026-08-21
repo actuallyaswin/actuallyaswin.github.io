@@ -17,6 +17,7 @@ const VIEWS = {
     'stats':           () => ViewStats,
     'list':            () => ViewList,
     'soundtracks':     () => ViewSoundtracks,
+    'browse':          () => ViewBrowse,
 };
 
 function getParams() {

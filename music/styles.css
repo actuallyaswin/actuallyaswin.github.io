@@ -621,6 +621,7 @@ header h1 {
 .pill-discogs     { --svc: #333333; }
 .pill-rym              { --svc: #2383C6; }
 .pill-residentadvisor  { --svc: #FF4848; }
+.pill-traxsource       { --svc: #40a0ff; }
 
 :root[data-theme="light"] .pill-beatport { --svc: #007a4a; }
 :root[data-theme="light"] .pill-genius   { --svc: #7a6e00; }
@@ -689,6 +690,7 @@ header h1 {
 .pill-discogs     .pill-mask { -webkit-mask-image: url('images/links/discogs.svg');     mask-image: url('images/links/discogs.svg'); }
 .pill-rym             .pill-mask { -webkit-mask-image: url('images/links/rym.svg');             mask-image: url('images/links/rym.svg'); }
 .pill-residentadvisor .pill-mask { -webkit-mask-image: url('images/links/residentadvisor.png'); mask-image: url('images/links/residentadvisor.png'); }
+.pill-traxsource      .pill-mask { -webkit-mask-image: url('images/links/traxsource.svg');      mask-image: url('images/links/traxsource.svg'); }
 .pill-aoty-img    { width: 16px; height: 16px; object-fit: contain; border-radius: 2px; position: relative; z-index: 1; }
 
 .pill-text {
@@ -1388,6 +1390,15 @@ a.stat-card:hover .stat-label::after {
 
 .disc-group {
     margin-bottom: 2.5rem;
+}
+
+/* Discography group headings ("Albums", "EPs & Singles", ...) get a
+   full-width divider bar instead of the plain uppercase look shared by
+   other section labels — reads as a clean section break above the grid. */
+.disc-group h3 {
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    padding: 4px 16px;
 }
 
 .disc-grid {
@@ -2167,27 +2178,29 @@ a.stat-card:hover .stat-label::after {
 }
 
 /* Editorial Notes */
-.editorial-notes {
+/* Shared by "Editorial Notes" (Apple Music) and "From the Artist" (Bandcamp
+   liner notes) — same clamp/measure/toggle behavior, no visual difference. */
+.notes-section {
     margin-bottom: 1.5rem;
 }
-.editorial-note {
+.notes-para {
     color: var(--text-secondary);
     line-height: 1.6;
 }
-.editorial-note + .editorial-note {
+.notes-para + .notes-para {
     margin-top: 1rem;
 }
 /* is-clamped is applied by JS only when the note overflows; the fade rides on it. */
-.editorial-clamp {
+.notes-clamp {
     position: relative;
 }
-.editorial-clamp.is-clamped {
+.notes-clamp.is-clamped {
     display: -webkit-box;
     -webkit-line-clamp: 8;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
-.editorial-fade {
+.notes-fade {
     display: none;
     position: absolute;
     bottom: 0;
@@ -2197,10 +2210,10 @@ a.stat-card:hover .stat-label::after {
     background: linear-gradient(to bottom, transparent, var(--bg) 85%);
     pointer-events: none;
 }
-.editorial-clamp.is-clamped .editorial-fade {
+.notes-clamp.is-clamped .notes-fade {
     display: block;
 }
-.editorial-toggle {
+.notes-toggle {
     margin-top: 0.75rem;
     background: none;
     border: none;
@@ -2210,7 +2223,7 @@ a.stat-card:hover .stat-label::after {
     cursor: pointer;
     padding: 0;
 }
-.editorial-toggle:hover {
+.notes-toggle:hover {
     text-decoration: underline;
 }
 .pulse-rows {
@@ -3794,4 +3807,158 @@ footer a:hover {
     .compare-vs { justify-self: center; }
     .compare-tracks-grid { grid-template-columns: 1fr; gap: 1.5rem; }
     .compare-metric-row { grid-template-columns: 56px 1fr 56px; }
+}
+
+/* Browse — poster-grid density modes and the Letterboxd-style decade carousel */
+.browse-grid-posters {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 1.25rem 1rem;
+}
+.browse-grid-posters-sm {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 0.85rem 0.6rem;
+}
+.browse-grid-list { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+
+.browse-poster {
+    position: relative;
+    display: block;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+.browse-poster-img {
+    aspect-ratio: 1 / 1;
+    background-size: cover;
+    background-position: center;
+    background-color: var(--bg-tertiary);
+}
+.browse-poster.unplayed .browse-poster-img { filter: grayscale(0.6) brightness(0.55); }
+.browse-poster-donut {
+    position: absolute;
+    top: 0.4rem;
+    right: 0.4rem;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.6));
+}
+.browse-poster-caption {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    padding: 0.5rem 0.55rem 0.4rem;
+    background: linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0));
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+.browse-poster:hover .browse-poster-caption,
+.browse-poster:focus-visible .browse-poster-caption { opacity: 1; }
+.browse-poster-title {
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.browse-poster-sub {
+    color: rgba(255,255,255,0.75);
+    font-size: 0.68rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.browse-empty { color: var(--text-tertiary); padding: 2rem 0; }
+
+.decade-carousel {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    overflow-x: auto;
+    padding-bottom: 0.75rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+.decade-carousel-arrow {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 0.2rem 0.4rem;
+    flex-shrink: 0;
+}
+.decade-carousel-arrow:disabled { opacity: 0.3; cursor: default; }
+.decade-carousel-arrow:not(:disabled):hover { color: var(--text); }
+.decade-carousel-year {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.decade-carousel-year:hover { background: var(--bg-secondary); color: var(--text); }
+.decade-carousel-year.active { background: var(--primary); color: #fff; font-weight: 600; }
+.decade-carousel-year:first-of-type { font-weight: 700; }
+
+/* TomSelect — recolor to match the site's dark/light theme instead of its
+   default light-only look, and match the height/shape of the plain
+   .year-filter-select dropdowns it sits beside in the same toolbar row.
+   Genre (~600 heard) and Platform (~25) dropdowns use this; everything
+   smaller stays a plain <select> or button row. */
+.ts-wrapper {
+    /* Fixed rather than flex-grow — a flex-stretched TomSelect inside
+       .control-block (column flex, no explicit width) collapses to its
+       min-content and clips "All platforms" mid-word; auto-fill-the-row
+       is also wrong once several of these sit side by side in one toolbar. */
+    width: 11rem;
+}
+.ts-control {
+    background: var(--bg-secondary) !important;
+    border: none !important;
+    color: var(--text-secondary) !important;
+    border-radius: 4px !important;
+    min-height: 0 !important;
+    padding: 0.45rem 1.8rem 0.45rem 0.65rem !important;
+    font-size: 0.82rem;
+    line-height: 1;
+}
+.ts-control input {
+    color: var(--text-secondary) !important;
+    font-size: 0.82rem;
+}
+.ts-control > .item { color: var(--text-secondary) !important; }
+.ts-wrapper.single .ts-control { padding: 0.45rem 1.8rem 0.45rem 0.65rem !important; }
+/* TomSelect's built-in caret is a border-triangle hack styled for its light
+   theme — swap in the same chevron glyph .year-filter-select already uses so
+   every dropdown in the toolbar reads as one consistent control. */
+.ts-control:not(.rtl):after {
+    display: none;
+}
+.ts-control {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 0.6rem center !important;
+}
+.ts-dropdown {
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    z-index: 30;
+    width: max-content !important;
+    min-width: 100%;
+    max-width: 320px;
+}
+.ts-dropdown .ts-dropdown-content { max-height: 280px; }
+.ts-dropdown .option { color: var(--text) !important; font-size: 0.82rem; }
+.ts-dropdown .active { background: var(--primary) !important; color: #fff !important; }
+.ts-dropdown .no-results { color: var(--text-tertiary) !important; }
+.ts-wrapper.focus .ts-control { box-shadow: 0 0 0 2px var(--primary); }
+
+@media (max-width: 768px) {
+    .browse-grid-posters { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+    .browse-grid-posters-sm { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
+    .ts-wrapper { width: 100%; }
 }

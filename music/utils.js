@@ -86,6 +86,27 @@ function sameSongKey(title) {
     return title.slice(0, m.index).trim().toLowerCase();
 }
 
+// Tracks under 30s don't get scrobbled, so they're excluded from every
+// "X / Y tracks heard" denominator (mdb.py's stats refresh mirrors this).
+const SCROBBLABLE_TRACK_FILTER =
+    "t.hidden = 0 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)";
+
+function donutColor(pct) {
+    if (pct <= 0)   return 'var(--border)';
+    if (pct < 0.5)  return '#3b82f6';
+    if (pct < 0.75) return '#f59e0b';
+    if (pct < 1.0)  return '#f97316';
+    return '#22c55e';
+}
+
+// "X / Y tracks" ring markup — pass heard/total already filtered by SCROBBLABLE_TRACK_FILTER.
+function donutHtml(heard, total, { small = false, label = 'tracks' } = {}) {
+    if (!total) return '';
+    const pct = heard / total;
+    const sizeClass = small ? ' donut-sm' : '';
+    return `<div class="donut-wrap${sizeClass}" style="--p:${Math.round(pct * 100)};--c:${donutColor(pct)}" data-tooltip="${heard} / ${total} ${label}"><div class="donut"></div></div>`;
+}
+
 function formatRelativeTime(ts) {
     const diffSec = Math.floor(Date.now() / 1000) - ts;
     if (diffSec < 86400)       return 'today';

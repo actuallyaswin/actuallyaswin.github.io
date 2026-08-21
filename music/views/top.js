@@ -46,6 +46,21 @@ const ViewTop = (() => {
         if (range === 'week')  return now - 7   * 86400;
         if (range === 'month') return now - 30  * 86400;
         if (range === 'year')  return now - 365 * 86400;
+        // Calendar-boundary ranges — start of the current week/month/year in
+        // local time, not a rolling N-day window like their 'last-' siblings.
+        const d = new Date();
+        if (range === 'this-week') {
+            const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
+            return Math.floor(start.getTime() / 1000);
+        }
+        if (range === 'this-month') {
+            const start = new Date(d.getFullYear(), d.getMonth(), 1);
+            return Math.floor(start.getTime() / 1000);
+        }
+        if (range === 'this-year') {
+            const start = new Date(d.getFullYear(), 0, 1);
+            return Math.floor(start.getTime() / 1000);
+        }
         return null;
     }
 
@@ -225,7 +240,7 @@ const ViewTop = (() => {
         const cfg = ENTITY_CONFIG[entityType];
         if (cfg && params.sort && cfg.sortOptions.some(o => o.key === params.sort)) sortBy = params.sort;
         else sortBy = 'listens';
-        if (params.range && ['week','month','year','all'].includes(params.range)) range = params.range;
+        if (params.range && ['this-week','this-month','this-year','week','month','year','all'].includes(params.range)) range = params.range;
         if (params.count && [10,20,50,100].includes(+params.count)) countLimit = +params.count;
         if (params.display && ['list','tiles','collage'].includes(params.display)) viewMode = params.display;
         if (params.year) releaseYear = params.year;
@@ -307,7 +322,11 @@ const ViewTop = (() => {
     }
 
     function _rangeControlsHtml() {
-        const OPTS = [['week','Week'],['month','Month'],['year','Year'],['all','All']];
+        const OPTS = [
+            ['this-week', 'This Week'], ['this-month', 'This Month'], ['this-year', 'This Year'],
+            ['week', 'Last Week'], ['month', 'Last Month'], ['year', 'Last Year'],
+            ['all', 'All-Time'],
+        ];
         return `
             <div class="control-block" id="rangeControlBlock">
                 <span class="control-block-label">Range</span>

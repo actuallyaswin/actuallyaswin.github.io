@@ -75,7 +75,7 @@ const ViewCollectionDigital = (() => {
                     <td class="sl-listens">${r.listens ? formatNumber(r.listens) : '—'}</td>
                 `;
                 tr.addEventListener('click', () => {
-                    window.open(`index.html?view=release&id=${encodeURIComponent(r.id)}`, '_blank');
+                    window.open(`index.html${releaseHref(r.id, r.slug)}`, '_blank');
                 });
                 tbody.appendChild(tr);
             });
@@ -99,7 +99,7 @@ const ViewCollectionDigital = (() => {
                 </div>
             `;
             spine.addEventListener('click', () => {
-                window.open(`index.html?view=release&id=${encodeURIComponent(r.id)}`, '_blank');
+                window.open(`index.html${releaseHref(r.id, r.slug)}`, '_blank');
             });
             shelf.appendChild(spine);
         });
@@ -174,6 +174,7 @@ const ViewCollectionDigital = (() => {
         const result = _db.exec(`
             SELECT r.id,
                    r.title,
+                   r.slug,
                    a.name           AS artist,
                    r.release_year,
                    r.type,

@@ -27,6 +27,7 @@ __all__ = [
     'mb_rg_from_wiki_url',
     'GeniusClient', '_get_genius_client', 'GeniusTrack',
     'DiscogsClient',
+    'SourceNotFound', 'SourceDataUnavailable', 'SourceRateLimited',
 ]
 
 import json
@@ -42,8 +43,19 @@ import urllib.request
 from typing import Protocol, runtime_checkable
 
 from mdb_strings import ascii_key as _norm, extract_mbid as _extract_mbid_or_none
+from mdb_errors import SourceError, SourceNotFound, SourceDataUnavailable, SourceRateLimited
 
 log = logging.getLogger(__name__)
+
+try:
+    from mdb_ratelimit import CrossProcessRateLimiter
+except Exception as _e:  # fail open — a broken/missing ratelimit module must
+    # never break importing this module or any request it makes.
+    log.warning('mdb_ratelimit unavailable (%s) — cross-process rate limiting disabled', _e)
+
+    class CrossProcessRateLimiter:  # type: ignore
+        def __init__(self, *a, **kw): pass
+        def wait(self): pass
 
 
 # ── Shared release interface ───────────────────────────────────────────────────
@@ -105,12 +117,33 @@ DATES_AHEAD   = 5
 # ── Rate limiter ───────────────────────────────────────────────────────────────
 
 class RateLimiter:
-    def __init__(self, interval: float):
+    """Paces requests to one external service within THIS process.
+
+    When `service` is given, ALSO enforces a cross-process minimum interval
+    via CrossProcessRateLimiter (see mdb_ratelimit.py), so concurrent Python
+    processes hitting the same service don't multiply the effective request
+    rate. This is layered alongside the original in-process check, not a
+    replacement for it — if the cross-process limiter has an undiscovered
+    bug, the in-process limiter below still provides baseline pacing.
+    """
+    def __init__(self, interval: float, service: 'str | None' = None,
+                 cross_interval: 'float | None' = None):
         self._lock     = threading.Lock()
         self._last     = 0.0
         self._interval = interval
+        self._cross    = None
+        if service is not None:
+            try:
+                self._cross = CrossProcessRateLimiter(
+                    service, cross_interval if cross_interval is not None else interval)
+            except Exception as e:
+                log.warning('RateLimiter: cross-process limiter unavailable for %r (%s) — '
+                            'falling back to in-process rate limiting only', service, e)
+                self._cross = None
 
     def wait(self) -> None:
+        if self._cross is not None:
+            self._cross.wait()
         with self._lock:
             rem = self._interval - (time.monotonic() - self._last)
             if rem > 0:
@@ -134,7 +167,15 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
     Backoff is exponential (retry_backoff * 2**attempt), capped at
     retry_backoff_max. Providers prone to long outages want a high
     retry_attempts with a capped max.
+
+    Every provider class routes through this one function (directly or via
+    _http_get_json), so translating the raw urllib exceptions into
+    mdb_errors.SourceError subclasses HERE — rather than in each of the six
+    provider classes — covers all of them for free: a 404 always means
+    SourceNotFound and an exhausted-retries 429/5xx/connection failure
+    always means SourceRateLimited, regardless of which provider asked.
     """
+    last_exc: Exception | None = None
     for attempt in range(retry_attempts + 1):
         if lim:
             lim.wait()
@@ -145,8 +186,16 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
         except urllib.error.HTTPError as e:
             # HTTPError subclasses URLError, so it must be caught before the
             # handler below or every 404/429 would be retried too.
-            if e.code not in (500, 502, 503, 504) or attempt == retry_attempts:
+            if e.code == 404:
+                raise SourceNotFound(f'{url} returned 404') from e
+            # 429 is transient, not a real client error — retry it with 5xx
+            # instead of the blanket "4xx is never retried" rule below.
+            if e.code not in (429, 500, 502, 503, 504) or attempt == retry_attempts:
+                if e.code == 429 or e.code in (500, 502, 503, 504):
+                    raise SourceRateLimited(
+                        f'{url} returned {e.code} after {attempt + 1} attempt(s)') from e
                 raise
+            last_exc = e
             wait = retry_backoff * (2 ** attempt)
             if retry_backoff_max is not None:
                 wait = min(wait, retry_backoff_max)
@@ -158,9 +207,11 @@ def _http_get(url: str, *, headers: dict = None, lim: 'RateLimiter | None' = Non
                 except ValueError:
                     pass
             time.sleep(wait)
-        except (urllib.error.URLError, ConnectionError, TimeoutError):
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
             if attempt == retry_attempts:
-                raise
+                raise SourceRateLimited(
+                    f'{url} unreachable after {attempt + 1} attempt(s): {e}') from e
+            last_exc = e
             wait = retry_backoff * (2 ** attempt)
             if retry_backoff_max is not None:
                 wait = min(wait, retry_backoff_max)
@@ -176,14 +227,22 @@ def _http_get_json(url: str, *, headers: dict = None, lim: 'RateLimiter | None' 
                                  retry_backoff_max=retry_backoff_max))
 
 
-_mb_lim   = RateLimiter(MB_INTERVAL)
-_wiki_lim = RateLimiter(WIKI_INTERVAL)
-_aoty_lim = RateLimiter(AOTY_INTERVAL)
+# More conservative than the in-process MB_INTERVAL (1.1s): several
+# processes each pacing at 1.1s still triggers 503s under combined load.
+MB_CROSS_INTERVAL = 1.5
+_mb_lim   = RateLimiter(MB_INTERVAL, service='musicbrainz', cross_interval=MB_CROSS_INTERVAL)
+_wiki_lim = RateLimiter(WIKI_INTERVAL, service='wikipedia')
+_aoty_lim = RateLimiter(AOTY_INTERVAL, service='aoty')
 
 
 # ── Spotify client ─────────────────────────────────────────────────────────────
 
 _SP_TOKEN_CACHE = os.path.expanduser('~/.cache/mdb/spotify_token.json')
+
+# Conservative default, not a measured safe rate — no validated interval
+# exists for Spotify the way MB_CROSS_INTERVAL is for MusicBrainz.
+SP_INTERVAL = 1.0
+_sp_lim = RateLimiter(SP_INTERVAL, service='spotify')
 
 
 class SpotifyClient:
@@ -235,7 +294,7 @@ class SpotifyClient:
         url = SP_BASE + path
         if params:
             url += '?' + urllib.parse.urlencode(params)
-        return _http_get_json(url, headers={'Authorization': f'Bearer {self._token}'})
+        return _http_get_json(url, headers={'Authorization': f'Bearer {self._token}'}, lim=_sp_lim)
 
     def get_album(self, album_id: str) -> dict:
         album  = self.get(f'/albums/{album_id}')
@@ -243,7 +302,7 @@ class SpotifyClient:
         nxt    = album['tracks'].get('next')
         while nxt:
             self._ensure_token()
-            page = _http_get_json(nxt, headers={'Authorization': f'Bearer {self._token}'})
+            page = _http_get_json(nxt, headers={'Authorization': f'Bearer {self._token}'}, lim=_sp_lim)
             tracks.extend(page['items'])
             nxt = page.get('next')
         album['_all_tracks'] = tracks
@@ -342,10 +401,9 @@ def caa_fetch_front_image_urls(release_mbid: str) -> list:
             headers={'User-Agent': MB_UA, 'Accept': 'application/json'},
             lim=_mb_lim,
         )
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return []
-        raise
+    except SourceNotFound:
+        # No cover art for this release.
+        return []
     urls = []
     for image in data.get('images', []):
         if 'Front' in (image.get('types') or []):
@@ -488,7 +546,7 @@ class MusicBrainzRelease:
 BP_UA         = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
                  ' (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 BP_INTERVAL   = 2.0
-_bp_lim       = RateLimiter(BP_INTERVAL)
+_bp_lim       = RateLimiter(BP_INTERVAL, service='beatport')
 _BP_RELEASE_RE = re.compile(r'beatport\.com/release/([^/?#]+)/(\d+)', re.IGNORECASE)
 
 
@@ -531,7 +589,7 @@ class BeatportRelease:
             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html
         )
         if not m:
-            raise RuntimeError(f'No __NEXT_DATA__ found at {self.url}')
+            raise SourceDataUnavailable(f'No __NEXT_DATA__ found at {self.url}')
 
         full_data  = json.loads(m.group(1))
         page_props = full_data.get('props', {}).get('pageProps', {})
@@ -547,7 +605,7 @@ class BeatportRelease:
                     release_info = data
                     break
         if not release_info:
-            raise RuntimeError(f'Release metadata not found in __NEXT_DATA__ at {self.url}')
+            raise SourceDataUnavailable(f'Release metadata not found in __NEXT_DATA__ at {self.url}')
 
         # -- Track data: Harmony uses queries[1]; scan all queries as fallback
         raw_tracks: list = []
@@ -1210,7 +1268,7 @@ def mb_release_reasons(candidates: list, canonical: dict) -> dict:
 ITUNES_LOOKUP = 'https://itunes.apple.com/lookup'
 ITUNES_SEARCH = 'https://itunes.apple.com/search'
 ITUNES_INTERVAL = 3.0
-_itunes_lim = RateLimiter(ITUNES_INTERVAL)
+_itunes_lim = RateLimiter(ITUNES_INTERVAL, service='itunes')
 _ITUNES_ID_RE = re.compile(
     r'(?:music\.apple\.com/[a-z]{2}/album/[^/]+/|itunes\.apple\.com/[a-z]{2}/album/[^/]+/)(\d+)'
     # bare numeric ID (7-12 digits, distinct from Beatport's shorter IDs)
@@ -1223,7 +1281,7 @@ _ITUNES_BARE_RE = re.compile(r'^\d{7,12}$')
 _AM_WEB_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/124.0 Safari/537.36')
 _AM_WEB_INTERVAL = 2.0
-_am_web_lim = RateLimiter(_AM_WEB_INTERVAL)
+_am_web_lim = RateLimiter(_AM_WEB_INTERVAL, service='apple_music_web')
 _AM_DESC_RE = re.compile(
     r'data-testid="description"\s*>.*?<p data-testid="truncate-text"[^>]*>(.*?)</p>',
     re.DOTALL,
@@ -1242,7 +1300,9 @@ def apple_music_fetch_editorial_note(apple_music_id: str, country: str = 'us',
     url = f'https://music.apple.com/{country}/album/-/{apple_music_id}'
     try:
         raw = _http_get(url, headers={'User-Agent': _AM_WEB_UA}, lim=_am_web_lim, timeout=timeout)
-    except urllib.error.HTTPError:
+    except (SourceError, urllib.error.HTTPError):
+        # Catch both: not every non-2xx response is translated into a
+        # SourceError subclass by _http_get.
         return None
     html = raw.decode('utf-8', errors='replace')
     m = _AM_DESC_RE.search(html)
@@ -1347,7 +1407,7 @@ class ItunesRelease:
                 tracks.append(item)
 
         if not album:
-            raise RuntimeError(f'No album found in iTunes response for id {self.itunes_id}')
+            raise SourceNotFound(f'No album found in iTunes response for id {self.itunes_id}')
 
         # Build normalised track list
         track_list = []
@@ -1361,6 +1421,34 @@ class ItunesRelease:
             })
 
         album['_track_list'] = track_list
+        if not track_list and album.get('trackCount') == 1:
+            # iTunes Lookup omits the individual track item for true
+            # singles — only the collection object comes back. Synthesize
+            # the one track from the collection, stripping the " - Single"
+            # suffix Apple only adds at the collection level (per-track
+            # titles don't carry it).
+            name = re.sub(r'\s+-\s+single$', '', album.get('collectionName') or '', flags=re.IGNORECASE)
+            album['_track_list'] = [{
+                'name':          name,
+                'duration_ms':   None,
+                '_disc_number':  1,
+                '_track_number': 1,
+                '_is_explicit':  album.get('collectionExplicitness') == 'explicit',
+            }]
+        elif not track_list and (album.get('trackCount') or 0) > 1:
+            # iTunes sometimes withholds ALL per-track data for a genuine
+            # multi-track release too, not just singles, and this isn't
+            # transient. No collection-level title to synthesize N unknown
+            # tracks from, so raise instead of silently returning an empty
+            # tracklist: a caller with another source still gets a correct
+            # release, and a caller relying on Apple Music alone gets a
+            # clear error.
+            raise SourceDataUnavailable(
+                f'iTunes Lookup returned no individual tracks for id {self.itunes_id} '
+                f'("{album.get("collectionName")}") despite trackCount='
+                f'{album.get("trackCount")} — Apple is withholding per-track data '
+                f'for this release; try another source.'
+            )
         self._data = album
 
     # -- properties --
@@ -1395,6 +1483,14 @@ class ItunesRelease:
     def track_count(self) -> int:
         self._ensure_full()
         return self._data.get('trackCount') or len(self.tracks)
+
+    @property
+    def explicit_count(self) -> int:
+        return sum(1 for t in self.tracks if t.get('_is_explicit'))
+
+    @property
+    def total_ms(self) -> int:
+        return sum(t.get('duration_ms') or 0 for t in self.tracks)
 
     @property
     def label(self) -> str:
@@ -1441,7 +1537,7 @@ class ItunesRelease:
 BC_UA       = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
                ' (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 BC_INTERVAL = 2.0
-_bc_lim     = RateLimiter(BC_INTERVAL)
+_bc_lim     = RateLimiter(BC_INTERVAL, service='bandcamp')
 _BC_URL_RE  = re.compile(r'https?://[^./]+\.bandcamp\.com/album/[^/?#]+', re.IGNORECASE)
 _BC_ART_RE  = re.compile(r'"art_id"\s*:\s*(\d+)')
 
@@ -1487,7 +1583,7 @@ class BandcampRelease:
             self._data = self._normalise({'tralbum': tralbum, 'band': {}})
             return
 
-        raise RuntimeError(f'Could not extract tralbum JSON from Bandcamp page: {self.url}')
+        raise SourceDataUnavailable(f'Could not extract tralbum JSON from Bandcamp page: {self.url}')
 
     def _normalise(self, page: dict) -> dict:
         """Flatten the nested tralbum/band structure into a flat _data dict."""
@@ -1554,6 +1650,17 @@ class BandcampRelease:
         return len(self.tracks)
 
     @property
+    def explicit_count(self) -> int:
+        # Bandcamp has no explicit-content rating system at all — no track
+        # dict here ever carries an explicit flag, unlike every other
+        # provider — so this is always 0, not an unknown/missing value.
+        return 0
+
+    @property
+    def total_ms(self) -> int:
+        return sum(t.get('duration_ms') or 0 for t in self.tracks)
+
+    @property
     def label(self) -> str:
         # Not reliably extractable without band/artist disambiguation
         return ''
@@ -1617,7 +1724,7 @@ def _parse_bc_date(raw: str) -> str:
 
 DZ_API      = 'https://api.deezer.com'
 DZ_INTERVAL = 1.0
-_dz_lim     = RateLimiter(DZ_INTERVAL)
+_dz_lim     = RateLimiter(DZ_INTERVAL, service='deezer')
 _DZ_URL_RE  = re.compile(r'deezer\.com/(?:[a-z]{2}/)?album/(\d+)', re.IGNORECASE)
 
 
@@ -1647,7 +1754,14 @@ class DeezerRelease:
             return
         album = _http_get_json(f'{DZ_API}/album/{self.deezer_id}', lim=_dz_lim)
         if album.get('error'):
-            raise RuntimeError(f'Deezer API error for album {self.deezer_id}: {album["error"]}')
+            # Deezer returns HTTP 200 with an error payload instead of a real
+            # 404 for a missing id. Only code 800 ("no data") is mapped to
+            # SourceNotFound; any other code is an unrecognized API error,
+            # left as SourceDataUnavailable rather than guessed at.
+            err = album['error']
+            if isinstance(err, dict) and err.get('code') == 800:
+                raise SourceNotFound(f'Deezer has no album {self.deezer_id}: {err}')
+            raise SourceDataUnavailable(f'Deezer API error for album {self.deezer_id}: {err}')
 
         tracks_resp = _http_get_json(
             f'{DZ_API}/album/{self.deezer_id}/tracks?limit=200', lim=_dz_lim
@@ -1966,7 +2080,7 @@ class GeniusTrack:
 
 DISCOGS_BASE = 'https://api.discogs.com'
 # ~60 req/min public rate limit
-_discogs_lim = RateLimiter(1.1)
+_discogs_lim = RateLimiter(1.1, service='discogs')
 
 
 class DiscogsClient:

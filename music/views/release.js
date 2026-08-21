@@ -140,6 +140,7 @@ const ViewRelease = (() => {
             </div>
 
             <div id="editorialSection"></div>
+            <div id="artistNoteSection"></div>
 
 
             <div id="sourcesSection"></div>
@@ -152,6 +153,7 @@ const ViewRelease = (() => {
         loadReleaseInfo();
         loadReleaseAliases();
         loadEditorialNotes();
+        loadArtistNotes();
         loadTracks();
         loadListeningHistory();
         loadVariants();
@@ -549,6 +551,8 @@ const ViewRelease = (() => {
                 html += renderLinkPill('tidal', `https://tidal.com/browse/album/${extLinks.get(5)}`, 'Tidal');
             if (extLinks.get(7))
                 html += renderLinkPill('beatport', `https://www.beatport.com/release/-/${extLinks.get(7)}`, 'Beatport');
+            if (extLinks.get(13))
+                html += renderLinkPill('traxsource', extLinks.get(13), 'Traxsource');
 
             // ── Purchase ─────────────────────────────────────────────────
             if (extLinks.get(6))
@@ -1117,21 +1121,66 @@ const ViewRelease = (() => {
         if (!note || !section) return;
 
         const paragraphs = note.split(/\n+/).filter(Boolean)
-            .map(p => `<p class="editorial-note">${escapeHtml(p)}</p>`).join('');
+            .map(p => `<p class="notes-para">${escapeHtml(p)}</p>`).join('');
 
         section.innerHTML = `
-            <section class="editorial-notes">
+            <section class="notes-section">
                 <h2>Editorial Notes</h2>
-                <div class="editorial-clamp" id="editorialClamp">
+                <div class="notes-clamp" id="editorialClamp">
                     ${paragraphs}
-                    <div class="editorial-fade"></div>
+                    <div class="notes-fade"></div>
                 </div>
-                <button class="editorial-toggle" id="editorialToggle">Read more</button>
+                <button class="notes-toggle" id="editorialToggle">Read more</button>
             </section>
         `;
 
         const clampEl = document.getElementById('editorialClamp');
         const btnEl = document.getElementById('editorialToggle');
+
+        // Clamp, measure, then unclamp if it wasn't worth it. Tolerance of one
+        // line so the toggle never appears just to hide a single trailing line.
+        clampEl.classList.add('is-clamped');
+        const lineHeight = parseFloat(getComputedStyle(clampEl).lineHeight) || 24;
+        if (clampEl.scrollHeight <= clampEl.clientHeight + lineHeight) {
+            clampEl.classList.remove('is-clamped');
+            btnEl.remove();
+        } else {
+            btnEl.addEventListener('click', () => {
+                const clamped = clampEl.classList.toggle('is-clamped');
+                btnEl.textContent = clamped ? 'Read more' : 'Show less';
+            });
+        }
+    }
+
+    // ── From the artist (Bandcamp liner notes) ───────────────────────────────────
+
+    function loadArtistNotes() {
+        const safeId = _releaseId.replace(/'/g, "''");
+
+        const result = _db.exec(`
+            SELECT artist_note FROM releases WHERE id = '${safeId}'
+        `)[0];
+
+        const note = result && result.values[0] && result.values[0][0];
+        const section = document.getElementById('artistNoteSection');
+        if (!note || !section) return;
+
+        const paragraphs = note.split(/\n+/).filter(Boolean)
+            .map(p => `<p class="notes-para">${escapeHtml(p)}</p>`).join('');
+
+        section.innerHTML = `
+            <section class="notes-section">
+                <h2>From the Artist</h2>
+                <div class="notes-clamp" id="artistNoteClamp">
+                    ${paragraphs}
+                    <div class="notes-fade"></div>
+                </div>
+                <button class="notes-toggle" id="artistNoteToggle">Read more</button>
+            </section>
+        `;
+
+        const clampEl = document.getElementById('artistNoteClamp');
+        const btnEl = document.getElementById('artistNoteToggle');
 
         // Clamp, measure, then unclamp if it wasn't worth it. Tolerance of one
         // line so the toggle never appears just to hide a single trailing line.

@@ -53,6 +53,8 @@ EL_SVC_DISCOGS     = 10
 EL_SVC_RYM              = 11
 # link_value = full ra.co dj/artist URL
 EL_SVC_RESIDENT_ADVISOR = 12
+# link_value = full traxsource.com track/artist URL
+EL_SVC_TRAXSOURCE       = 13
 
 # ── ULID / slug ────────────────────────────────────────────────────────────────
 
@@ -802,7 +804,6 @@ def upsert_service_link(conn: sqlite3.Connection, release_id: str, service: int,
 def upsert_artist_alias(conn: sqlite3.Connection, artist_id: str, alias: str,
                         alias_type: str = 'common', language: str = None,
                         source: str = 'manual', sort_order: int = 0) -> None:
-    from mdb_strings import normalize_text
     conn.execute(
         'INSERT INTO artist_aliases (artist_id, alias, alias_norm, alias_type, language, source, sort_order)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -818,7 +819,6 @@ def upsert_artist_alias(conn: sqlite3.Connection, artist_id: str, alias: str,
 def upsert_release_alias(conn: sqlite3.Connection, release_id: str, alias: str,
                          is_definitive: int = 0, language: str = None,
                          source: str = 'manual', alias_type: str = 'dsp') -> None:
-    from mdb_strings import normalize_text
     conn.execute(
         'INSERT INTO release_aliases (release_id, alias, alias_norm, is_definitive, language, source, alias_type)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -833,7 +833,6 @@ def upsert_release_alias(conn: sqlite3.Connection, release_id: str, alias: str,
 
 def upsert_track_alias(conn: sqlite3.Connection, track_id: str, alias: str,
                        alias_type: str = 'common', language: str = None) -> None:
-    from mdb_strings import normalize_text
     conn.execute(
         'INSERT INTO track_aliases (track_id, alias, alias_norm, alias_type, language)'
         ' VALUES (?, ?, ?, ?, ?)'
@@ -842,6 +841,34 @@ def upsert_track_alias(conn: sqlite3.Connection, track_id: str, alias: str,
         '   alias_type = excluded.alias_type,'
         '   language   = COALESCE(excluded.language, language)',
         (track_id, alias, normalize_text(alias), alias_type, language),
+    )
+
+
+def add_track_alias(conn: sqlite3.Connection, track_id: str, alias: str,
+                    alias_type: str = 'common', language: str | None = None) -> None:
+    """Insert a track alias, ignoring if (track_id, alias_norm) already exists.
+
+    Simple insert-or-ignore counterpart to `upsert_track_alias` — use this
+    when you just want the alias recorded once and don't need to overwrite
+    an existing row's alias_type/language.
+    """
+    conn.execute(
+        'INSERT OR IGNORE INTO track_aliases (track_id, alias, alias_norm, alias_type, language)'
+        ' VALUES (?,?,?,?,?)',
+        [track_id, alias, normalize_text(alias), alias_type, language],
+    )
+
+
+def add_release_alias(conn: sqlite3.Connection, release_id: str, alias: str) -> None:
+    """Insert a release alias, ignoring if (release_id, alias) already exists.
+
+    Simple insert-or-ignore counterpart to `upsert_release_alias` — leaves
+    is_definitive/source/alias_type at their table defaults.
+    """
+    conn.execute(
+        'INSERT OR IGNORE INTO release_aliases (release_id, alias, alias_norm)'
+        ' VALUES (?,?,?)',
+        [release_id, alias, normalize_text(alias)],
     )
 
 
@@ -1460,6 +1487,31 @@ def save_release_date(conn: sqlite3.Connection, release_id: str, date_str: str,
 
 
 # ── Listen matching ────────────────────────────────────────────────────────────
+#
+# Decision order: sweep with `rematch_all()` first for cheap wins; use
+# `bulk_rematch_by_name(conn, [release_id], artist, album)` for a specific
+# already-identified release/candidate; the four underlying functions below
+# are kept as separate entry points for callers who need finer control over
+# which pass runs, but `rematch_all()` is the one to reach for by default.
+
+def rematch_all(conn: sqlite3.Connection) -> dict:
+    """Run the three DB-wide rematch sweeps in the discovered effective order.
+
+    Order: MBID-based (`bulk_rematch`), then alias-based
+    (`bulk_rematch_by_aliases`), then title-based (`bulk_rematch_by_title`).
+    This is the "resolve everything easy first" pass to run before falling
+    back to `bulk_rematch_by_name` for specific already-identified candidates.
+    """
+    n_mbid = bulk_rematch(conn)
+    n_aliases = bulk_rematch_by_aliases(conn)
+    n_title = bulk_rematch_by_title(conn)
+    return {
+        'mbid': n_mbid,
+        'aliases': n_aliases,
+        'title': n_title,
+        'total': n_mbid + n_aliases + n_title,
+    }
+
 
 def bulk_rematch(conn: sqlite3.Connection) -> int:
     """Match unresolved listens to catalog tracks via MBID.
@@ -1515,6 +1567,10 @@ def bulk_rematch_by_name(conn: sqlite3.Connection,
     if not release_ids:
         return 0
 
+    # SQLite's create_function() overwrites the same name on repeated calls,
+    # so register once per call, not once per release_id in the loop below.
+    conn.create_function('_ulower', 1, lambda s: s.lower() if s else '')
+
     total = 0
     for release_id in release_ids:
         total += _rematch_by_name_one_release(conn, release_id, raw_artist, raw_album)
@@ -1530,10 +1586,6 @@ def _rematch_by_name_one_release(conn: sqlite3.Connection,
     their aliases + the release's primary_artist_id) and only matches
     listens whose raw_artist_name is in that set."""
     release_ids = [release_id]
-
-    # SQLite's built-in lower() is ASCII-only (e.g. 'ROSALÍA' → 'rosalÍa').
-    # Register a Python-backed function so Unicode lowercasing works correctly.
-    conn.create_function('_ulower', 1, lambda s: s.lower() if s else '')
 
     rph = ','.join('?' * len(release_ids))
 
@@ -1663,8 +1715,7 @@ def _rematch_by_name_one_release(conn: sqlite3.Connection,
         """ascii_key of a title normalized to MB parenthetical ETI format.
         'My Melody - TEED Club Mix' → 'My Melody (TEED club mix)' → ascii_key.
         Strips MB '(With X)' collaborator credits — scrobbles never include them."""
-        import re as _re
-        title = _re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
+        title = re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
         title = _strip_scrobble_source_noise(title)
         r = _parse_track_title(title)
         full = r.clean_title
@@ -1678,8 +1729,7 @@ def _rematch_by_name_one_release(conn: sqlite3.Connection,
         """ascii_key of clean title only — strips feat. artists and ETI.
         Fallback for when the DB stores 'Suit & Tie' but the scrobble says
         'Suit & Tie featuring JAY Z'."""
-        import re as _re
-        title = _re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
+        title = re.sub(r'\s*\([Ww]ith [^)]+\)', '', title).strip()
         title = _strip_scrobble_source_noise(title)
         r = _parse_track_title(title)
         return ascii_key(r.clean_title)
@@ -1820,13 +1870,8 @@ def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
     because the canonical title isn't stored as an alias.
     Returns count of newly matched listens.
     """
-    from mdb_strings import normalize_text
 
     # Build lookup: (norm_artist, norm_album, norm_track) -> track_id
-    # release_artists only holds explicit collab/split credits; most releases
-    # hang their artist off primary_artist_id instead, so both sources are
-    # needed here — joining on release_artists alone silently skipped nearly
-    # every ordinary single-primary-artist release in the catalog.
     rows = conn.execute(f'''
         SELECT t.id, t.title, r.title AS release_title,
                a.name AS artist_name
@@ -1851,14 +1896,19 @@ def bulk_rematch_by_title(conn: sqlite3.Connection) -> int:
     for artist_id, alias_norm in alias_rows:
         alias_map.setdefault(artist_id, []).append(alias_norm)
 
+    # Built once up front, not per lookup entry — one SELECT per
+    # track-credit row instead would be an N+1 query on a large catalog.
+    id_by_name = {
+        lower_name: artist_id
+        for artist_id, lower_name in conn.execute('SELECT id, lower(name) FROM artists').fetchall()
+    }
+
     # Extend lookup with alias-artist variants
     extra: dict[tuple, str] = {}
     for (norm_artist, norm_album, norm_track), tid in lookup.items():
-        artist_row = conn.execute(
-            'SELECT id FROM artists WHERE lower(name) = ?', [norm_artist]
-        ).fetchone()
-        if artist_row:
-            for alias_norm in alias_map.get(artist_row[0], []):
+        artist_id = id_by_name.get(norm_artist)
+        if artist_id:
+            for alias_norm in alias_map.get(artist_id, []):
                 key = (alias_norm, norm_album, norm_track)
                 if key not in lookup:
                     extra[key] = tid
@@ -1912,11 +1962,17 @@ def title_then_alias_match(raw_album_norm: str, title_norm: str, alias_norms: li
 
 
 # release_artists only holds explicit credits (collabs, splits); most releases
-# hang their artist off primary_artist_id, so both sources are needed.
+# hang their artist off primary_artist_id, so both sources are needed. Many
+# soundtrack releases also credit a composer only at the track level (e.g. a
+# featured co-composer on one track, not the whole release) — track_artists
+# is unioned in too, or that composer's aliases never enter the candidate set
+# for the release at all.
 _RELEASE_CREDITS_SQL = '''(
     SELECT release_id, artist_id FROM release_artists
     UNION
     SELECT id, primary_artist_id FROM releases WHERE primary_artist_id IS NOT NULL
+    UNION
+    SELECT t.release_id, ta.artist_id FROM track_artists ta JOIN tracks t ON t.id = ta.track_id
 )'''
 
 
@@ -1933,34 +1989,42 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
         concatenates both ("<title> ~ <alias>").
     Returns count of newly matched listens.
     """
-    from mdb_strings import normalize_text
 
     # Build lookup: (artist_norm, release_norm, track_norm) -> track_id
     lookup: dict[tuple, str] = {}
 
-    # Phase 1: track_aliases
+    # Phase 1: track_aliases. Release side isn't required to have a
+    # release_aliases entry — most track_aliases live on ordinarily-titled
+    # releases (e.g. a scrobbler's alternate parenthetical for one song), so
+    # the release's own title is always a valid key alongside any aliases.
+    release_aliases_by_id: dict[str, list] = {}
+    for release_id, alias_norm in conn.execute(
+        'SELECT release_id, alias_norm FROM release_aliases'
+    ).fetchall():
+        release_aliases_by_id.setdefault(release_id, []).append(alias_norm)
+
     rows = conn.execute(f'''
         SELECT
             lower(a.name)                            AS artist_name_norm,
             aa.alias_norm                            AS artist_alias_norm,
-            ra.alias_norm                            AS release_norm,
+            r.id                                      AS release_id,
+            r.title                                   AS release_title,
             ta.alias_norm                            AS track_norm,
             ta.track_id
         FROM   track_aliases  ta
         JOIN   tracks         t   ON t.id          = ta.track_id
         JOIN   releases       r   ON r.id          = t.release_id
-        JOIN   release_aliases ra ON ra.release_id  = r.id
         JOIN   {_RELEASE_CREDITS_SQL} rex ON rex.release_id = r.id
         JOIN   artists         a  ON a.id           = rex.artist_id
         LEFT JOIN artist_aliases aa ON aa.artist_id = a.id
     ''').fetchall()
-    for artist_name_norm, artist_alias_norm, release_norm, track_norm, track_id in rows:
-        if not (release_norm and track_norm):
+    for artist_name_norm, artist_alias_norm, release_id, release_title, track_norm, track_id in rows:
+        if not track_norm:
             continue
-        # An artist's own name is always a valid match key, in addition to any
-        # aliases it has — aliases don't replace the primary name.
+        release_norms = [normalize_text(release_title)] + release_aliases_by_id.get(release_id, [])
         for artist_norm in filter(None, (artist_name_norm, artist_alias_norm)):
-            lookup[(artist_norm, release_norm, track_norm)] = track_id
+            for release_norm in filter(None, release_norms):
+                lookup[(artist_norm, release_norm, track_norm)] = track_id
 
     # Phase 2: plain track titles, for releases that only have a release_aliases
     # entry (no per-track aliases needed — the track's own title normalizes fine).
@@ -2089,7 +2153,6 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
     a release_aliases hit is treated the same as an exact title match.
     Returns a list of row dicts.
     """
-    from mdb_strings import normalize_text
     key_album  = ascii_key(album)
     key_artist = ascii_key(artist)
     norm_album  = normalize_text(album)

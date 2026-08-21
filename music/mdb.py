@@ -99,6 +99,7 @@ from mdb_apis import (
     mb_find_release_group,
     _EDITION_RE,
 )
+from mdb_errors import SourceError, NoSourcesAvailable
 from mdb_merge import (
     ReleaseMerge, MDBRelease, MDBTrack,
     upsert_release_mdb, upsert_tracks_mdb,
@@ -131,6 +132,12 @@ except ImportError:
 
 console = Console(width=80, highlight=False)
 log = logging.getLogger(__name__)
+
+# Convenience mirror of the most recent import_album_unified() call's structured
+# warnings. NOT thread/concurrency-safe — it's overwritten on every call, so it's
+# only useful for single-threaded scripts that don't want to thread a list
+# through. Callers that need per-call isolation should pass warnings_out=... .
+LAST_IMPORT_WARNINGS: list = []
 
 # ── Batch file reader ─────────────────────────────────────────────────────────
 
@@ -748,12 +755,21 @@ def _discover_sources(
     client: 'SpotifyClient | None' = None,
     no_gtin: bool = False,
     skip_sources: frozenset = frozenset(),
+    errors_out: 'list | None' = None,
 ) -> 'tuple[dict, dict]':
     """Parse URL, fetch initial source, GTIN-broadcast to discover others.
 
     The initial source is fetched first to get the UPC.  Secondary sources
     (Spotify, MusicBrainz, iTunes) are then fetched in parallel — each has an
     independent rate limiter so they safely overlap.
+
+    errors_out: optional output list. If provided, a structured dict is
+    appended for every per-source fetch failure — {'type': 'source_fetch_failed',
+    'source': 'am', 'error_type': 'SourceDataUnavailable', 'message': '...'} —
+    so a caller can tell "this source doesn't have the data" (SourceDataUnavailable
+    or SourceNotFound, permanent, another source may still work) apart from
+    "this source is rate-limited" (SourceRateLimited, transient, worth retrying
+    later) without parsing the printed message text.
 
     Returns (source_data, sp_full) where:
       source_data = {'sp': album_dict, 'mb': MusicBrainzRelease, 'bp': BeatportRelease, ...}
@@ -802,7 +818,13 @@ def _discover_sources(
             rel._ensure_full()
             source_data['dz'] = rel
     except Exception as e:
-        console.print(f'  [red]Failed to fetch {source}:{source_id}: {e}[/red]')
+        error_type = type(e).__name__
+        console.print(f'  [red]Failed to fetch {source}:{source_id} ({error_type}): {e}[/red]')
+        if errors_out is not None:
+            errors_out.append({
+                'type': 'source_fetch_failed', 'source': source,
+                'error_type': error_type, 'message': str(e),
+            })
 
     # GTIN broadcast — build parallel fetch tasks for all secondary sources
     if not no_gtin:
@@ -855,7 +877,13 @@ def _discover_sources(
                             if result is not None:
                                 source_data[key] = result
                         except Exception as e:
-                            console.print(f'  [dim]{labels.get(key, key)}: {e}[/dim]')
+                            error_type = type(e).__name__
+                            console.print(f'  [dim]{labels.get(key, key)} ({error_type}): {e}[/dim]')
+                            if errors_out is not None:
+                                errors_out.append({
+                                    'type': 'source_fetch_failed', 'source': key,
+                                    'error_type': error_type, 'message': str(e),
+                                })
 
     # Fetch Spotify full-track data (ISRCs, popularity)
     sp_album = source_data.get('sp')
@@ -1391,19 +1419,34 @@ def import_album_unified(
     no_variants: bool = False,
     no_mb: bool = False,
     auto: bool = False,
+    warnings_out: 'list | None' = None,
 ) -> 'tuple[str, str, str, str]':
     """Unified import for any URL type (Spotify/MB/Beatport/Apple Music/Bandcamp).
 
     Discovers all available sources via GTIN broadcast, merges them into a
     MDBRelease, then either imports as new or enriches an existing release.
     Returns (release_id, title, artist_name, release_date).
+
+    warnings_out: optional output list. If provided, structured warning dicts
+    (e.g. {'type': 'track_count_mismatch', 'message': '...', 'expected': 11,
+    'actual': 8}) are appended to it as they're generated, in addition to the
+    usual console.print() output — a machine-readable channel for callers that
+    need to detect "this import needs a human/agent to look at it" without
+    parsing terminal text. Also mirrored onto the module-level
+    LAST_IMPORT_WARNINGS list (convenience only, not concurrency-safe).
     """
+    _warnings: list = []
+    global LAST_IMPORT_WARNINGS
+    LAST_IMPORT_WARNINGS = _warnings
     skip_sources = frozenset(['mb']) if no_mb else frozenset()
     source_data, sp_full = _discover_sources(
         url_or_id, client=client, no_gtin=no_gtin, skip_sources=skip_sources,
+        errors_out=_warnings,
     )
     if not source_data:
-        raise ValueError(f'Could not fetch any metadata for: {url_or_id!r}')
+        if warnings_out is not None:
+            warnings_out.extend(_warnings)
+        raise NoSourcesAvailable(f'Could not fetch any metadata for: {url_or_id!r}')
 
     labels = {'sp': 'Spotify', 'mb': 'MusicBrainz', 'bp': 'Beatport',
               'am': 'Apple Music', 'bc': 'Bandcamp'}
@@ -1449,6 +1492,7 @@ def import_album_unified(
         # Keep only the first 70 chars of each conflict; strip preamble boilerplate
         short = c.replace('release_date: ', '').replace('track_count: ', '')
         conflict_lines.append(f'      [dim]·  ⚠ {short[:70]}[/dim]')
+        _warnings.append({'type': 'source_conflict', 'message': c})
 
     release_id: str = ''
     with managed_db(db_path) as conn:
@@ -1527,6 +1571,8 @@ def import_album_unified(
                     # Nothing changed — skip all post-import steps (variants, AOTY,
                     # Wikipedia). Only rematch in case new listens arrived since last import.
                     _auto_rematch(db_path, existing_id, artist_name, mdb_r.title)
+                    if warnings_out is not None:
+                        warnings_out.extend(_warnings)
                     return existing_id, mdb_r.title, artist_name, mdb_r.release_date or ''
                 release_id = existing_id
         else:
@@ -1636,6 +1682,11 @@ def import_album_unified(
                         release_id = canon_id
                     except Exception as _e:
                         console.print(f'[yellow]⚠ MB canonical import failed ({_e}); importing as standalone[/yellow]')
+                        _warnings.append({
+                            'type': 'mb_canonical_import_failed',
+                            'message': f'MB canonical import failed ({_e}); importing as standalone',
+                            'error': str(_e),
+                        })
                         release_id, _ = upsert_release_mdb(cur, mdb_r, primary_artist_id, credited_as)
                         upsert_tracks_mdb(cur, release_id, mdb_tracks)
                         conn.commit()
@@ -1701,8 +1752,19 @@ def import_album_unified(
                 f'source listed more; run `mdb tracks audit --release-id {release_id}` '
                 f'or re-check the source tracklist[/yellow]'
             )
+            _warnings.append({
+                'type': 'track_count_mismatch',
+                'message': f'only {_actual_tc}/{mdb_r.total_tracks} tracks imported — '
+                           f'source listed more',
+                'expected': mdb_r.total_tracks,
+                'actual': _actual_tc,
+                'release_id': release_id,
+            })
 
     _auto_rematch(db_path, release_id, artist_name, mdb_r.title)
+
+    if warnings_out is not None:
+        warnings_out.extend(_warnings)
 
     return release_id, mdb_r.title, artist_name, mdb_r.release_date or ''
 
@@ -1749,6 +1811,8 @@ def cmd_import(args):
     total  = sum(len(g) for g in groups)
     errors = 0
     seq    = 0
+    want_json   = getattr(args, 'json', False)
+    json_results: list = []
 
     for group in groups:
         # (release_id, title, release_date) or None per entry
@@ -1763,6 +1827,7 @@ def cmd_import(args):
                 console.print(disc_note)
             url = entry.get('url') or entry.get('album_id') or ''
             try:
+                _import_warnings: list = []
                 release_id, title, artist, rel_date = import_album_unified(
                     db_path, url,
                     client=client,
@@ -1772,12 +1837,21 @@ def cmd_import(args):
                     no_variants=no_variants,
                     no_mb=args.no_mb,
                     auto=auto,
+                    warnings_out=_import_warnings if want_json else None,
                 )
                 group_results.append((release_id, title, rel_date))
+                if want_json:
+                    json_results.append({
+                        'release_id': release_id, 'title': title,
+                        'artist': artist, 'date': rel_date,
+                        'warnings': _import_warnings,
+                    })
             except urllib.error.HTTPError as e:
                 console.print(f'[red]HTTP {e.code}:[/red] {e.reason}')
                 errors += 1
                 group_results.append(None)
+                if want_json:
+                    json_results.append({'url': url, 'error': f'HTTP {e.code}: {e.reason}'})
             except Exception as e:
                 console.print(f'[red]Error:[/red] {e}')
                 if total == 1:
@@ -1809,6 +1883,14 @@ def cmd_import(args):
         ok = total - errors
         console.print(f'  [dim]Batch:[/dim] {ok}/{total} succeeded'
                       + (f'  [red]{errors} failed[/red]' if errors else ''))
+
+    if want_json:
+        # Plain stdout JSON as the last line — easy for callers to grab without
+        # regex-parsing the Rich console output above.
+        if len(json_results) == 1:
+            print(json.dumps(json_results[0]))
+        else:
+            print(json.dumps({'imports': json_results}))
 
 
 # ── cmd: discography ──────────────────────────────────────────────────────────
@@ -3840,6 +3922,9 @@ def cmd_enrich_art_verify(args):
         size_suffix_re = re.compile(r'/\d+x\d+bb\.jpg$')
 
         threshold = args.threshold
+        want_json = getattr(args, 'json', False)
+        mismatch_list: list = []
+        error_list: list = []
         mismatches = errors = same_asset = 0
         for i, r in enumerate(queue, start=1):
             thumb_prefix = size_suffix_re.sub('', r['album_art_thumb_url'])
@@ -3852,6 +3937,10 @@ def cmd_enrich_art_verify(args):
             thumb_hash = _fetch_image_phash(r['album_art_thumb_url'])
             if large_hash is None or thumb_hash is None:
                 errors += 1
+                error_list.append({
+                    'release_id': r['id'], 'title': r['title'],
+                    'error': 'fetch failed',
+                })
                 continue
             dist = large_hash - thumb_hash
             if dist > threshold:
@@ -3859,12 +3948,28 @@ def cmd_enrich_art_verify(args):
                 console.print(f'      thumb  {r["album_art_thumb_url"][:70]}')
                 console.print(f'      large  {r["album_art_url"][:70]}')
                 mismatches += 1
+                mismatch_list.append({
+                    'release_id': r['id'], 'title': r['title'],
+                    # imagehash's `-` operator returns numpy.int64, not a
+                    # plain int — json.dumps can't serialize it as-is.
+                    'hamming_distance': int(dist),
+                    'thumb_url': r['album_art_thumb_url'],
+                    'large_url': r['album_art_url'],
+                })
             if i % 25 == 0:
                 console.print(f'  [dim]{i}/{len(queue)} checked[/dim]')
 
         console.rule(style='dim')
         console.print(f'  [dim]Checked: {len(queue)} · Same asset (skipped): {same_asset} · '
                        f'Mismatches: {mismatches} · Fetch errors: {errors}[/dim]')
+
+        if want_json:
+            print(json.dumps({
+                'checked': len(queue),
+                'same_asset': same_asset,
+                'mismatches': mismatch_list,
+                'errors': error_list,
+            }))
 
 
 # ── cmd: enrich audio ─────────────────────────────────────────────────────────
@@ -7158,7 +7263,40 @@ def cmd_checkpoint(args):
             by_table = {}
             for row in fk:
                 by_table[row[0]] = by_table.get(row[0], 0) + 1
-            console.print(f'  [red]{len(fk)} foreign key violations[/red]')
+            console.print(f'  [yellow]{len(fk)} foreign key violations — attempting auto-repair[/yellow]')
+            for table, n in sorted(by_table.items(), key=lambda kv: -kv[1]):
+                console.print(f'    [dim]{n:5}  {table}[/dim]')
+
+            # repair_integrity.py only fixes a known whitelist of orphan
+            # patterns (e.g. release_genres left behind by a raw `DELETE FROM
+            # releases` that bypassed the cascade) and refuses to report clean
+            # if anything outside that whitelist remains — so retrying the
+            # check after it runs is safe: either it actually cleaned up and
+            # the checkpoint can proceed, or it couldn't and we still abort
+            # with the original message instead of silently shipping orphans.
+            repair_script = os.path.join(music_dir, 'repair_integrity.py')
+            result = subprocess.run(
+                [sys.executable, repair_script, '--db', db_path],
+                capture_output=True, text=True,
+            )
+            for line in result.stdout.splitlines():
+                console.print(f'    [dim]{line}[/dim]')
+            if result.returncode != 0:
+                # Surface *why* the repair script itself failed (crash,
+                # permission error, disk full mid-backup) — without this,
+                # a repair-script crash looked identical to "repair ran but
+                # declined to fix anything," which sends anyone debugging it
+                # to the wrong place entirely.
+                console.print(f'  [red]repair_integrity.py exited {result.returncode}[/red]')
+                for line in result.stderr.splitlines():
+                    console.print(f'    [red]{line}[/red]')
+            fk = conn.execute('PRAGMA foreign_key_check;').fetchall()
+
+        if fk:
+            by_table = {}
+            for row in fk:
+                by_table[row[0]] = by_table.get(row[0], 0) + 1
+            console.print(f'  [red]{len(fk)} foreign key violations remain after auto-repair[/red]')
             for table, n in sorted(by_table.items(), key=lambda kv: -kv[1]):
                 console.print(f'    [dim]{n:5}  {table}[/dim]')
             console.print('[red]Referential integrity check failed — aborting checkpoint.[/red]')
@@ -8516,6 +8654,9 @@ def main():
     p.add_argument('--no-gtin',     action='store_true', help='Skip GTIN cross-platform discovery')
     p.add_argument('--no-variants', action='store_true', help='Skip MB release-group variant selection')
     p.add_argument('--auto',        action='store_true', help='Apply enrichment without prompting')
+    p.add_argument('--json',        action='store_true',
+                   help='Also print a final JSON summary line '
+                        '({"release_id","title","artist","date","warnings"})')
     p.add_argument('--db',          metavar='PATH',      help='Path to master.sqlite')
     p.set_defaults(func=cmd_import)
 
@@ -8615,6 +8756,9 @@ def main():
     p_art_verify.add_argument('--list-id', metavar='ID', help='Scope to one canonical list (e.g. apple-music-100)')
     p_art_verify.add_argument('--threshold', type=int, default=2,
                                help='Max Hamming distance before flagging a mismatch (default: 2)')
+    p_art_verify.add_argument('--json', action='store_true',
+                               help='Also print a final JSON summary line '
+                                    '({"checked","same_asset","mismatches","errors"})')
     p_art_verify.set_defaults(func=cmd_enrich_art_verify)
 
     p_desc = es.add_parser('descriptions', help="Scrape Apple Music 'About this Album' editorial notes")
