@@ -19,6 +19,9 @@ const ViewBrowse = (() => {
     let platformFilter = 'all';
     // 'all' | 'heard' | 'unheard'
     let status = 'all';
+    // 'all' | 'owned' | 'unowned' — only meaningful for entityType 'albums'
+    // (artists aren't physical media, nothing to own)
+    let ownedFilter = 'all';
     // 'list' | 'poster-sm' | 'poster-lg'
     let viewMode = 'poster-lg';
     let _rows = [];
@@ -82,16 +85,18 @@ const ViewBrowse = (() => {
                    (SELECT MIN(l.timestamp) FROM tracks t JOIN listens l ON l.track_id = t.id
                         WHERE t.release_id = r.id AND t.hidden = 0) as first_listen_ts,
                    (SELECT MAX(l.timestamp) FROM tracks t JOIN listens l ON l.track_id = t.id
-                        WHERE t.release_id = r.id AND t.hidden = 0) as last_listen_ts
+                        WHERE t.release_id = r.id AND t.hidden = 0) as last_listen_ts,
+                   ${OWNED_MEDIUM_SQL} as owned_medium
             FROM releases r
             WHERE r.hidden = 0 ${yearClause} ${genreClause} ${platformClause}
         `)[0];
 
         _rows = result ? result.values.map(([id, title, slug, releaseYear, art, artistName, artistId, artistSlug,
-                                              totalTracks, tracksHeard, totalListens, firstListenTs, lastListenTs]) => ({
+                                              totalTracks, tracksHeard, totalListens, firstListenTs, lastListenTs,
+                                              ownedMedium]) => ({
             id, title, slug, releaseYear, art, artistName, artistId, artistSlug,
             totalTracks: totalTracks || 0, tracksHeard: tracksHeard || 0,
-            totalListens: totalListens || 0, firstListenTs, lastListenTs,
+            totalListens: totalListens || 0, firstListenTs, lastListenTs, ownedMedium,
         })) : [];
     }
 
@@ -146,6 +151,12 @@ const ViewBrowse = (() => {
         return true;
     }
 
+    function _matchesOwned(row) {
+        if (entityType !== 'albums' || ownedFilter === 'all') return true;
+        if (ownedFilter === 'owned') return !!row.ownedMedium;
+        return !row.ownedMedium;
+    }
+
     // Deterministic-per-load shuffle rather than Math.random() directly —
     // re-sorting on every _render() call (e.g. after a status-filter toggle
     // that doesn't touch sort) would otherwise reshuffle the grid out from
@@ -157,7 +168,7 @@ const ViewBrowse = (() => {
     }
 
     function _sortedRows() {
-        const rows = _rows.filter(_matchesStatus);
+        const rows = _rows.filter(r => _matchesStatus(r) && _matchesOwned(r));
         switch (sortBy) {
             case 'recent':
                 return rows.sort((a, b) => (b.lastListenTs || 0) - (a.lastListenTs || 0));
@@ -186,16 +197,22 @@ const ViewBrowse = (() => {
         const posterOnly = viewMode !== 'list';
         if (posterOnly) {
             return `<a href="${href}" class="browse-poster${row.totalListens === 0 ? ' unplayed' : ''}" title="${escapeHtml(row.title)}">
-                <div class="browse-poster-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')"></div>
-                <div class="browse-poster-donut">${donut}</div>
+                <div class="browse-poster-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')">
+                    ${entityType === 'albums' ? ownedBadgeHtml(row.ownedMedium) : ''}
+                </div>
                 <div class="browse-poster-caption">
-                    <div class="browse-poster-title">${escapeHtml(row.title)}</div>
-                    <div class="browse-poster-sub">${escapeHtml(sub)}</div>
+                    <div class="browse-poster-info">
+                        <div class="browse-poster-title">${escapeHtml(row.title)}</div>
+                        <div class="browse-poster-sub">${escapeHtml(sub)}</div>
+                    </div>
+                    ${donut}
                 </div>
             </a>`;
         }
         return `<a href="${href}" class="disc-card${row.totalListens === 0 ? ' unplayed' : ''}" title="${escapeHtml(row.title)}">
-            <div class="disc-card-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')"></div>
+            <div class="disc-card-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')">
+                ${entityType === 'albums' ? ownedBadgeHtml(row.ownedMedium) : ''}
+            </div>
             <div class="disc-card-meta">
                 <div class="disc-card-info">
                     <div class="disc-card-title">${escapeHtml(row.title)}</div>
@@ -218,6 +235,7 @@ const ViewBrowse = (() => {
         }
         if (platformFilter !== 'all') parts.push(platformLabel(platformFilter));
         if (status !== 'all') parts.push(status === 'heard' ? 'heard' : 'not yet heard');
+        if (entityType === 'albums' && ownedFilter !== 'all') parts.push(ownedFilter === 'owned' ? 'owned' : 'not owned');
         return parts.join(' · ');
     }
 
@@ -370,6 +388,15 @@ const ViewBrowse = (() => {
                         <button class="sort-btn${status === 'unheard' ? ' active' : ''}" data-status="unheard">Unheard</button>
                     </div>
                 </div>
+                ${entityType === 'albums' ? `
+                <div class="control-block">
+                    <span class="control-block-label">Collection</span>
+                    <div class="sort-controls">
+                        <button class="sort-btn${ownedFilter === 'all' ? ' active' : ''}" data-owned="all">All</button>
+                        <button class="sort-btn${ownedFilter === 'owned' ? ' active' : ''}" data-owned="owned">Owned</button>
+                        <button class="sort-btn${ownedFilter === 'unowned' ? ' active' : ''}" data-owned="unowned">Unowned</button>
+                    </div>
+                </div>` : ''}
                 <div class="control-block">
                     <span class="control-block-label">Display</span>
                     <div class="sort-controls">
@@ -460,6 +487,7 @@ const ViewBrowse = (() => {
         if (genreFilter !== 'all') p.set('genre', genreFilter);
         if (platformFilter !== 'all') p.set('platform', platformFilter);
         if (status !== 'all') p.set('status', status);
+        if (entityType === 'albums' && ownedFilter !== 'all') p.set('owned', ownedFilter);
         if (viewMode !== 'poster-lg') p.set('display', viewMode);
         history.replaceState(Object.fromEntries(p), '', `?${p.toString()}`);
     }
@@ -480,6 +508,12 @@ const ViewBrowse = (() => {
         container.querySelectorAll('[data-status]').forEach(btn => btn.addEventListener('click', () => {
             status = btn.dataset.status;
             container.querySelectorAll('[data-status]').forEach(b => b.classList.toggle('active', b === btn));
+            _syncUrl();
+            _applyFiltersAndRender();
+        }));
+        container.querySelectorAll('[data-owned]').forEach(btn => btn.addEventListener('click', () => {
+            ownedFilter = btn.dataset.owned;
+            container.querySelectorAll('[data-owned]').forEach(b => b.classList.toggle('active', b === btn));
             _syncUrl();
             _applyFiltersAndRender();
         }));
@@ -540,6 +574,7 @@ const ViewBrowse = (() => {
         genreFilter = params.genre || 'all';
         platformFilter = params.platform || 'all';
         status = ['all', 'heard', 'unheard'].includes(params.status) ? params.status : 'all';
+        ownedFilter = ['all', 'owned', 'unowned'].includes(params.owned) ? params.owned : 'all';
         viewMode = ['list', 'poster-sm', 'poster-lg'].includes(params.display) ? params.display : 'poster-lg';
         setPageTitle('Browse');
         _remount(container);

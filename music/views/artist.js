@@ -373,7 +373,8 @@ const ViewArtist = (() => {
                  WHERE t.release_id = r.id AND t.hidden = 0
                  AND t.variant_section IS NULL) as total_listens,
                 NULL as primary_artist_name,
-                r.slug
+                r.slug,
+                ${OWNED_MEDIUM_SQL} as owned_medium
             FROM releases r
             WHERE r.primary_artist_id = '${safeId}'
             AND r.hidden = 0        `)[0];
@@ -390,7 +391,8 @@ const ViewArtist = (() => {
                  WHERE t.release_id = r.id AND t.hidden = 0
                  AND t.variant_section IS NULL) as total_listens,
                 (SELECT a2.name FROM artists a2 WHERE a2.id = r.primary_artist_id) as primary_artist_name,
-                r.slug
+                r.slug,
+                ${OWNED_MEDIUM_SQL} as owned_medium
             FROM releases r
             JOIN release_artists ra ON ra.release_id = r.id
             WHERE ra.artist_id = '${safeId}' AND ra.role = 'main'
@@ -455,7 +457,7 @@ const ViewArtist = (() => {
 
     function _makeDiscCard(row, collab) {
         const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
-               totalListens, primaryArtistName, slug, totalTracks, listenedTracks] = row;
+               totalListens, primaryArtistName, slug, ownedMedium, totalTracks, listenedTracks] = row;
 
         let subParts = [];
         const year = releaseDate ? releaseDate.slice(0, 4) : null;
@@ -470,7 +472,7 @@ const ViewArtist = (() => {
         const imgSrc = albumArtUrl || getFallbackImageUrl();
 
         card.innerHTML = `
-            <div class="disc-card-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
+            <div class="disc-card-img" style="background-image: url('${cssUrl(imgSrc)}')">${ownedBadgeHtml(ownedMedium)}</div>
             <div class="disc-card-meta">
                 <div class="disc-card-info">
                     <div class="disc-card-title">${escapeHtml(title)}</div>
@@ -484,7 +486,7 @@ const ViewArtist = (() => {
 
     function _makeDiscListRow(row, collab) {
         const [id, title, releaseDate, type, typeSecondary, albumArtUrl,
-               totalListens, primaryArtistName, slug, totalTracks, listenedTracks] = row;
+               totalListens, primaryArtistName, slug, ownedMedium, totalTracks, listenedTracks] = row;
 
         const year   = releaseDate ? releaseDate.slice(0, 4) : '';
 
@@ -496,7 +498,7 @@ const ViewArtist = (() => {
         const subLabel = collab && primaryArtistName ? escapeHtml(primaryArtistName) : '';
 
         rowEl.innerHTML = `
-            <div class="disc-list-img" style="background-image: url('${cssUrl(imgSrc)}')"></div>
+            <div class="disc-list-img" style="background-image: url('${cssUrl(imgSrc)}')">${ownedBadgeHtml(ownedMedium)}</div>
             <div class="disc-list-info">
                 <div class="disc-list-title">${escapeHtml(title)}</div>
                 ${subLabel ? `<div class="disc-list-artist">${subLabel}</div>` : ''}

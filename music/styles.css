@@ -644,6 +644,7 @@ header h1 {
     flex-shrink: 0;
     transition: background 0.1s;
 }
+.release-link-pill.pill-static { cursor: default; }
 .release-link-pill:last-child,
 .pill-variant-group:last-child + * { border-bottom: none; }
 .release-link-pill::after {
@@ -1052,6 +1053,7 @@ a.stat-card:hover .stat-label::after {
     overflow: hidden;
     background: var(--bg);
     border: 2px solid var(--border);
+    position: relative;
 }
 
 .artist-photo img {
@@ -1432,6 +1434,8 @@ a.stat-card:hover .stat-label::after {
     background-position: center;
     background-color: var(--bg-secondary);
     border-radius: 4px;
+    position: relative;
+    overflow: hidden;
 }
 
 .disc-card-meta {
@@ -1569,6 +1573,8 @@ a.stat-card:hover .stat-label::after {
     background-position: center;
     background-color: var(--bg-secondary);
     border-radius: 4px;
+    position: relative;
+    overflow: hidden;
 }
 
 .disc-list-info {
@@ -3365,20 +3371,187 @@ footer a:hover {
 .art-modal-inner {
     max-width: min(90vw, 90vh);
     max-height: min(90vw, 90vh);
-    border-radius: 6px;
-    overflow: hidden;
-    box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+    perspective: 1000px;
 }
 
-.art-modal-inner img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
+/* On a narrow phone viewport there's no room for the disc/sleeve to slide
+   out sideways without running into the screen edge -- rotating the whole
+   composition a quarter turn re-aims that same slide-out motion into the
+   vertical space a tall screen actually has plenty of. The rotation lives
+   here, on the stage's parent, rather than on .vinyl-stage itself, so it
+   doesn't collide with that element's own `rotate` value on hover/reveal
+   (a single property can't hold both at once). Cover art is square, so the
+   turn doesn't change its on-screen footprint either. */
+@media (max-width: 768px) {
+    .art-modal-inner {
+        rotate: -90deg;
+    }
 }
 
 .has-art {
     cursor: zoom-in;
+}
+
+/* Corner ribbon marking a release as physically owned, folded over the
+   header art's own corner (clipped by .artist-photo's overflow:hidden, no
+   separate wrapper needed). Reuses the pill's gold so "owned" stays one
+   color site-wide. Kept deliberately small/quiet -- the full breakdown for
+   multi-copy/multi-format releases lives in the title tooltip, not on the
+   ribbon face. */
+.owned-ribbon {
+    position: absolute;
+    top: 15px;
+    right: -34px;
+    width: 130px;
+    padding: 3px 0;
+    background: #C9A227;
+    color: #23190a;
+    font: 700 9px/1.3 'Lato', sans-serif;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+    rotate: 45deg;
+    z-index: 2;
+    cursor: default;
+}
+.owned-ribbon-sub {
+    display: block;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 8px;
+    opacity: 0.85;
+}
+
+/* Compact "owned" indicator for grid/list tiles (browse page, artist
+   discography) -- a plain corner-fold triangle, same gold as the release
+   page's ribbon, no icon or text (medium/format detail lives in the title
+   attribute and on the release page itself). Top-right on every tile now
+   that the listen-progress donut sits below the art instead of overlaid on
+   it, so the two never compete for the same corner. */
+.disc-owned-badge {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 0 20px 20px 0;
+    border-color: transparent #C9A227 transparent transparent;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+/* Record-pull effect inside the art modal. Uses the independent CSS
+   rotate/translate/scale properties (not the `transform` shorthand) so the
+   disc's continuous spin (animating `rotate`) and its pull-out motion
+   (transitioning `translate`) never compete for the same property. Stacking
+   needs no z-index at all: disc, sleeve, and cover share one grid cell in
+   that DOM order, so the cover paints on top by default (hidden state) and
+   a large enough translate on hover physically clears its footprint,
+   settling to the side. */
+.vinyl-stage {
+    position: relative;
+    width: min(75vw, 420px);
+    height: min(75vw, 420px);
+    display: grid;
+    transform-style: preserve-3d;
+    transition: rotate 0.6s ease-in-out, translate 0.4s ease-in-out;
+}
+.vinyl-stage > * {
+    grid-area: 1 / 1;
+}
+.vinyl-stage:hover, .vinyl-stage.revealed {
+    rotate: 1 1 0 -30deg;
+    translate: -45% 0%;
+}
+/* Soft contact shadow that grows as the stage tilts out, for grounding. */
+.vinyl-stage::before {
+    content: '';
+    position: absolute;
+    inset: auto 0 -2% 0;
+    height: 4%;
+    background: #000;
+    opacity: 0.3;
+    mask-image: radial-gradient(#000 0%, transparent 75%);
+    transform-origin: left center;
+    translate: -10% 0;
+    transition: opacity 0.4s ease-in-out, scale 0.4s ease-in-out;
+}
+.vinyl-stage:hover::before, .vinyl-stage.revealed::before {
+    opacity: 0.5;
+    scale: 2 3;
+}
+
+.vinyl-stage-disc {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    position: relative;
+    scale: 0.94 0.935;
+    translate: 20% 0%;
+    transition: translate 0.4s ease-in-out;
+    animation: vinylStageSpin 1.8s linear infinite paused;
+    background: repeating-radial-gradient(circle,
+        #050505 0%, #050505 0.5%, #1c1c1c 0.5%, #1c1c1c 0.75%);
+    background-size: cover;
+    background-position: center;
+    mask-image: radial-gradient(circle,
+        transparent 0%, transparent 1.5%, #000 1.5%, #000 100%);
+}
+.vinyl-stage:hover .vinyl-stage-disc, .vinyl-stage.revealed .vinyl-stage-disc {
+    translate: 90% 0%;
+    animation-play-state: running;
+}
+/* CD-only owned copies get this generic graphic instead of a real pressing
+   photo -- sized down further since a CD reads smaller than a 12" vinyl. */
+.vinyl-stage-disc.is-cd {
+    scale: 0.846 0.842;
+    background-size: contain;
+    background-repeat: no-repeat;
+}
+/* Fallback label for releases with no cached real-pressing photo -- omitted
+   entirely once a real photo is set (that photo already shows a real label). */
+.vinyl-stage-disc:not(.has-photo)::before {
+    content: '';
+    position: absolute;
+    inset: 33%;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.15);
+}
+@keyframes vinylStageSpin {
+    from { rotate: 0deg; }
+    to   { rotate: 360deg; }
+}
+
+.vinyl-stage-sleeve {
+    width: 100%;
+    height: 100%;
+    border-radius: 2%;
+    background-color: #f2f0ea;
+    mask-image: radial-gradient(circle,
+        transparent 0%, transparent 30%, #000 30%, #000 100%);
+    scale: 0.98;
+    translate: 0 0;
+    transition: translate 0.4s ease-in-out 0.05s;
+}
+.vinyl-stage:hover .vinyl-stage-sleeve, .vinyl-stage.revealed .vinyl-stage-sleeve {
+    translate: 35% 0%;
+}
+
+.vinyl-stage-cover {
+    width: 100%;
+    height: 100%;
+    border-radius: 6px;
+    background-size: cover;
+    background-position: center;
+    /* Hairline ring so pure-black/pure-white covers still read a clean edge
+       against the modal's near-black backdrop -- anchored to the art itself
+       rather than a fixed background gradient, so it works at any cover
+       color. */
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 2px 0 5px -2px rgba(0, 0, 0, 0.5);
+    position: relative;
 }
 
 /* Canonical list progress (RS500-style, Letterboxd "List Progress" pattern)
@@ -3822,37 +3995,32 @@ footer a:hover {
 .browse-grid-list { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 
 .browse-poster {
-    position: relative;
     display: block;
-    border-radius: 6px;
-    overflow: hidden;
-    background: var(--bg-secondary);
+    color: inherit;
+    text-decoration: none;
 }
 .browse-poster-img {
     aspect-ratio: 1 / 1;
     background-size: cover;
     background-position: center;
     background-color: var(--bg-tertiary);
+    border-radius: 6px;
+    position: relative;
+    overflow: hidden;
 }
 .browse-poster.unplayed .browse-poster-img { filter: grayscale(0.6) brightness(0.55); }
-.browse-poster-donut {
-    position: absolute;
-    top: 0.4rem;
-    right: 0.4rem;
-    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.6));
-}
 .browse-poster-caption {
-    position: absolute;
-    left: 0; right: 0; bottom: 0;
-    padding: 0.5rem 0.55rem 0.4rem;
-    background: linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0));
-    opacity: 0;
-    transition: opacity 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0;
 }
-.browse-poster:hover .browse-poster-caption,
-.browse-poster:focus-visible .browse-poster-caption { opacity: 1; }
+.browse-poster-info {
+    flex: 1;
+    min-width: 0;
+}
 .browse-poster-title {
-    color: #fff;
+    color: var(--text);
     font-size: 0.78rem;
     font-weight: 600;
     white-space: nowrap;
@@ -3860,7 +4028,7 @@ footer a:hover {
     text-overflow: ellipsis;
 }
 .browse-poster-sub {
-    color: rgba(255,255,255,0.75);
+    color: var(--text-tertiary);
     font-size: 0.68rem;
     white-space: nowrap;
     overflow: hidden;

@@ -32,6 +32,7 @@ function _searchQuery(q) {
     // Static view shortcuts — hidden in admin mode (no page navigation from editor)
     if (!isAdmin) {
         const VIEW_SHORTCUTS = [
+            { label: 'Browse',           view: 'browse',          icon: 'layout-grid' },
             { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
             { label: 'History',         view: 'history',         icon: 'history' },
             { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },

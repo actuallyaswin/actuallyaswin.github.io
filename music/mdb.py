@@ -75,6 +75,7 @@ from mdb_ops import (
     save_aoty_data, save_release_date,
     upsert_artist_alias, upsert_release_alias,
     merge_variant_tracks,
+    db_search_releases,
 )
 from mdb_apis import (
     SpotifyClient,
@@ -97,7 +98,7 @@ from mdb_apis import (
     mb_find_release_group,
     _EDITION_RE,
 )
-from mdb_errors import NoSourcesAvailable
+from mdb_errors import NoSourcesAvailable, SourceError
 from mdb_merge import (
     ReleaseMerge, MDBRelease,
     upsert_release_mdb, upsert_tracks_mdb,
@@ -942,9 +943,13 @@ def _find_existing_release_mdb(cur, mdb_r: MDBRelease, primary_artist_id: 'str |
                           (mdb_r.apple_music_id,)).fetchone()
         if row:
             return row[0]
-    # No platform ID at all (e.g. a Bandcamp-only release) — fall back to
-    # title + primary artist, the only signal left to avoid re-import duplicates.
-    if not any((mdb_r.spotify_id, mdb_r.mbid, mdb_r.beatport_id, mdb_r.apple_music_id)) and primary_artist_id and mdb_r.title:
+    # Fall back to title + primary artist whenever no ID-based lookup found a
+    # match — not just when the source carries no platform ID at all. A
+    # release can have every field an incoming source doesn't recognize (a
+    # stale or wrong stored ID, a different regional catalog entry for the
+    # same platform) and still be the same album; skipping this fallback in
+    # that case creates a duplicate release instead of finding the real one.
+    if primary_artist_id and mdb_r.title:
         row = cur.execute(
             'SELECT id FROM releases WHERE primary_artist_id = ? AND lower(title) = lower(?)'
             '   AND (hidden IS NULL OR hidden = 0)',
@@ -7458,7 +7463,9 @@ _EL_NAMES = {0: 'Wikipedia', 1: 'MusicBrainz', 2: 'Spotify', 3: 'Apple Music',
 
 
 def _dedup_find_groups(cur) -> list[list[dict]]:
-    """Return groups of visible releases that share the same base title + artist."""
+    """Return groups of visible releases that share the same base title + artist,
+    or the same release_group_mbid. Never groups across different artists or
+    across releases MusicBrainz models as distinct types."""
     from mdb_strings import _base_title, normalize_text
     from collections import defaultdict
     rows = cur.execute('''
@@ -7871,8 +7878,117 @@ def _dedup_merge(conn, canonical: dict, loser: dict,
     conn.commit()
 
 
+def cmd_doctor(args):
+    """Read-only DB audit: surfaces backfill opportunities and data anomalies
+    without writing anything. Each finding names the command that would fix
+    it (enrich art/spotify-links/deezer-links, dedup --artist) rather than
+    acting itself.
+    """
+    db_path = getattr(args, 'db', None) or DB_PATH
+    as_json = getattr(args, 'json', False)
+    report: dict = {}
+
+    with managed_db(db_path) as conn:
+        integrity = conn.execute('PRAGMA integrity_check').fetchone()[0]
+        fk        = conn.execute('PRAGMA foreign_key_check').fetchall()
+        report['integrity_check']    = integrity
+        report['fk_violations']      = len(fk)
+
+        report['upc_no_spotify'] = conn.execute('''
+            SELECT COUNT(*) FROM releases
+            WHERE hidden = 0 AND upc IS NOT NULL
+              AND (spotify_id IS NULL OR spotify_id = '')
+        ''').fetchone()[0]
+
+        report['upc_no_deezer'] = conn.execute(f'''
+            SELECT COUNT(*) FROM releases r
+            WHERE r.hidden = 0 AND r.upc IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM external_links el
+                  WHERE el.entity_type = {EL_RELEASE} AND el.service = {EL_SVC_DEEZER}
+                    AND el.entity_id = r.id
+              )
+        ''').fetchone()[0]
+
+        report['mbid_no_art'] = conn.execute('''
+            SELECT COUNT(*) FROM releases
+            WHERE hidden = 0 AND mbid IS NOT NULL
+              AND (album_art_url IS NULL OR album_art_url = '')
+        ''').fetchone()[0]
+
+        # Same artist, same release_date, different titles, created within a
+        # short window — the shape a majority-vote date collision leaves
+        # behind. A legitimate same-day multi-release (e.g. several singles
+        # dropped together) has the same shape, so this is a lead to check,
+        # not a confirmed defect.
+        date_collisions = conn.execute('''
+            SELECT a.name, r1.title, r2.title, r1.release_date, r1.id, r2.id
+            FROM releases r1 JOIN releases r2
+              ON r1.primary_artist_id = r2.primary_artist_id
+             AND r1.release_date = r2.release_date
+             AND r1.id < r2.id
+            LEFT JOIN artists a ON a.id = r1.primary_artist_id
+            WHERE r1.hidden = 0 AND r2.hidden = 0
+              AND r1.created_at IS NOT NULL AND r2.created_at IS NOT NULL
+              AND ABS(r1.created_at - r2.created_at) < 10
+            ORDER BY a.name
+        ''').fetchall()
+        report['date_collisions'] = [
+            {'artist': r[0], 'title_a': r[1], 'title_b': r[2], 'date': r[3],
+             'release_id_a': r[4], 'release_id_b': r[5]}
+            for r in date_collisions
+        ]
+
+        # Same artist, same title, more than one visible release — a
+        # duplicate that dedup would resolve, or a legitimate re-recording
+        # that happens to share a title (verify by content before merging).
+        dup_titles = conn.execute('''
+            SELECT a.name, r.title, COUNT(*), GROUP_CONCAT(r.id, ',')
+            FROM releases r LEFT JOIN artists a ON a.id = r.primary_artist_id
+            WHERE r.hidden = 0
+            GROUP BY r.primary_artist_id, r.title
+            HAVING COUNT(*) > 1
+            ORDER BY a.name
+        ''').fetchall()
+        report['duplicate_titles'] = [
+            {'artist': r[0], 'title': r[1], 'count': r[2], 'release_ids': r[3].split(',')}
+            for r in dup_titles
+        ]
+
+    if as_json:
+        print(json.dumps(report, indent=2))
+        return
+
+    console.print(f"  Integrity check:  [{'green' if integrity == 'ok' else 'red'}]{integrity}[/]")
+    console.print(f"  FK violations:    [{'green' if not fk else 'red'}]{len(fk)}[/]")
+    console.print(f"  UPC, no Spotify:  {report['upc_no_spotify']}  [dim](enrich spotify-links)[/dim]")
+    console.print(f"  UPC, no Deezer:   {report['upc_no_deezer']}  [dim](enrich deezer-links)[/dim]")
+    console.print(f"  MBID, no art:     {report['mbid_no_art']}  [dim](enrich art)[/dim]")
+
+    console.rule(style='dim')
+    console.print(f"  [bold]{len(report['duplicate_titles'])}[/bold] duplicate-title group(s)  [dim](dedup --artist)[/dim]")
+    for d in report['duplicate_titles'][:20]:
+        console.print(f"    {d['artist'] or '(no artist)'} — {d['title']!r}  ×{d['count']}")
+    if len(report['duplicate_titles']) > 20:
+        console.print(f"    [dim]… and {len(report['duplicate_titles']) - 20} more[/dim]")
+
+    console.rule(style='dim')
+    console.print(f"  [bold]{len(report['date_collisions'])}[/bold] same-day release pair(s) created within 10s of each other")
+    for c in report['date_collisions'][:20]:
+        console.print(f"    {c['artist'] or '(no artist)'} — {c['title_a']!r} / {c['title_b']!r}  ({c['date']})")
+    if len(report['date_collisions']) > 20:
+        console.print(f"    [dim]… and {len(report['date_collisions']) - 20} more[/dim]")
+
+
 def cmd_dedup(args):
-    """Find and resolve duplicate releases interactively."""
+    """Find and resolve duplicate releases interactively.
+
+    Every merge requires an explicit y/N confirmation per group; `--report`
+    lists candidates without prompting or touching the DB. `--artist` scopes
+    the search to one artist and is the recommended default for routine use
+    — the artist-agnostic scan compares titles across the whole catalog and
+    can turn up more candidates to review than are useful in one sitting.
+    """
     db_path = getattr(args, 'db', None) or DB_PATH
     only_artist = (getattr(args, 'artist', None) or '').strip().lower()
 
@@ -8075,152 +8191,272 @@ def cmd_link_discogs(args):
         )
 
 
-def cmd_collection_import(args):
-    """Import a Discogs CSV export into collection_items.
+def _collection_match_release(conn: sqlite3.Connection, artist: str, title: str) -> list:
+    """Candidate DB releases for one Discogs collection item, via the same
+    fuzzy artist+title matcher scrobble sync uses."""
+    return db_search_releases(conn, artist, title)
 
-    Creates one row per physical item. Auto-links to existing DB releases
-    where a single unambiguous title match exists. Uses detect_medium() to
-    determine vinyl/cd/cassette from the Discogs format string.
-    NOTE: Does not run automatically — user invokes deliberately to avoid
-    fuzzy-match collisions with manually-imported releases.
+
+def _collection_resolve_interactive(conn: sqlite3.Connection, artist: str, title: str,
+                                     candidates: list) -> 'str | None':
+    """Prompt for the correct release when a Discogs item has 0 or >1 candidates.
+
+    Accepts a numbered pick, a pasted release ID/URL (resolved the same way
+    import_album_unified resolves import targets), or 's' to skip (leaves
+    the item queued — collection_items.release_id is NOT NULL, so a skipped
+    item is simply not written this run).
     """
-    import csv
-    import time as _time
-    from collection_genres import format_to_coarse, detect_medium
-
-    csv_path = args.csv_file
-    db_path  = getattr(args, 'db', None) or DB_PATH
-
-    with managed_db(db_path) as conn:
-        rows = list(csv.DictReader(open(csv_path, encoding='utf-8')))
-        console.print(f'Importing [bold]{len(rows)}[/bold] items from {csv_path}')
-
-        # Build lookup: normalized title → list of release_ids
-        db_by_norm: dict[str, list[str]] = {}
-        for r in conn.execute('SELECT id, title FROM releases WHERE hidden=0').fetchall():
-            key = normalize_text(r['title'] or '')
-            db_by_norm.setdefault(key, []).append(r['id'])
-
-        # Preload existing discogs_release_ids once, up front, instead of a
-        # per-row existence query — updated as rows are inserted below so a
-        # duplicate discogs_release_id later in the same CSV still matches.
-        existing_discogs_ids: set = {
-            r['discogs_release_id']
-            for r in conn.execute('SELECT discogs_release_id FROM collection_items').fetchall()
-        }
-
-        now = int(_time.time())
-        inserted = updated = linked = 0
-
-        for row in rows:
-            discogs_id = row['release_id'].strip()
-            title      = row['Title'].strip()
-            fmt        = row['Format'].strip()
-            folder     = row['CollectionFolder'].strip()
-            fmt_coarse = format_to_coarse(fmt, folder)
-            medium     = detect_medium(fmt)
-
-            # Auto-link only on exact single match (avoids fuzzy collisions)
-            release_id = None
-            hits = db_by_norm.get(normalize_text(title), [])
-            if len(hits) == 1:
-                release_id = hits[0]
-                upsert_external_link(conn, EL_RELEASE, release_id,
-                                     EL_SVC_DISCOGS, discogs_id)
-                linked += 1
-
-            existing = discogs_id in existing_discogs_ids
-
-            fields = dict(
-                release_id     = release_id,
-                medium         = medium,
-                format         = fmt,
-                format_coarse  = fmt_coarse,
-                catalog_number = row.get('Catalog#', '').strip(),
-                label          = row.get('Label', '').strip(),
-                date_added     = row.get('Date Added', '').strip(),
-                discogs_folder = folder,
-                media_condition  = row.get('Collection Media Condition', '').strip(),
-                sleeve_condition = row.get('Collection Sleeve Condition', '').strip(),
-                notes            = row.get('Collection Notes', '').strip(),
-                updated_at       = now,
-            )
-
-            if existing:
-                # Preserve existing release_id unless we found a new link
-                set_clause = ', '.join(
-                    f'{k}=COALESCE({k},?)' if k == 'release_id' else f'{k}=?'
-                    for k in fields
-                )
-                conn.execute(
-                    f'UPDATE collection_items SET {set_clause} WHERE discogs_release_id=?',
-                    [*fields.values(), discogs_id]
-                )
-                updated += 1
-            else:
-                cols = ', '.join(['discogs_release_id', *fields.keys(), 'created_at'])
-                placeholders = ', '.join(['?'] * (len(fields) + 2))
-                conn.execute(
-                    f'INSERT INTO collection_items ({cols}) VALUES ({placeholders})',
-                    [discogs_id, *fields.values(), now]
-                )
-                existing_discogs_ids.add(discogs_id)
-                inserted += 1
-
-        conn.commit()
-        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-        console.print(
-            f'  inserted [green]{inserted}[/green]  '
-            f'updated [yellow]{updated}[/yellow]  '
-            f'auto-linked to DB releases [cyan]{linked}[/cyan]'
-        )
+    console.print(f'\n  [bold]{artist} — {title}[/bold]')
+    if not candidates:
+        console.print('  [dim]no DB candidates found[/dim]')
+    options = [f"{c['title']} — {c['artist_name']} ({c.get('release_date') or '?'})" for c in candidates]
+    value, quit_, _, _ = _prompt_choice(
+        'Pick the matching release, paste a URL/ID to import, or [s]kip',
+        options, allow_hide=True,
+    )
+    if quit_:
+        raise KeyboardInterrupt
+    if value in options:
+        return candidates[options.index(value)]['id']
+    if value and value not in ('none',):
+        try:
+            rid, _, _, _ = import_album_unified(DB_PATH, value, auto=True)
+            return rid
+        except Exception as e:
+            console.print(f'  [red]import failed:[/red] {e}')
+    return None
 
 
-def cmd_collection_enrich_discogs(args):
-    """Fetch genre/style metadata from Discogs API for collection_items."""
-    import time as _time
-    import json as _json
+def cmd_collection_sync_discogs(args):
+    """Sync the physical collection directly from the Discogs API.
+
+    Every Discogs item gets a collection_items row, whether or not it
+    resolves to a release: linked items carry release_id; everything else
+    carries unresolved_reason ('non_music' | 'ambiguous' | 'unresolved') so
+    its discogs_instance_id is permanently in the "already seen" set —
+    otherwise an item that never resolves (a DJ control record, an obscure
+    12" absent from every source) gets rediscovered and reprocessed on
+    every single future sync, forever.
+
+    Additive by design: a page-1 count check short-circuits the whole sync
+    when nothing changed (one API call), and any remaining run only does the
+    expensive per-item work (DB matching, a condition-fields API call) for
+    discogs_instance_ids not already in collection_items. --force reprocesses
+    everything anyway (e.g. after the DB gained releases that could resolve a
+    previously-ambiguous item).
+
+    --json implies --auto: there's no terminal to prompt against once output
+    is a single machine-readable payload, so ambiguous items are always
+    queued rather than interactively resolved in that mode.
+    """
     from mdb_apis import DiscogsClient
-    from collection_genres import discogs_tags_to_coarse
+    from mdb_collection import (
+        CollectionItem, CollectionMedia, CollectionIdentifier,
+        discogs_tags_to_coarse, is_non_music_item, upsert_collection_item,
+    )
 
     db_path = getattr(args, 'db', None) or DB_PATH
+    force = getattr(args, 'force', False)
+    as_json = getattr(args, 'json', False)
+    auto = args.auto or as_json
+    dc = DiscogsClient.from_env()
+    identity = dc.get_identity()
+    username = identity['username']
+
+    def emit(msg):
+        if not as_json:
+            console.print(msg)
+
     with managed_db(db_path) as conn:
-        dc = DiscogsClient.from_env()
+        local_count = conn.execute('SELECT COUNT(*) FROM collection_items').fetchone()[0]
+        existing_instance_ids = {
+            r[0] for r in conn.execute('SELECT discogs_instance_id FROM collection_items').fetchall()
+        }
 
-        query = 'SELECT id, discogs_release_id FROM collection_items'
-        if not args.force:
-            query += ' WHERE discogs_genres IS NULL'
-        items = conn.execute(query).fetchall()
-        console.print(f'Fetching Discogs metadata for [bold]{len(items)}[/bold] items...')
+    if not force:
+        remote_count = dc.get_collection_item_count(username)
+        if remote_count == local_count:
+            if as_json:
+                print(json.dumps({'up_to_date': True, 'local_count': local_count}, indent=2))
+            else:
+                console.print(f'  [green]Up to date[/green] — {local_count} items, no change on Discogs')
+            return
+        emit(f'  Discogs has {remote_count} items, {local_count} synced locally — checking for changes')
 
-        enriched = failed = 0
-        for i, (item_id, discogs_id) in enumerate(items, 1):
-            try:
-                genres, styles = dc.get_genres_styles(discogs_id)
-                coarse = discogs_tags_to_coarse(genres, styles)
-                conn.execute(
-                    'UPDATE collection_items SET discogs_genres=?, coarse_genre=?, updated_at=? WHERE id=?',
-                    [_json.dumps(genres + styles), coarse, int(_time.time()), item_id]
+    emit(f'Fetching collection for [bold]{username}[/bold]...')
+    raw_items = dc.get_collection_items(username)
+    emit(f'  {len(raw_items)} item(s) in collection\n')
+
+    remote_instance_ids = {str(r['instance_id']) for r in raw_items}
+    removed = existing_instance_ids - remote_instance_ids
+    if removed and not as_json:
+        console.print(f'  [yellow]{len(removed)} item(s)[/yellow] previously synced are no longer in the '
+                       f'Discogs collection (not auto-removed — review with collection_item_id in '
+                       f'discogs_instance_id {sorted(removed)})\n')
+
+    already_synced = 0
+    if not force:
+        new_items = [r for r in raw_items if str(r['instance_id']) not in existing_instance_ids]
+        already_synced = len(raw_items) - len(new_items)
+        emit(f'  {already_synced} already synced, {len(new_items)} new\n')
+        raw_items = new_items
+
+    linked = skipped = non_music = unresolved = errored = 0
+    queued_items: list = []
+    errored_instance_ids: list = []
+    with managed_db(db_path) as conn:
+        try:
+            for raw in raw_items:
+                bi = raw['basic_information']
+                artist_name = (bi.get('artists') or [{}])[0].get('name', '')
+                title = bi['title']
+                folder_id = raw.get('folder_id', 0)
+                genres, styles = bi.get('genres', []), bi.get('styles', [])
+
+                release_id = None
+                reason = None
+                candidate_ids: list = []
+
+                if is_non_music_item(genres, styles):
+                    reason = 'non_music'
+                    non_music += 1
+                    emit(f'  [dim]non-music, tracked only:[/dim] {artist_name} — {title}')
+                else:
+                    candidates = _collection_match_release(conn, artist_name, title)
+                    if len(candidates) == 1:
+                        release_id = candidates[0]['id']
+                        linked += 1
+                    elif auto:
+                        candidate_ids = [c['id'] for c in candidates]
+                        reason = 'ambiguous' if candidates else 'unresolved'
+                        if candidates:
+                            queued_items.append({
+                                'discogs_release_id': raw['id'],
+                                'discogs_instance_id': raw['instance_id'],
+                                'artist': artist_name,
+                                'title': title,
+                                'candidates': [
+                                    {'release_id': c['id'], 'title': c['title'], 'artist_name': c['artist_name']}
+                                    for c in candidates
+                                ],
+                            })
+                            emit(f'  [dim]queued (needs review):[/dim] {artist_name} — {title}')
+                        else:
+                            unresolved += 1
+                            emit(f'  [dim]unresolved, tracked only:[/dim] {artist_name} — {title}')
+                    else:
+                        release_id = _collection_resolve_interactive(conn, artist_name, title, candidates)
+                        if not release_id:
+                            skipped += 1
+                            candidate_ids = [c['id'] for c in candidates]
+                            reason = 'ambiguous' if candidates else 'unresolved'
+
+                try:
+                    fields = dc.get_collection_instance_fields(
+                        username, folder_id, raw['id'], raw['instance_id'])
+                except SourceError as e:
+                    errored += 1
+                    errored_instance_ids.append(str(raw['instance_id']))
+                    emit(f'  [red]API error, skipped for this run:[/red] {artist_name} — {title} ({e})')
+                    continue
+
+                item = CollectionItem(
+                    discogs_release_id=str(raw['id']),
+                    discogs_instance_id=str(raw['instance_id']),
+                    release_id=release_id,
+                    catalog_number=(bi.get('labels') or [{}])[0].get('catno'),
+                    label=(bi.get('labels') or [{}])[0].get('name'),
+                    date_added=raw.get('date_added'),
+                    media_condition=fields.get(1),
+                    sleeve_condition=fields.get(2),
+                    notes=fields.get(3),
+                    discogs_folder=str(folder_id),
+                    discogs_genres=genres + styles,
+                    coarse_genre=discogs_tags_to_coarse(genres, styles),
+                    media=[CollectionMedia.from_discogs_format(f) for f in bi.get('formats', [])],
+                    identifiers=[],
+                    hidden=is_non_music_item(genres, styles),
+                    unresolved_reason=reason,
+                    candidate_release_ids=candidate_ids,
                 )
-                enriched += 1
-                if i % 25 == 0:
-                    conn.commit()
-                    console.print(f'  [{i}/{len(items)}] {enriched} enriched, {failed} failed')
-            except Exception as e:
-                console.print(f'  [yellow]⚠[/yellow] id={discogs_id}: {e}')
-                failed += 1
+                upsert_collection_item(conn, item)
+                conn.commit()
+        except KeyboardInterrupt:
+            emit('\n[dim]stopped — progress so far is saved[/dim]')
 
-        conn.commit()
         conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-        console.print(f'Done: [green]{enriched}[/green] enriched, [red]{failed}[/red] failed')
+
+    if as_json:
+        print(json.dumps({
+            'up_to_date': False,
+            'already_synced': already_synced,
+            'processed': len(raw_items),
+            'linked': linked,
+            'queued': queued_items,
+            'non_music': non_music,
+            'unresolved': unresolved,
+            'skipped': skipped,
+            'errored': errored,
+            'errored_instance_ids': errored_instance_ids,
+            'removed_instance_ids': sorted(removed),
+        }, indent=2))
+        return
+
+    console.rule(style='dim')
+    console.print(
+        f'  linked [green]{linked}[/green]  ·  '
+        f'queued for review [yellow]{len(queued_items)}[/yellow]  ·  '
+        f'non-music [dim]{non_music}[/dim]  ·  '
+        f'unresolved [dim]{unresolved}[/dim]  ·  '
+        f'skipped [dim]{skipped}[/dim]  ·  '
+        f'errored [dim]{errored}[/dim]'
+    )
 
 
-def cmd_collection_enrich(args):
-    """Dispatch collection enrichment sub-commands."""
-    if getattr(args, 'discogs', False):
-        cmd_collection_enrich_discogs(args)
-    else:
-        console.print('[yellow]Specify --discogs to enrich from Discogs API[/yellow]')
+def cmd_collection_set_image(args):
+    """Assign a specific pressing photo URL to one owned copy of a release.
+
+    coloredvinylrecords.com's own image-number suffixes don't correspond to
+    album numbering (confirmed by inspection — e.g. RTJ1 vs RTJ4 aren't
+    -1.png/-4.png), so there's no way to guess the right URL automatically;
+    matching is manual, this just applies the result of that lookup.
+    """
+    with managed_db(getattr(args, 'db', None) or DB_PATH) as conn:
+        release = _resolve_release(conn, args.release)
+        if not release:
+            console.print(f'[red]Release not found:[/red] {args.release}')
+            sys.exit(1)
+
+        rows = conn.execute('''
+            SELECT cim.id AS media_id, ci.id AS collection_item_id, cim.raw_text, cim.color_primary
+            FROM collection_item_media cim
+            JOIN collection_items ci ON ci.id = cim.collection_item_id
+            LEFT JOIN collection_item_releases cir ON cir.collection_item_id = ci.id
+            WHERE cim.medium = ? AND (ci.release_id = ? OR cir.release_id = ?)
+        ''', (args.medium, release['id'], release['id'])).fetchall()
+
+        if not rows:
+            console.print(f'[red]No owned {args.medium} copy found for[/red] {release["title"]}')
+            sys.exit(1)
+
+        if len(rows) > 1 and not args.collection_item_id:
+            console.print(f'[yellow]{len(rows)} owned {args.medium} copies of[/yellow] {release["title"]} '
+                          f'— pass --collection-item-id to pick one:')
+            for r in rows:
+                console.print(f'  {r["collection_item_id"]}  {r["color_primary"] or ""}  {r["raw_text"]}')
+            sys.exit(1)
+
+        if args.collection_item_id:
+            rows = [r for r in rows if r['collection_item_id'] == args.collection_item_id]
+            if not rows:
+                console.print(f'[red]No {args.medium} media row for collection_item[/red] {args.collection_item_id} '
+                              f'on {release["title"]}')
+                sys.exit(1)
+
+        conn.execute('UPDATE collection_item_media SET image_url = ? WHERE id = ?',
+                     (args.url, rows[0]['media_id']))
+        conn.commit()
+        console.print(f'[green]Set image[/green] on {release["title"]} (collection_item {rows[0]["collection_item_id"]})')
 
 
 _SHOW_TABLES = {
@@ -9127,6 +9363,11 @@ def main():
     p_l_status.add_argument('--db', metavar='PATH', help='Path to master.sqlite')
     p_l_status.set_defaults(func=cmd_list_status)
 
+    p_doctor = sub.add_parser('doctor', help='Read-only DB audit — backfill opportunities and data anomalies')
+    p_doctor.add_argument('--json', action='store_true', help='Emit findings as JSON')
+    p_doctor.add_argument('--db',   metavar='PATH', help='Path to master.sqlite')
+    p_doctor.set_defaults(func=cmd_doctor)
+
     p_dedup = sub.add_parser('dedup', help='Find and resolve duplicate releases interactively')
     p_dedup.add_argument('--artist', metavar='NAME', help='Limit to a specific artist')
     p_dedup.add_argument('--report', action='store_true',
@@ -9137,20 +9378,26 @@ def main():
     p_coll = sub.add_parser('collection', help='Manage physical media collection')
     cs_    = p_coll.add_subparsers(dest='collection_cmd', required=True)
 
-    p_coll_import = cs_.add_parser('import',
-        help='Import a Discogs collection CSV export into collection_items')
-    p_coll_import.add_argument('csv_file', metavar='CSV',
-        help='Path to Discogs collection export CSV')
-    p_coll_import.add_argument('--db', metavar='PATH')
-    p_coll_import.set_defaults(func=cmd_collection_import)
+    p_coll_sync = cs_.add_parser('sync-discogs',
+        help='Sync the physical collection directly from the Discogs API')
+    p_coll_sync.add_argument('--auto', action='store_true',
+        help='Skip and queue ambiguous items instead of prompting interactively')
+    p_coll_sync.add_argument('--force', action='store_true',
+        help='Reprocess every item, not just ones new since the last sync')
+    p_coll_sync.add_argument('--json', action='store_true',
+        help='Emit a structured summary instead of console output; implies --auto')
+    p_coll_sync.add_argument('--db', metavar='PATH')
+    p_coll_sync.set_defaults(func=cmd_collection_sync_discogs)
 
-    p_coll_enrich = cs_.add_parser('enrich', help='Enrich collection metadata from external APIs')
-    p_coll_enrich.add_argument('--discogs', action='store_true',
-                                help='Fetch genres/styles from Discogs API (~6 min for 325 items)')
-    p_coll_enrich.add_argument('--force', action='store_true',
-                                help='Re-fetch even if already enriched')
-    p_coll_enrich.add_argument('--db', metavar='PATH')
-    p_coll_enrich.set_defaults(func=cmd_collection_enrich)
+    p_coll_img = cs_.add_parser('set-image',
+        help='Assign a pressing photo URL to one owned copy of a release')
+    p_coll_img.add_argument('release', metavar='RELEASE', help='Release ID, Spotify/MB ID, or title')
+    p_coll_img.add_argument('url', metavar='URL', help='Pressing photo URL (hotlinked, not downloaded)')
+    p_coll_img.add_argument('--medium', default='vinyl', help='Media type to update (default: vinyl)')
+    p_coll_img.add_argument('--collection-item-id', type=int, metavar='ID',
+        help='Disambiguate when a release has more than one owned copy')
+    p_coll_img.add_argument('--db', metavar='PATH')
+    p_coll_img.set_defaults(func=cmd_collection_set_image)
 
     p_adminpin = sub.add_parser('admin-pin', help='Set or reset the admin view PIN')
     p_adminpin.add_argument('--db', metavar='PATH', help='Path to master.sqlite')

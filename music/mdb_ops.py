@@ -396,12 +396,11 @@ CREATE TABLE IF NOT EXISTS release_soundtrack_meta (
 );
 CREATE TABLE IF NOT EXISTS collection_items (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    discogs_release_id   TEXT UNIQUE NOT NULL,
+    discogs_release_id   TEXT NOT NULL,
+    discogs_instance_id  TEXT UNIQUE NOT NULL,
     release_id           TEXT REFERENCES releases(id),
-    medium               TEXT NOT NULL DEFAULT 'vinyl'
-                         CHECK(medium IN ('vinyl','cd','cassette','other')),
-    format               TEXT,
-    format_coarse        TEXT CHECK(format_coarse IN ('album','ep','single','soundtrack')),
+    unresolved_reason    TEXT CHECK(unresolved_reason IN ('non_music','ambiguous','unresolved')),
+    candidate_release_ids TEXT,
     catalog_number       TEXT,
     label                TEXT,
     date_added           TEXT,
@@ -411,12 +410,48 @@ CREATE TABLE IF NOT EXISTS collection_items (
     discogs_folder       TEXT,
     discogs_genres       TEXT,
     coarse_genre         TEXT,
+    hidden               INTEGER NOT NULL DEFAULT 0,
     created_at           INTEGER,
-    updated_at           INTEGER
+    updated_at           INTEGER,
+    CHECK ((release_id IS NOT NULL AND unresolved_reason IS NULL)
+        OR (release_id IS NULL AND unresolved_reason IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS ci_release_id ON collection_items(release_id);
-CREATE INDEX IF NOT EXISTS ci_format_coarse ON collection_items(format_coarse);
+CREATE INDEX IF NOT EXISTS ci_discogs_release_id ON collection_items(discogs_release_id);
 CREATE INDEX IF NOT EXISTS ci_coarse_genre ON collection_items(coarse_genre);
+CREATE TABLE IF NOT EXISTS collection_item_media (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    collection_item_id INTEGER NOT NULL REFERENCES collection_items(id) ON DELETE CASCADE,
+    medium             TEXT NOT NULL CHECK(medium IN ('vinyl','cd','cassette','other')),
+    format_coarse      TEXT CHECK(format_coarse IN ('album','ep','single','soundtrack')),
+    disc_count         INTEGER,
+    descriptors        TEXT,
+    weight_g           INTEGER,
+    color_primary      TEXT,
+    color_effect       TEXT,
+    packaging          TEXT CHECK(packaging IN ('gatefold','standard')),
+    pressing_plant     TEXT,
+    raw_text           TEXT,
+    image_url          TEXT
+);
+CREATE INDEX IF NOT EXISTS cim_item_id ON collection_item_media(collection_item_id);
+CREATE INDEX IF NOT EXISTS cim_medium ON collection_item_media(medium);
+CREATE TABLE IF NOT EXISTS collection_item_releases (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    collection_item_id INTEGER NOT NULL REFERENCES collection_items(id) ON DELETE CASCADE,
+    release_id         TEXT NOT NULL REFERENCES releases(id),
+    UNIQUE(collection_item_id, release_id)
+);
+CREATE INDEX IF NOT EXISTS cir_item_id ON collection_item_releases(collection_item_id);
+CREATE INDEX IF NOT EXISTS cir_release_id ON collection_item_releases(release_id);
+CREATE TABLE IF NOT EXISTS collection_item_identifiers (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    collection_item_id INTEGER NOT NULL REFERENCES collection_items(id) ON DELETE CASCADE,
+    id_type            TEXT NOT NULL,
+    value              TEXT NOT NULL,
+    description        TEXT
+);
+CREATE INDEX IF NOT EXISTS cii_item_id ON collection_item_identifiers(collection_item_id);
 CREATE TABLE IF NOT EXISTS release_service_links (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     release_id    TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
@@ -589,6 +624,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE releases ADD COLUMN album_art_thumb_height INTEGER",
         "ALTER TABLE release_soundtrack_meta ADD COLUMN platform TEXT",
         "ALTER TABLE release_soundtrack_meta ADD COLUMN series TEXT",
+        "ALTER TABLE collection_items ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE collection_item_media ADD COLUMN image_url TEXT",
     ]:
         try:
             conn.execute(ddl)
@@ -679,6 +716,69 @@ def init_schema(conn: sqlite3.Connection) -> None:
             DROP TABLE genres;
             ALTER TABLE genres_new RENAME TO genres;
             ALTER TABLE release_genres_new RENAME TO release_genres;
+            PRAGMA foreign_keys = ON;
+        """)
+        conn.commit()
+
+    # Migrate collection_items to the discogs_instance_id-keyed schema — old
+    # rows were CSV-derived with one medium per item and no per-instance
+    # identity; re-synced fresh from the Discogs API rather than migrated in
+    # place, since the old rows can't populate instance_id or per-medium detail.
+    ci_cols = {r[1] for r in conn.execute('PRAGMA table_info(collection_items)').fetchall()}
+    if ci_cols and 'discogs_instance_id' not in ci_cols:
+        conn.executescript("""
+            PRAGMA foreign_keys = OFF;
+            DROP TABLE IF EXISTS collection_item_media;
+            DROP TABLE IF EXISTS collection_item_identifiers;
+            DROP TABLE collection_items;
+            PRAGMA foreign_keys = ON;
+        """)
+        conn.commit()
+        ci_cols = set()
+
+    # Relax release_id to nullable and add unresolved_reason/candidate_release_ids
+    # so a Discogs item that doesn't resolve to a release still gets a row (with
+    # a documented reason) — otherwise its discogs_instance_id never enters the
+    # "already seen" set and a sync reprocesses it, and every other perpetually
+    # unresolved item, forever. Existing rows are all linked, so they carry the
+    # migration's CHECK constraint (release_id set, reason NULL) automatically.
+    if ci_cols and 'unresolved_reason' not in ci_cols:
+        conn.executescript("""
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE collection_items_new (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                discogs_release_id    TEXT NOT NULL,
+                discogs_instance_id   TEXT UNIQUE NOT NULL,
+                release_id            TEXT REFERENCES releases(id),
+                unresolved_reason     TEXT CHECK(unresolved_reason IN ('non_music','ambiguous','unresolved')),
+                candidate_release_ids TEXT,
+                catalog_number        TEXT,
+                label                 TEXT,
+                date_added            TEXT,
+                media_condition       TEXT,
+                sleeve_condition      TEXT,
+                notes                 TEXT,
+                discogs_folder        TEXT,
+                discogs_genres        TEXT,
+                coarse_genre          TEXT,
+                hidden                INTEGER NOT NULL DEFAULT 0,
+                created_at            INTEGER,
+                updated_at            INTEGER,
+                CHECK ((release_id IS NOT NULL AND unresolved_reason IS NULL)
+                    OR (release_id IS NULL AND unresolved_reason IS NOT NULL))
+            );
+            INSERT INTO collection_items_new
+                (id, discogs_release_id, discogs_instance_id, release_id,
+                 catalog_number, label, date_added, media_condition, sleeve_condition,
+                 notes, discogs_folder, discogs_genres, coarse_genre, hidden,
+                 created_at, updated_at)
+            SELECT id, discogs_release_id, discogs_instance_id, release_id,
+                   catalog_number, label, date_added, media_condition, sleeve_condition,
+                   notes, discogs_folder, discogs_genres, coarse_genre, hidden,
+                   created_at, updated_at
+            FROM collection_items;
+            DROP TABLE collection_items;
+            ALTER TABLE collection_items_new RENAME TO collection_items;
             PRAGMA foreign_keys = ON;
         """)
         conn.commit()
@@ -2118,6 +2218,20 @@ def bulk_rematch_by_aliases(conn: sqlite3.Connection) -> int:
     return _apply_listen_matches(conn, updates)
 
 
+def _numbered_sequel_diff(a: str, b: str) -> bool:
+    """True if one of a/b is the other plus a bare number (e.g. 'run the
+    jewels' vs 'run the jewels 4') -- a numbered sequel/volume, not an
+    edition suffix, so substring containment must not treat it as a match.
+    Real Discogs collision found: 'Run The Jewels 4' substring-matched
+    'Run the Jewels' this way and silently linked the wrong release."""
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    idx = longer.find(shorter)
+    if idx == -1:
+        return False
+    remainder = (longer[:idx] + longer[idx + len(shorter):]).strip()
+    return bool(remainder) and all(c.isdigit() or c.isspace() for c in remainder)
+
+
 def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> list:
     """Search the catalog for releases matching raw scrobble artist/album strings.
 
@@ -2188,7 +2302,8 @@ def db_search_releases(conn: sqlite3.Connection, artist: str, album: str) -> lis
             if row_key and (row_key == key_album or norm_album in release_aliases):
                 results.append(row)
                 continue
-            elif row_key and (key_album in row_key or row_key in key_album):
+            elif row_key and (key_album in row_key or row_key in key_album) \
+                    and not _numbered_sequel_diff(key_album, row_key):
                 if row['artist_name'] and key_artist in ascii_key(row['artist_name']):
                     results.append(row)
                     continue

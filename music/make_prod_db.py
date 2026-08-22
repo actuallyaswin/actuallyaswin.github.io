@@ -63,7 +63,7 @@ def _strip(conn):
         pass  # no settings table in this schema version
 
 
-def _verify(src_conn, dest_conn):
+def _verify(src_counts, dest_conn):
     """Fail loudly rather than shipping a bad database."""
     problems = []
 
@@ -77,7 +77,7 @@ def _verify(src_conn, dest_conn):
         # this script is not where that gets fixed. Visibility is the point.
         print(f'WARNING: {len(fk)} foreign key violations in output', file=sys.stderr)
 
-    src_counts, dest_counts = _row_counts(src_conn), _row_counts(dest_conn)
+    dest_counts = _row_counts(dest_conn)
     if set(src_counts) != set(dest_counts):
         missing = set(src_counts) - set(dest_counts)
         extra = set(dest_counts) - set(src_counts)
@@ -116,21 +116,27 @@ def main():
         src_conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
     except sqlite3.OperationalError as e:
         print(f'warning: could not checkpoint WAL: {e}', file=sys.stderr)
+    src_conn.close()
 
     for p in (DEST, DEST.with_name(DEST.name + '-wal'), DEST.with_name(DEST.name + '-shm')):
         p.unlink(missing_ok=True)
     shutil.copyfile(SRC, DEST)
 
+    # Row counts come from DEST itself, before stripping — a byte-for-byte
+    # copy of SRC at the moment shutil.copyfile ran. Querying SRC again here
+    # would race a concurrent writer: it could commit between the copy and
+    # that second read, making the "source" count reflect data newer than
+    # what was actually copied and never comparable to DEST in the first place.
     dest_conn = sqlite3.connect(DEST)
     try:
+        src_counts = _row_counts(dest_conn)
         _strip(dest_conn)
         dest_conn.commit()
         dest_conn.execute('VACUUM')
 
-        problems = _verify(src_conn, dest_conn)
+        problems = _verify(src_counts, dest_conn)
     finally:
         dest_conn.close()
-        src_conn.close()
 
     if problems:
         print('error: refusing to publish master_prod.sqlite:', file=sys.stderr)

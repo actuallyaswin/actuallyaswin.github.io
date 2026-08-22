@@ -91,6 +91,40 @@ function sameSongKey(title) {
 const SCROBBLABLE_TRACK_FILTER =
     "t.hidden = 0 AND t.variant_section IS NULL AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)";
 
+// Owned-copy medium for a release, correlated to r.id -- 'vinyl' takes
+// priority over 'cd' when a release is owned on both (matches the record-pull
+// modal's own priority on the release page). Covers collection_item_releases
+// too, since a box set's physical item can point at more than one release.
+const OWNED_MEDIUM_SQL = `(
+    SELECT CASE
+        WHEN EXISTS (
+            SELECT 1 FROM collection_items ci JOIN collection_item_media cim ON cim.collection_item_id = ci.id
+            WHERE cim.medium = 'vinyl' AND (ci.release_id = r.id
+                OR ci.id IN (SELECT collection_item_id FROM collection_item_releases WHERE release_id = r.id))
+        ) THEN 'vinyl'
+        WHEN EXISTS (
+            SELECT 1 FROM collection_items ci JOIN collection_item_media cim ON cim.collection_item_id = ci.id
+            WHERE cim.medium = 'cd' AND (ci.release_id = r.id
+                OR ci.id IN (SELECT collection_item_id FROM collection_item_releases WHERE release_id = r.id))
+        ) THEN 'cd'
+        WHEN EXISTS (
+            SELECT 1 FROM collection_items ci
+            WHERE ci.release_id = r.id
+               OR ci.id IN (SELECT collection_item_id FROM collection_item_releases WHERE release_id = r.id)
+        ) THEN 'other'
+    END
+)`;
+
+// Small "owned" indicator for grid/list tiles -- gold to match the release
+// page's owned ribbon, medium-specific tooltip. The tile itself is too small
+// for the ribbon's descriptor detail (color/weight/packaging); that stays on
+// the release page, reachable by clicking through.
+function ownedBadgeHtml(medium) {
+    if (!medium) return '';
+    const label = medium === 'vinyl' ? 'Owned · Vinyl' : medium === 'cd' ? 'Owned · CD' : 'Owned';
+    return `<div class="disc-owned-badge" title="${label}"></div>`;
+}
+
 function donutColor(pct) {
     if (pct <= 0)   return 'var(--border)';
     if (pct < 0.5)  return '#3b82f6';

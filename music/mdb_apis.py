@@ -434,6 +434,10 @@ def caa_fetch_front_image_urls(release_mbid: str) -> list:
     except SourceNotFound:
         # No cover art for this release.
         return []
+    except SourceRateLimited:
+        # CAA is a lowest-priority art fallback (after Apple/Spotify/Bandcamp/
+        # Beatport/Deezer) — an outage here must not abort the whole import.
+        return []
     urls = []
     for image in data.get('images', []):
         if 'Front' in (image.get('types') or []):
@@ -2159,3 +2163,38 @@ class DiscogsClient:
             return data.get('genres', []), data.get('styles', [])
         except Exception:
             return [], []
+
+    def get_identity(self) -> dict:
+        """Resolve the token owner's username — required to build collection URLs."""
+        return self._get('/oauth/identity')
+
+    def get_collection_item_count(self, username: str, folder_id: int = 0) -> int:
+        """Total item count for a collection folder — one page-1 call, no per-item cost.
+        Lets a caller skip a full sync when nothing has changed."""
+        data = self._get(f'/users/{username}/collection/folders/{folder_id}/releases',
+                          {'per_page': 1, 'page': 1})
+        return data['pagination']['items']
+
+    def get_collection_items(self, username: str, folder_id: int = 0) -> list:
+        """Fetch every item in a collection folder (0 = "All"), paginating fully,
+        newest-added first — so a caller diffing against known instance_ids can
+        stop early once it reaches ones it has already seen."""
+        items = []
+        page = 1
+        while True:
+            data = self._get(f'/users/{username}/collection/folders/{folder_id}/releases',
+                              {'per_page': 100, 'page': page, 'sort': 'added', 'sort_order': 'desc'})
+            items.extend(data['releases'])
+            if page >= data['pagination']['pages']:
+                return items
+            page += 1
+
+    def get_collection_instance_fields(self, username: str, folder_id: int,
+                                        release_id: 'int | str', instance_id: 'int | str') -> dict:
+        """Return {field_id: value} for one collection instance's custom fields
+        (Media Condition=1, Sleeve Condition=2, Notes=3 by default)."""
+        data = self._get(
+            f'/users/{username}/collection/folders/{folder_id}'
+            f'/releases/{release_id}/instances/{instance_id}'
+        )
+        return {f['field_id']: f['value'] for f in data.get('notes', [])}

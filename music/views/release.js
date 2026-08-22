@@ -17,6 +17,68 @@ const ViewRelease = (() => {
 
     const _SVG_CHEVRON = `<svg class="pill-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
 
+    // Generic disc graphic for CD-only owned copies in the art modal -- no
+    // real pressing photo exists for a CD the way coloredvinylrecords.com
+    // covers vinyl, so this stands in for all of them.
+    const CD_DISC_IMAGE = 'https://i.postimg.cc/ZqhVJxg3/CD.png';
+
+    const MEDIUM_LABELS = { vinyl: 'Vinyl', cd: 'CD', cassette: 'Cassette', other: 'Physical' };
+
+    function _capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+    // One collection_item_media row -> a display string like "Vinyl — Blue, 180g".
+    function _formatOwnedMedia(m) {
+        let desc = MEDIUM_LABELS[m.medium] || _capitalize(m.medium);
+        if (m.discCount > 1) desc += ` (${m.discCount}×)`;
+        const bits = [];
+        if (m.colorPrimary) bits.push(_capitalize(m.colorPrimary) + (m.colorEffect ? ` ${m.colorEffect}` : ''));
+        if (m.weightG) bits.push(`${m.weightG}g`);
+        if (m.packaging === 'gatefold') bits.push('Gatefold');
+        return bits.length ? `${desc} — ${bits.join(', ')}` : desc;
+    }
+
+    // Diagonal corner ribbon on the header art, replacing the old "Owned"
+    // pill. A single unambiguous copy gets a real headline (medium + disc
+    // count) and a short descriptor line (color/packaging/weight); anything
+    // more complex (multiple copies, or one copy in multiple formats) falls
+    // back to a plain count so the ribbon stays short, with the full
+    // breakdown still available as a hover tooltip either way.
+    function _renderOwnedRibbon(ownedCopies) {
+        const container = document.getElementById('albumArt');
+        if (!container) return;
+        container.querySelector('.owned-ribbon')?.remove();
+
+        const mediaFlat = ownedCopies.flatMap(c => c.media.length ? c.media : [{ medium: null }]);
+        const single = ownedCopies.length === 1 && mediaFlat.length === 1 && mediaFlat[0].medium;
+
+        let headline, sub;
+        if (single) {
+            const m = mediaFlat[0];
+            headline = MEDIUM_LABELS[m.medium] || _capitalize(m.medium);
+            if (m.discCount > 1) headline = `${m.discCount}×${headline}`;
+            const bits = [];
+            if (m.colorPrimary) bits.push(_capitalize(m.colorPrimary) + (m.colorEffect ? ` ${m.colorEffect}` : ''));
+            if (m.packaging === 'gatefold') bits.push('Gatefold');
+            if (m.weightG) bits.push(`${m.weightG}g`);
+            sub = bits.join(' ∙ ');
+        } else {
+            const media = [...new Set(mediaFlat.map(m => m.medium && (MEDIUM_LABELS[m.medium] || _capitalize(m.medium))).filter(Boolean))];
+            headline = ownedCopies.length > 1 ? `${ownedCopies.length} copies` : `${mediaFlat.length} formats`;
+            sub = media.join(' / ');
+        }
+
+        const tooltip = ownedCopies.flatMap(c => {
+            const rows = c.media.length ? c.media : [{ medium: null }];
+            return rows.map(m => m.medium ? _formatOwnedMedia(m) : 'Owned copy');
+        }).join('\n');
+
+        const ribbon = document.createElement('div');
+        ribbon.className = 'owned-ribbon';
+        ribbon.title = tooltip;
+        ribbon.innerHTML = escapeHtml(headline) + (sub ? `<span class="owned-ribbon-sub">${escapeHtml(sub)}</span>` : '');
+        container.appendChild(ribbon);
+    }
+
     // release_soundtrack_meta.source_type — mirrors mdb_cli.py's _SOURCE_TYPES.
     const SOUNDTRACK_MEDIUM_LABELS = {
         video_game: 'Video Game', film: 'Film', tv_series: 'TV Series',
@@ -385,6 +447,11 @@ const ViewRelease = (() => {
             }
         }
 
+        // Assigned later, once the ownership query runs -- read by the art
+        // modal's click handler below, which only fires well after that.
+        let heroImage = null;
+        let ownedMedium = null;
+
         if (albumArtUrl) {
             const albumArtDiv = document.getElementById('albumArt');
             albumArtDiv.style.backgroundImage = `url(${albumArtUrl})`;
@@ -392,7 +459,58 @@ const ViewRelease = (() => {
             albumArtDiv.style.backgroundPosition = 'center';
             albumArtDiv.innerHTML = '';
             albumArtDiv.classList.add('has-art');
-            albumArtDiv.addEventListener('click', () => _openArtModal(albumArtUrl));
+            // heroImage/ownedMedium are assigned later (once the ownership
+            // query runs) but read here lazily at click time, well after
+            // that's happened -- the listener closes over the binding, not
+            // a snapshotted value.
+            albumArtDiv.addEventListener('click', () => _openArtModal(albumArtUrl, heroImage, ownedMedium));
+        }
+
+        // Physical copies owned: direct release_id match, or via
+        // collection_item_releases for a box set spanning multiple releases.
+        // Runs unconditionally (not gated on releaseLinkPills existing) since
+        // the owned-ribbon on the header art also depends on it.
+        const ownedResult = _db.exec(`
+            SELECT ci.id, ci.catalog_number, ci.media_condition, ci.sleeve_condition
+            FROM collection_items ci
+            WHERE ci.release_id = '${safeId}'
+            UNION
+            SELECT ci.id, ci.catalog_number, ci.media_condition, ci.sleeve_condition
+            FROM collection_item_releases cir
+            JOIN collection_items ci ON ci.id = cir.collection_item_id
+            WHERE cir.release_id = '${safeId}'
+        `)[0];
+        const ownedCopies = ownedResult ? ownedResult.values.map(([id, catalogNumber, mediaCondition, sleeveCondition]) =>
+            ({ id, catalogNumber, mediaCondition, sleeveCondition, media: [] })) : [];
+        if (ownedCopies.length > 0) {
+            const copyById = new Map(ownedCopies.map(c => [c.id, c]));
+            const idList = ownedCopies.map(c => c.id).join(',');
+            const mediaResult = _db.exec(`
+                SELECT collection_item_id, medium, disc_count, weight_g,
+                       color_primary, color_effect, packaging, image_url
+                FROM collection_item_media WHERE collection_item_id IN (${idList})
+            `)[0];
+            if (mediaResult) {
+                for (const [itemId, medium, discCount, weightG, colorPrimary, colorEffect, packaging, imageUrl] of mediaResult.values) {
+                    copyById.get(itemId)?.media.push({ medium, discCount, weightG, colorPrimary, colorEffect, packaging, imageUrl });
+                }
+            }
+
+            const mediaFlat = ownedCopies.flatMap(c => c.media);
+            // Bare-disc photo for the record-pull modal effect -- only a
+            // small fraction of owned items have one cached; everything
+            // else still gets a plain-photo vinyl in that modal.
+            heroImage = mediaFlat.find(m => m.imageUrl)?.imageUrl || null;
+            // CD-only owned copies get a generic rotating CD graphic in that
+            // modal instead (no vinyl to photograph); vinyl takes priority
+            // when a release is owned on both.
+            ownedMedium = mediaFlat.some(m => m.medium === 'vinyl') ? 'vinyl'
+                : mediaFlat.some(m => m.medium === 'cd') ? 'cd'
+                : mediaFlat[0]?.medium || null;
+
+            _renderOwnedRibbon(ownedCopies);
+        } else {
+            document.getElementById('albumArt')?.querySelector('.owned-ribbon')?.remove();
         }
 
         const artistSpan = document.getElementById('releaseArtist');
@@ -1551,21 +1669,50 @@ const ViewRelease = (() => {
 
     return { mount, unmount };
 
-    function _openArtModal(url) {
+    function _openArtModal(url, heroImage, ownedMedium) {
         const existing = document.getElementById('artModal');
         if (existing) existing.remove();
         const modal = document.createElement('div');
         modal.id = 'artModal';
         modal.className = 'art-modal';
-        // Build the <img> via the DOM rather than innerHTML: the URL comes from
-        // scraped third-party metadata, and a quote in it would break out of
-        // the attribute.
+
         const inner = document.createElement('div');
         inner.className = 'art-modal-inner';
-        const img = document.createElement('img');
-        img.src = url;
-        img.alt = '';
-        inner.appendChild(img);
+
+        // Built via DOM property assignment throughout, not innerHTML/template
+        // strings -- both URLs come from scraped/third-party metadata, and a
+        // quote in either would break out of an HTML attribute. DOM order is
+        // disc, sleeve, cover -- the cover is appended last, so it paints on
+        // top by default with no z-index needed; the hover state's translate
+        // is large enough to slide the disc and sleeve clear of it.
+        const stage = document.createElement('div');
+        stage.className = 'vinyl-stage';
+
+        const isCd = ownedMedium === 'cd';
+
+        const disc = document.createElement('div');
+        disc.className = 'vinyl-stage-disc';
+        if (isCd) {
+            disc.classList.add('is-cd', 'has-photo');
+            disc.style.backgroundImage = `url(${JSON.stringify(CD_DISC_IMAGE)})`;
+        } else if (heroImage) {
+            disc.classList.add('has-photo');
+            disc.style.backgroundImage = `url(${JSON.stringify(heroImage)})`;
+        }
+
+        const cover = document.createElement('div');
+        cover.className = 'vinyl-stage-cover';
+        cover.style.backgroundImage = `url(${JSON.stringify(url)})`;
+
+        stage.appendChild(disc);
+        // A CD has no paper inner sleeve -- only render that layer for vinyl.
+        if (!isCd) {
+            const sleeve = document.createElement('div');
+            sleeve.className = 'vinyl-stage-sleeve';
+            stage.appendChild(sleeve);
+        }
+        stage.appendChild(cover);
+        inner.appendChild(stage);
         modal.appendChild(inner);
         document.body.appendChild(modal);
 
@@ -1573,6 +1720,21 @@ const ViewRelease = (() => {
         // too, rather than leaking one per image opened.
         const ac = new AbortController();
         const close = () => { ac.abort(); modal.remove(); };
+
+        // Below the same breakpoint the CSS rotates the whole stage to free
+        // up vertical room (see .art-modal-inner's media query) -- touch
+        // devices have no real :hover there, so the reveal has to be an
+        // explicit tap toggle instead. stopPropagation keeps that first tap
+        // from also bubbling up to the modal's own click-to-dismiss handler;
+        // a second tap on the art re-hides the record without closing the
+        // modal, matching a tap anywhere else, which still closes it.
+        if (window.matchMedia('(max-width: 768px)').matches) {
+            stage.addEventListener('click', e => {
+                e.stopPropagation();
+                stage.classList.toggle('revealed');
+            }, { signal: ac.signal });
+        }
+
         modal.addEventListener('click', close, { signal: ac.signal });
         document.addEventListener('keydown', e => {
             if (e.key === 'Escape') close();
