@@ -413,6 +413,12 @@ header h1 {
     max-width: 70ch;
     margin-bottom: 2.5rem;
 }
+/* Paired with Recent Plays in a stats-row grid cell -- the bottom margin
+   meant for full-width spacing would otherwise look like a mismatched gap
+   next to that column's own content. */
+.stats-row .home-intro {
+    margin-bottom: 0;
+}
 .home-intro p {
     color: var(--text-secondary);
     line-height: 1.6;
@@ -3893,8 +3899,133 @@ footer a:hover {
     margin-top: 0.4rem;
 }
 
+/* Home page preview: shares a stats-row column with Top Releases instead of
+   the full-width row the dedicated Lists page gives it. A fixed 3x3 grid
+   for the 9-item preview -- ring size scales down on narrow viewports so
+   3 columns still fit without overflowing the mobile-width column. */
+#homeListsSection .canon-list-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+#homeListsSection .canon-list-graph { max-width: 105px; }
+#homeListsSection .canon-list-title { font-size: 0.6rem; margin-bottom: 0.2rem; }
+#homeListsSection .canon-list-pct { font-size: 1.05rem; }
+#homeListsSection .canon-list-count { font-size: 0.56rem; margin-top: 0.15rem; }
+@media (min-width: 701px) {
+    #homeListsSection .canon-list-grid { gap: 0.75rem; }
+    #homeListsSection .canon-list-graph { max-width: 150px; }
+    #homeListsSection .canon-list-title { font-size: 0.68rem; margin-bottom: 0.3rem; }
+    #homeListsSection .canon-list-pct { font-size: 1.3rem; }
+    #homeListsSection .canon-list-count { font-size: 0.62rem; margin-top: 0.25rem; }
+}
+
 .list-progress-source { font-size: 0.85rem; color: var(--primary); text-decoration: none; }
 .list-progress-source:hover { text-decoration: underline; }
+
+/* ── Lists page (views/lists.js) — grouped by publication ────────────────── */
+.pub-group { margin: 2.5rem 0; }
+.pub-group:first-child { margin-top: 1rem; }
+
+.pub-group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding-bottom: 0.5rem;
+    margin-bottom: 1.1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.pub-group-icon {
+    width: 22px; height: 22px; flex-shrink: 0;
+    display: block;
+    background: var(--text-secondary);
+    -webkit-mask-size: contain; mask-size: contain;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-position: center; mask-position: center;
+}
+
+.pub-group-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.pub-group-count {
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    border-radius: 999px;
+    padding: 0.1rem 0.55rem;
+}
+
+.pub-group-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.pub-list-card {
+    display: block;
+    background: var(--bg-secondary);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    color: inherit;
+    text-decoration: none;
+    transition: background 0.12s;
+}
+.pub-list-card:hover { background: var(--bg-tertiary); }
+
+.pub-list-card-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+}
+
+.pub-list-card-title {
+    font-size: 0.92rem;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+.pub-list-card-pct {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--primary);
+    flex-shrink: 0;
+}
+
+.pub-list-card-track {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.pub-list-card-fill {
+    height: 100%;
+    background: var(--primary);
+    border-radius: 2px;
+}
+
+.pub-list-card-count {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+}
+
+.pub-list-card-mainstream {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    flex-shrink: 0;
+}
+.pub-list-card-mainstream i { width: 12px; height: 12px; }
 
 .sort-btn:disabled {
     opacity: 0.4;

@@ -31,16 +31,8 @@ const ViewHome = (() => {
                 <h1>Music</h1>
             </header>
 
-            <section class="home-intro" id="homeIntro"></section>
-
-
             <div class="stats-row">
-                <section id="weeklyReleasesSection" hidden>
-                    <div class="section-header">
-                        <h2>Top Releases This Month</h2>
-                    </div>
-                    <div id="weeklyReleasesCollage"></div>
-                </section>
+                <section class="home-intro" id="homeIntro"></section>
                 <section id="homeRecentPlaysSection" hidden>
                     <div class="section-header">
                         <h2>Recent Plays</h2>
@@ -48,6 +40,25 @@ const ViewHome = (() => {
                     </div>
                     <div class="recent-plays-list" id="homeRecentPlaysList"></div>
                 </section>
+            </div>
+
+            <div class="stats-row">
+                <section id="weeklyReleasesSection" hidden>
+                    <div class="section-header">
+                        <h2>Top Releases This Month</h2>
+                    </div>
+                    <ul id="weeklyReleasesCollage"></ul>
+                </section>
+                <section id="homeListsSection" hidden>
+                    <div class="section-header">
+                        <h2>Lists</h2>
+                        <a href="?view=lists" class="home-see-all">See all →</a>
+                    </div>
+                    <div class="canon-list-grid" id="homeListsGrid"></div>
+                </section>
+            </div>
+
+            <div class="stats-row">
                 <section class="nerds-section">
                     <div class="section-header">
                         <h2>Stats for Nerds</h2>
@@ -105,7 +116,7 @@ const ViewHome = (() => {
                     <h2>Recommendations</h2>
                     <a href="?view=recommendations" class="home-see-all">See all →</a>
                 </div>
-                <div class="disc-grid" id="homeRecsGrid"></div>
+                <ul class="disc-grid" id="homeRecsGrid"></ul>
             </section>
 
             <footer>
@@ -118,6 +129,7 @@ const ViewHome = (() => {
         loadWeeklyReleases();
         loadHomeRecentPlays();
         loadRecommendationsPreview();
+        loadListsPreview();
         loadGenreCommits();
     }
 
@@ -255,33 +267,27 @@ const ViewHome = (() => {
     }
 
 
+    // Precomputed by `mdb.py stats refresh`/`checkpoint` (see mdb.py's
+    // _stats_top_releases_month) -- the live 30-day join+group-by this
+    // replaced was slow enough in sql.js/WASM to visibly hang the home page.
     function loadWeeklyReleases() {
-        const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400;
-        const result = _db.exec(`
-            SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as album_art_url, a.name as artist_name, COUNT(l.id) as plays, r.slug
-            FROM listens l
-            JOIN tracks t ON l.track_id = t.id
-            JOIN releases r ON t.release_id = r.id
-            LEFT JOIN artists a ON r.primary_artist_id = a.id
-            WHERE l.timestamp >= ${thirtyDaysAgo}
-            AND t.hidden = 0 AND r.hidden = 0
-            GROUP BY r.id
-            ORDER BY plays DESC
-            LIMIT 16
-        `)[0];
+        const res = _db.exec('SELECT value_json FROM stats_cache WHERE key = ?', ['topReleasesMonth'])[0];
+        const releases = res ? JSON.parse(res.values[0][0]) : null;
 
         const container = document.getElementById('weeklyReleasesCollage');
         const section = document.getElementById('weeklyReleasesSection');
-        if (!container || !section || !result || result.values.length === 0) return;
+        if (!container || !section || !releases || releases.length === 0) return;
 
         const n = 4;
         container.className = 'collage-grid';
         container.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
 
-        result.values.forEach(([id, title, albumArtUrl, artistName, plays, slug]) => {
-            const card = createImageCard({ href: releaseHref(id, slug), imageUrl: albumArtUrl });
-            card.title = title + (artistName ? ` · ${artistName}` : '');
-            container.appendChild(card);
+        releases.forEach(({ id, title, art_url, artist_name, slug }) => {
+            const card = createImageCard({ href: releaseHref(id, slug), imageUrl: art_url });
+            card.title = title + (artist_name ? ` · ${artist_name}` : '');
+            const li = document.createElement('li');
+            li.appendChild(card);
+            container.appendChild(li);
         });
 
         section.removeAttribute('hidden');
@@ -328,7 +334,7 @@ const ViewHome = (() => {
             }
         });
 
-        list.innerHTML = groups.slice(0, 10).map(g => {
+        list.innerHTML = groups.slice(0, 5).map(g => {
             const imgSrc = g.albumArtUrl || getFallbackImageUrl();
             const dateStr = formatTimeAgo(g.timestamp);
             const nameHtml = g.count > 1
@@ -389,12 +395,48 @@ const ViewHome = (() => {
                 ? `<div class="disc-card-img" style="background-image:url('${cssUrl(art)}')"></div>`
                 : `<div class="disc-card-img" style="background:var(--bg-tertiary)"></div>`;
             const sub = [artist, year].filter(Boolean).join(' · ');
-            return `<a class="disc-card" href="${releaseHref(id, slug)}">
+            return `<li><a class="disc-card" href="${releaseHref(id, slug)}">
                 ${img}
                 <div class="disc-card-meta"><div class="disc-card-info">
                     <div class="disc-card-title">${escapeHtml(title || '')}</div>
                     <div class="disc-card-sub">${escapeHtml(sub)}</div>
-                </div></div></a>`;
+                </div></div></a></li>`;
+        }).join('');
+
+        section.removeAttribute('hidden');
+    }
+
+    function loadListsPreview() {
+        const section = document.getElementById('homeListsSection');
+        const grid    = document.getElementById('homeListsGrid');
+        if (!section || !grid) return;
+
+        const res = _db.exec("SELECT value_json FROM stats_cache WHERE key = 'canonicalLists'")[0];
+        const lists = res ? JSON.parse(res.values[0][0]) : null;
+        if (!lists || !lists.length) return;
+
+        // Most in-progress first (closest to done but not finished) -- a
+        // more useful home-page teaser than newest/alphabetical, since it
+        // surfaces the list closest to a satisfying "done" moment.
+        const preview = [...lists]
+            .filter(l => l.total > 0)
+            .sort((a, b) => (b.heard / b.total) - (a.heard / a.total))
+            .slice(0, 9);
+
+        grid.innerHTML = preview.map(lst => {
+            const pct = Math.round((lst.heard / lst.total) * 100);
+            const label = lst.short_name || lst.name;
+            return `
+                <a class="canon-list-graph-wrap" href="?view=list&id=${encodeURIComponent(lst.id)}"
+                   aria-label="View all ${escapeHtml(label)} albums" title="${escapeHtml(lst.name)}">
+                    <div class="canon-list-graph" style="--p:${pct}">
+                        <div class="canon-list-graph-inner">
+                            <div class="canon-list-title">${escapeHtml(label)}</div>
+                            <div class="canon-list-pct">${pct}%</div>
+                            <div class="canon-list-count">${lst.heard} of ${lst.total}</div>
+                        </div>
+                    </div>
+                </a>`;
         }).join('');
 
         section.removeAttribute('hidden');
@@ -494,17 +536,17 @@ const ViewHome = (() => {
             const genres = JSON.parse(cell.dataset.genres || '[]');
 
             const genreRows = genres.slice(0, 5).map(g =>
-                `<div class="ctt-genre">` +
-                `<span class="ctt-dot" style="background:${escapeHtml(g.color)}"></span>` +
-                `<span class="ctt-name">${escapeHtml(g.genre)}</span>` +
-                `<span class="ctt-pct">${g.pct}%</span>` +
+                `<div class="commit-tooltip-genre">` +
+                `<span class="commit-tooltip-dot" style="background:${escapeHtml(g.color)}"></span>` +
+                `<span class="commit-tooltip-name">${escapeHtml(g.genre)}</span>` +
+                `<span class="commit-tooltip-pct">${g.pct}%</span>` +
                 `</div>`
             ).join('');
 
             tooltip.innerHTML =
-                `<div class="ctt-header">${MONTHS_LONG[month - 1]} ${year}</div>` +
-                `<div class="ctt-count">${formatNumber(count)} listens</div>` +
-                (genreRows ? `<div class="ctt-genres">${genreRows}</div>` : '');
+                `<div class="commit-tooltip-header">${MONTHS_LONG[month - 1]} ${year}</div>` +
+                `<div class="commit-tooltip-count">${formatNumber(count)} listens</div>` +
+                (genreRows ? `<div class="commit-tooltip-genres">${genreRows}</div>` : '');
 
             positionTooltip(e);
             tooltip.style.display = 'block';

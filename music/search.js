@@ -33,6 +33,7 @@ function _searchQuery(q) {
     if (!isAdmin) {
         const VIEW_SHORTCUTS = [
             { label: 'Browse',           view: 'browse',          icon: 'layout-grid' },
+            { label: 'Lists',            view: 'lists',           icon: 'list-ordered' },
             { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
             { label: 'History',         view: 'history',         icon: 'history' },
             { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },

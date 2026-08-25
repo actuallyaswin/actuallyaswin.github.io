@@ -16,6 +16,7 @@ const VIEWS = {
     'history':         () => ViewHistory,
     'stats':           () => ViewStats,
     'list':            () => ViewList,
+    'lists':           () => ViewLists,
     'soundtracks':     () => ViewSoundtracks,
     'browse':          () => ViewBrowse,
 };
