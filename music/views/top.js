@@ -33,6 +33,23 @@ const ViewTop = (() => {
     let _raf = null;
     const ROW_H = 44;
     const BUFFER = 8;
+    // setupDropdowns() binds a document-level click listener to close open
+    // panels on an outside click -- document persists across navigation, so
+    // this needs explicit cleanup in unmount() or it leaks one per visit.
+    let _ac = null;
+    // Populated once per mount by _populateYearFilter()/_populateGenreFilter()
+    // (DB queries), then read by their dropdownHtml() calls in _renderShell()
+    // -- same cache-then-render split browse.js uses for Genre/Platform.
+    let _yearOptions = [{ value: 'all', label: 'All years' }];
+    let _genreOptions = [{ value: 'all', label: 'All genres' }];
+
+    const COUNT_OPTIONS = [10, 20, 50, 100].map(n => ({ value: n, label: String(n) }));
+    const RANGE_OPTIONS = [
+        { value: 'this-week', label: 'This Week' }, { value: 'this-month', label: 'This Month' },
+        { value: 'this-year', label: 'This Year' }, { value: 'week', label: 'Last Week' },
+        { value: 'month', label: 'Last Month' }, { value: 'year', label: 'Last Year' },
+        { value: 'all', label: 'All-Time' },
+    ];
 
     const CERT_LABELS = {
         gold:     'Gold — 250+ plays',
@@ -231,6 +248,48 @@ const ViewTop = (() => {
         },
     };
 
+    // setupDropdowns() is called once per mount(), against the persistent
+    // #view-container node -- _rerenderForModeChange()/entityType toggles
+    // only replace its innerHTML, so binding this inside those functions
+    // instead would stack a duplicate delegated listener per toggle (same
+    // class of bug browse.js hit with its own dropdowns).
+    function _dropdownSpecs() {
+        return {
+            range: {
+                label: 'Range', options: RANGE_OPTIONS, getValue: () => range,
+                onPick: value => { range = value; _syncUrl(); _load(); },
+            },
+            count: {
+                label: 'Count', options: COUNT_OPTIONS, getValue: () => countLimit,
+                onPick: value => { countLimit = parseInt(value, 10); _syncUrl(); _applyCount(); },
+            },
+            year: {
+                label: 'Released', options: () => _yearOptions, getValue: () => releaseYear,
+                onPick: value => { releaseYear = value; _syncUrl(); _load(); },
+            },
+            genre: {
+                label: 'Genre', options: () => _genreOptions, getValue: () => genreFilter,
+                onPick: value => { genreFilter = value; _syncUrl(); _load(); },
+            },
+            topsterCount: {
+                label: 'Count', options: TOPSTER_COUNT_OPTIONS, getValue: () => topsterCount,
+                onPick: value => {
+                    topsterCount = parseInt(value, 10);
+                    _syncUrl(); _renderCollage(); _updateGridButtonStates();
+                },
+            },
+            gridFixed: {
+                label: 'Grid', options: GRID_OPTIONS,
+                getValue: () => (gridShape.rows === gridShape.cols ? gridShape.cols : null),
+                onPick: value => {
+                    const n = parseInt(value, 10);
+                    gridShape = { rows: n, cols: n };
+                    _syncUrl(); _renderCollage(); _updateGridButtonStates();
+                },
+            },
+        };
+    }
+
     function mount(container, db, params) {
         _db = db;
         entityType = ['artists', 'albums', 'tracks'].includes(params.type) ? params.type : 'artists';
@@ -253,16 +312,24 @@ const ViewTop = (() => {
         else collageTheme = 'quilt';
         if (params.topsterCount && _TOPSTER_COUNTS.includes(+params.topsterCount)) topsterCount = +params.topsterCount;
 
-        container.innerHTML = _renderShell();
-        _setupControls();
+        // Must run before _renderShell(): dropdownHtml() bakes the trigger's
+        // initial label from _yearOptions/_genreOptions at render time, so a
+        // stale (default "All ...") cache would show through until some
+        // other action forced a re-render.
         if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
         if (ENTITY_CONFIG[entityType].hasGenreFilter) _populateGenreFilter();
+        container.innerHTML = _renderShell();
+        _ac = new AbortController();
+        setupDropdowns(container, _dropdownSpecs(), _ac.signal);
+        _setupControls();
         _load();
     }
 
     function unmount() {
         if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
         _scrollEl = null;
+        _ac?.abort();
+        _ac = null;
     }
 
     function _renderShell() {
@@ -285,7 +352,7 @@ const ViewTop = (() => {
                 <p class="subtitle" id="topSubtitle"></p>
             </header>
             <div class="page-controls">${primaryControls}</div>
-            ${viewMode === 'collage' ? `<div class="page-controls" id="collageControlsRow">${_collageControlsHtml()}</div>` : ''}
+            ${viewMode === 'collage' ? `<div class="page-controls">${_collageControlsHtml()}</div>` : ''}
             <div id="topContainer" class="image-grid">
                 ${renderLoading()}
             </div>
@@ -322,18 +389,11 @@ const ViewTop = (() => {
     }
 
     function _rangeControlsHtml() {
-        const OPTS = [
-            ['this-week', 'This Week'], ['this-month', 'This Month'], ['this-year', 'This Year'],
-            ['week', 'Last Week'], ['month', 'Last Month'], ['year', 'Last Year'],
-            ['all', 'All-Time'],
-        ];
         return `
             <div class="control-block" id="rangeControlBlock">
                 <span class="control-block-label">Range</span>
                 <div class="sort-controls">
-                    <select id="rangeFilter" class="year-filter-select">
-                        ${OPTS.map(([v,l]) => `<option value="${v}"${range===v?' selected':''}>${l}</option>`).join('')}
-                    </select>
+                    ${dropdownHtml('range', 'Range', RANGE_OPTIONS, () => range)}
                 </div>
             </div>`;
     }
@@ -345,14 +405,13 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">#</span>
                 <div class="sort-controls">
-                    <select id="countFilter" class="year-filter-select">
-                        ${[10, 20, 50, 100].map(n => `<option value="${n}"${countLimit===n?' selected':''}>${n}</option>`).join('')}
-                    </select>
+                    ${dropdownHtml('count', 'Count', COUNT_OPTIONS, () => countLimit)}
                 </div>
             </div>`;
     }
 
     const _GRID_PRESETS = [3, 4, 5, 6, 7, 10];
+    const GRID_OPTIONS = _GRID_PRESETS.map(n => ({ value: n, label: `${n}×${n}` }));
     const _ASPECT_PRESETS = [
         { key: 'square',  label: 'Square',   icon: 'square',    ratio: 1 },
         { key: 'portrait',label: 'Portrait', icon: 'rectangle-vertical', ratio: 4 / 5 },
@@ -364,6 +423,7 @@ const ViewTop = (() => {
         { key: 'topster',   label: 'Topster',   icon: 'list' },
     ];
     const _TOPSTER_COUNTS = [10, 22, 36, 43, 50];
+    const TOPSTER_COUNT_OPTIONS = _TOPSTER_COUNTS.map(n => ({ value: n, label: String(n) }));
 
     // Reproduces the Last.fm-community "Topster" step-pyramid: exactly 3
     // tiers, cols fixed at 5/6/7. Tiers 1-2 cap at 2 rows each (10, then 12
@@ -387,7 +447,6 @@ const ViewTop = (() => {
     }
 
     function _collageControlsHtml() {
-        const isFixedActive = n => gridShape.rows === n && gridShape.cols === n;
         const themeHtml = `
             <div class="control-block">
                 <span class="control-block-label">Theme</span>
@@ -402,9 +461,7 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Count</span>
                 <div class="sort-controls">
-                    <select id="topsterCountFilter" class="year-filter-select">
-                        ${_TOPSTER_COUNTS.map(n => `<option value="${n}"${topsterCount===n?' selected':''}>${n}</option>`).join('')}
-                    </select>
+                    ${dropdownHtml('topsterCount', 'Count', TOPSTER_COUNT_OPTIONS, () => topsterCount)}
                 </div>
             </div>
             <div class="control-block">
@@ -420,9 +477,7 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Grid</span>
                 <div class="sort-controls">
-                    <select id="gridFixedFilter" class="year-filter-select">
-                        ${_GRID_PRESETS.map(n => `<option value="${n}"${isFixedActive(n)?' selected':''}>${n}×${n}</option>`).join('')}
-                    </select>
+                    ${dropdownHtml('gridFixed', 'Grid', GRID_OPTIONS, () => (gridShape.rows === gridShape.cols ? gridShape.cols : null))}
                 </div>
             </div>
             <div class="control-block">
@@ -452,9 +507,7 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Released</span>
                 <div class="sort-controls">
-                    <select id="yearFilter" class="year-filter-select">
-                        <option value="all">All years</option>
-                    </select>
+                    ${dropdownHtml('year', 'Released', _yearOptions, () => releaseYear)}
                 </div>
             </div>`;
     }
@@ -464,9 +517,7 @@ const ViewTop = (() => {
             <div class="control-block">
                 <span class="control-block-label">Genre</span>
                 <div class="sort-controls">
-                    <select id="genreFilter" class="year-filter-select">
-                        <option value="all">All genres</option>
-                    </select>
+                    ${dropdownHtml('genre', 'Genre', _genreOptions, () => genreFilter)}
                 </div>
             </div>`;
     }
@@ -510,38 +561,17 @@ const ViewTop = (() => {
         setupToggleGroup('[data-sort]', btn => { sortBy = btn.dataset.sort; _syncUrl(); _load(); });
         setupToggleGroup('[data-view]', btn => { viewMode = btn.dataset.view; _syncUrl(); _rerenderForModeChange(); });
 
-        const rangeSel = document.getElementById('rangeFilter');
-        if (rangeSel) rangeSel.addEventListener('change', () => { range = rangeSel.value; _syncUrl(); _load(); });
-
-        const countSel = document.getElementById('countFilter');
-        if (countSel) countSel.addEventListener('change', () => { countLimit = parseInt(countSel.value); _syncUrl(); _applyCount(); });
-
-        const yearSel = document.getElementById('yearFilter');
-        if (yearSel) yearSel.addEventListener('change', () => { releaseYear = yearSel.value; _syncUrl(); _load(); });
-
-        const genreSel = document.getElementById('genreFilter');
-        if (genreSel) genreSel.addEventListener('change', () => { genreFilter = genreSel.value; _syncUrl(); _load(); });
-
         document.querySelectorAll('[data-collage-theme]').forEach(btn => btn.addEventListener('click', () => {
             collageTheme = btn.dataset.collageTheme;
             _syncUrl();
             // Theme switch changes which controls are shown (Grid/Shape vs.
             // Count) — re-render the whole shell via the same safe path
             // used for Display-mode switches, rather than patching just
-            // #collageControlsRow (which would leave stale listeners on
-            // the untouched Type/Sort/Display buttons if _setupControls()
+            // the collage controls row (which would leave stale listeners
+            // on the untouched Type/Sort/Display buttons if _setupControls()
             // were called again without first destroying all old nodes).
             _rerenderForModeChange();
         }));
-        document.getElementById('topsterCountFilter')?.addEventListener('change', e => {
-            topsterCount = parseInt(e.target.value);
-            _syncUrl(); _renderCollage(); _updateGridButtonStates();
-        });
-        document.getElementById('gridFixedFilter')?.addEventListener('change', e => {
-            const n = parseInt(e.target.value);
-            gridShape = { rows: n, cols: n };
-            _syncUrl(); _renderCollage(); _updateGridButtonStates();
-        });
         document.querySelectorAll('[data-grid-aspect]').forEach(btn => btn.addEventListener('click', () => {
             const preset = _ASPECT_PRESETS.find(p => p.key === btn.dataset.gridAspect);
             const approxCellCount = gridShape.rows * gridShape.cols || 25;
@@ -607,13 +637,11 @@ const ViewTop = (() => {
     // render, since aspect presets and Custom can also land on a shape that
     // happens to match one of the fixed-size dropdown options.
     function _updateGridButtonStates() {
-        const gridSel = document.getElementById('gridFixedFilter');
-        if (gridSel) {
-            const match = _GRID_PRESETS.find(n => gridShape.rows === n && gridShape.cols === n);
-            gridSel.value = match != null ? String(match) : gridSel.value;
-        }
-        const topsterSel = document.getElementById('topsterCountFilter');
-        if (topsterSel) topsterSel.value = String(topsterCount);
+        const container = document.getElementById('view-container');
+        if (!container) return;
+        refreshDropdownTrigger(container, 'gridFixed', GRID_OPTIONS, () =>
+            (gridShape.rows === gridShape.cols ? gridShape.cols : null));
+        refreshDropdownTrigger(container, 'topsterCount', TOPSTER_COUNT_OPTIONS, () => topsterCount);
     }
 
     function _rerenderForModeChange() {
@@ -624,44 +652,34 @@ const ViewTop = (() => {
         _scrollEl = null;
         const container = document.getElementById('view-container');
         if (container) {
+            // Populate before rendering, same reason as mount() -- dropdownHtml()
+            // bakes the trigger's label from the cache at render time.
+            if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
+            if (ENTITY_CONFIG[entityType].hasGenreFilter) _populateGenreFilter();
             container.innerHTML = _renderShell();
             _setupControls();
-            if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
-        if (ENTITY_CONFIG[entityType].hasGenreFilter) _populateGenreFilter();
             _load();
         }
     }
 
     function _populateYearFilter() {
-        const sel = document.getElementById('yearFilter');
-        if (!sel) return;
         const res = _db.exec(`
             SELECT DISTINCT release_year FROM releases
             WHERE release_year IS NOT NULL AND hidden = 0
             ORDER BY release_year DESC
         `)[0];
-        if (res) res.values.forEach(([yr]) => {
-            const opt = document.createElement('option');
-            opt.value = yr; opt.textContent = yr;
-            if (String(yr) === String(releaseYear)) opt.selected = true;
-            sel.appendChild(opt);
-        });
+        _yearOptions = [{ value: 'all', label: 'All years' }]
+            .concat(res ? res.values.map(([yr]) => ({ value: String(yr), label: String(yr) })) : []);
     }
 
     // Genres index is precomputed by `mdb.py stats refresh` (see views/genres.js) —
     // reuse it here rather than re-running the release_genres/tracks/listens join.
     function _populateGenreFilter() {
-        const sel = document.getElementById('genreFilter');
-        if (!sel) return;
         const res = _db.exec("SELECT value_json FROM stats_cache WHERE key = 'genresIndex'")[0];
         const rows = res ? JSON.parse(res.values[0][0]) : [];
         rows.sort((a, b) => b.plays - a.plays);
-        rows.forEach(({ id, name }) => {
-            const opt = document.createElement('option');
-            opt.value = id; opt.textContent = name;
-            if (String(id) === String(genreFilter)) opt.selected = true;
-            sel.appendChild(opt);
-        });
+        _genreOptions = [{ value: 'all', label: 'All genres' }]
+            .concat(rows.map(({ id, name }) => ({ value: String(id), label: name })));
     }
 
     function _load() {
@@ -702,7 +720,7 @@ const ViewTop = (() => {
             container.className = '';
             container.innerHTML = `
                 <div class="list-with-sidebar">
-                    <div class="wide-grid" id="topListGrid"></div>
+                    <ul class="wide-grid" id="topListGrid"></ul>
                     <aside class="view-sidebar" id="topSidebar"></aside>
                 </div>`;
             const listEl = document.getElementById('topListGrid');
@@ -724,12 +742,16 @@ const ViewTop = (() => {
                     rounded: entityType === 'artists',
                     cert: f.cert || null,
                 });
-                if (i >= countLimit) card.style.display = 'none';
-                listEl.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= countLimit) li.style.display = 'none';
+                li.appendChild(card);
+                listEl.appendChild(li);
             });
             _renderListSidebar();
         } else {
-            container.className = 'image-grid';
+            container.className = '';
+            container.innerHTML = '<ul class="image-grid" id="topImageGrid"></ul>';
+            const gridEl = document.getElementById('topImageGrid');
             cachedResults.forEach((f, i) => {
                 const card = createImageCard({
                     href: cfg.cardHref(f),
@@ -739,8 +761,10 @@ const ViewTop = (() => {
                     totalListens: f.totalListens,
                     totalMinutes: f.totalMinutes
                 });
-                if (i >= countLimit) card.style.display = 'none';
-                container.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= countLimit) li.style.display = 'none';
+                li.appendChild(card);
+                gridEl.appendChild(li);
             });
         }
         lucide.createIcons();
@@ -868,7 +892,11 @@ const ViewTop = (() => {
 
     function _applyCount() {
         const listGrid = document.getElementById('topListGrid');
-        const container = listGrid || document.getElementById('topContainer');
+        // Tile mode nests its cards inside #topImageGrid (see _renderListOrTiles)
+        // so its <li> children, not #topContainer's single <ul> child, are what
+        // Count needs to hide/show; collage/topster modes still append cards
+        // straight to #topContainer, so that fallback stays for those.
+        const container = listGrid || document.getElementById('topImageGrid') || document.getElementById('topContainer');
         if (!container) return;
         Array.from(container.children).forEach((el, i) => {
             el.style.display = i < countLimit ? '' : 'none';

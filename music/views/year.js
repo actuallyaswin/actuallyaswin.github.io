@@ -9,6 +9,18 @@ const ViewYear = (() => {
     let filterMode = 'this-year';
     let cachedReleases = [];
     let cachedArtists = [];
+    // setupDropdowns() binds a document-level click listener to close open
+    // panels on an outside click -- document persists across navigation, so
+    // this needs explicit cleanup in unmount() or it leaks one per visit.
+    let _ac = null;
+
+    // Function-valued, not a fixed array: label depends on viewMode (10/20/
+    // 50/100 in list/tiles mode become the 3x3/4x4/7x7/10x10 collage
+    // dimensions once Display switches to Collage -- see COLLAGE_SIZES).
+    const COUNT_OPTIONS = () => [10, 20, 50, 100].map(n => ({
+        value: n,
+        label: viewMode === 'collage' ? (() => { const s = COLLAGE_SIZES[n]; return `${s}×${s}`; })() : String(n),
+    }));
 
     function mount(container, db, params) {
         _db = db;
@@ -35,8 +47,15 @@ const ViewYear = (() => {
 
         container.innerHTML = buildTemplate();
 
+        _ac = new AbortController();
+        setupDropdowns(container, {
+            count: {
+                label: 'Count', options: COUNT_OPTIONS, getValue: () => countLimit,
+                onPick: value => { countLimit = parseInt(value, 10); applyCount(); },
+            },
+        }, _ac.signal);
         populateYearSelector();
-        setupControls();
+        setupControls(container);
         setupYearNavigation();
         loadYearStats();
         loadReleases();
@@ -44,13 +63,16 @@ const ViewYear = (() => {
         loadYearGenres();
     }
 
-    function unmount() {}
+    function unmount() {
+        _ac?.abort();
+        _ac = null;
+    }
 
     function buildTemplate() {
         return `            <header>
                 <div class="year-navigation">
                     <button id="prevYear" class="year-nav-arrow" aria-label="Previous year">←</button>
-                    <h1 id="pageTitle">
+                    <h1>
                         <select id="yearSelect" class="year-select-hero"></select>
                     </h1>
                     <button id="nextYear" class="year-nav-arrow" aria-label="Next year">→</button>
@@ -69,12 +91,7 @@ const ViewYear = (() => {
                 <div class="control-block">
                     <span class="control-block-label">#</span>
                     <div class="sort-controls">
-                        <select id="countFilter" class="year-filter-select">
-                            ${[10, 20, 50, 100].map(n => {
-                                const label = viewMode === 'collage' ? (() => { const s = COLLAGE_SIZES[n]; return `${s}×${s}`; })() : n;
-                                return `<option value="${n}"${countLimit===n?' selected':''}>${label}</option>`;
-                            }).join('')}
-                        </select>
+                        ${dropdownHtml('count', 'Count', COUNT_OPTIONS, () => countLimit)}
                     </div>
                 </div>
                 <div class="control-block">
@@ -96,16 +113,16 @@ const ViewYear = (() => {
 
             <section class="year-section">
                 <h2>Releases</h2>
-                <div id="releasesContainer" class="image-grid">
-                    ${renderLoading("Loading releases...")}
-                </div>
+                <ul id="releasesContainer" class="image-grid">
+                    <li>${renderLoading("Loading releases...")}</li>
+                </ul>
             </section>
 
             <section class="year-section">
                 <h2>Artists</h2>
-                <div id="artistsContainer" class="image-grid">
-                    ${renderLoading("Loading artists...")}
-                </div>
+                <ul id="artistsContainer" class="image-grid">
+                    <li>${renderLoading("Loading artists...")}</li>
+                </ul>
             </section>
 
             <section class="year-section" id="genresSection">
@@ -272,7 +289,7 @@ const ViewYear = (() => {
 
         if (cachedReleases.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = renderLoading('No releases found');
+            container.innerHTML = `<li>${renderLoading('No releases found')}</li>`;
             return;
         }
 
@@ -284,8 +301,10 @@ const ViewYear = (() => {
             cachedReleases.forEach((row, i) => {
                 const [id, title, year, albumArtUrl, artistName, artistId, totalListens, totalMinutes, slug] = row;
                 const card = createImageCard({ href: releaseHref(id, slug), imageUrl: albumArtUrl });
-                if (i >= show) card.style.display = 'none';
-                container.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= show) li.style.display = 'none';
+                li.appendChild(card);
+                container.appendChild(li);
             });
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
@@ -300,8 +319,10 @@ const ViewYear = (() => {
                     totalMinutes,
                     rounded: false
                 });
-                if (i >= countLimit) card.style.display = 'none';
-                container.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= countLimit) li.style.display = 'none';
+                li.appendChild(card);
+                container.appendChild(li);
             });
         } else {
             container.className = 'image-grid';
@@ -315,8 +336,10 @@ const ViewYear = (() => {
                     totalListens,
                     totalMinutes
                 });
-                if (i >= countLimit) card.style.display = 'none';
-                container.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= countLimit) li.style.display = 'none';
+                li.appendChild(card);
+                container.appendChild(li);
             });
         }
 
@@ -330,7 +353,7 @@ const ViewYear = (() => {
 
         if (cachedArtists.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = renderLoading('No artists found');
+            container.innerHTML = `<li>${renderLoading('No artists found')}</li>`;
             return;
         }
 
@@ -342,8 +365,10 @@ const ViewYear = (() => {
             cachedArtists.forEach((row, i) => {
                 const [id, name, imageUrl, uniqueTracks, totalListens, totalMinutes, slug] = row;
                 const card = createImageCard({ href: artistHref(id, slug), imageUrl });
-                if (i >= show) card.style.display = 'none';
-                container.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= show) li.style.display = 'none';
+                li.appendChild(card);
+                container.appendChild(li);
             });
         } else if (viewMode === 'list') {
             container.className = 'wide-grid';
@@ -358,8 +383,10 @@ const ViewYear = (() => {
                     totalMinutes,
                     rounded: true
                 });
-                if (i >= countLimit) card.style.display = 'none';
-                container.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= countLimit) li.style.display = 'none';
+                li.appendChild(card);
+                container.appendChild(li);
             });
         } else {
             container.className = 'image-grid';
@@ -372,8 +399,10 @@ const ViewYear = (() => {
                     totalListens,
                     totalMinutes
                 });
-                if (i >= countLimit) card.style.display = 'none';
-                container.appendChild(card);
+                const li = document.createElement('li');
+                if (i >= countLimit) li.style.display = 'none';
+                li.appendChild(card);
+                container.appendChild(li);
             });
         }
 
@@ -401,16 +430,11 @@ const ViewYear = (() => {
         });
     }
 
-    function setupControls() {
+    function setupControls(container) {
         setupToggleGroup('[data-sort]', btn => {
             sortBy = btn.dataset.sort;
             loadReleases();
             loadArtists();
-        });
-
-        document.getElementById('countFilter')?.addEventListener('change', e => {
-            countLimit = parseInt(e.target.value);
-            applyCount();
         });
 
         setupToggleGroup('[data-filter]', btn => {
@@ -421,7 +445,7 @@ const ViewYear = (() => {
 
         setupToggleGroup('[data-view]', btn => {
             viewMode = btn.dataset.view;
-            updateCountLabels(viewMode);
+            refreshDropdownTrigger(container, 'count', COUNT_OPTIONS, () => countLimit);
             renderReleases();
             renderArtists();
         });

@@ -5,18 +5,30 @@
 // badge. Tracks stay on views/top.js — this is album/artist browsing only.
 const ViewBrowse = (() => {
     let _db = null;
+    let _container = null;
+    // Guards the document-level dropdown-close listener (added once in
+    // mount(), torn down in unmount()) -- _setupControls re-runs on every
+    // entityType toggle via _remount, so binding it there instead would
+    // stack a new listener per toggle.
+    let _ac = null;
     // 'albums' | 'artists'
     let entityType = 'albums';
     // 'discoveries' | 'recent' | 'plays' | 'az' | 'release-date' | 'random'
-    let sortBy = 'discoveries';
+    let sortBy = 'release-date';
     // 'all' or e.g. '2020s'
     let decade = 'all';
     // set only when a specific year within `decade` is picked via the carousel
     let year = null;
     // genre id as string, or 'all'
     let genreFilter = 'all';
-    // platform slug, or 'all' — only meaningful while browsing video game OSTs
-    let platformFilter = 'all';
+    // 'all' | 'album' | 'ep' | 'single' — releases.type; only meaningful for
+    // entityType 'albums'
+    let typeFilter = 'all';
+    // 'all' | 'film' | 'tv_series' | 'video_game' | 'video_game:<platform>' —
+    // only meaningful while entityType is 'albums'. The video_game:<platform>
+    // form narrows to one console; the bare 'video_game' value matches every
+    // video-game soundtrack regardless of platform.
+    let soundtrackFilter = 'all';
     // 'all' | 'heard' | 'unheard'
     let status = 'all';
     // 'all' | 'owned' | 'unowned' — only meaningful for entityType 'albums'
@@ -26,7 +38,21 @@ const ViewBrowse = (() => {
     let viewMode = 'poster-lg';
     let _rows = [];
     let _genreSelect = null;
-    let _platformSelect = null;
+    // Cached once per mount and reused by both the desktop dropdown and the
+    // mobile filter sheet, so there's one source of truth for the options
+    // list instead of two separate queries drifting apart.
+    let _genresIndex = [];
+    // Raw video-game platform slugs (unprefixed) -- kept separately from
+    // _soundtrackOptions since _loadAlbums() only needs the plain slug list,
+    // not the display-ready {value, label, icon, indent} rows.
+    let _platformsList = [];
+    let _soundtrackOptions = [{ value: 'all', label: 'All soundtracks' }];
+    // Which row's option list the mobile filter sheet is drilled into, or
+    // null when showing the root Filters list. Sheet DOM is torn down and
+    // rebuilt on every change rather than patched in place -- this whole
+    // interaction is opened rarely enough that simplicity wins over the
+    // extra plumbing a diff-based update would need.
+    let _sheetSubviewKey = null;
     let _shuffleSeed = 0;
     // How many of the sorted/filtered rows are actually in the DOM — grows by
     // PAGE_SIZE on "Load more" / scroll-near-bottom. Without this, a cleared
@@ -35,6 +61,44 @@ const ViewBrowse = (() => {
     const PAGE_SIZE = 60;
 
     const DECADES = ['1960s', '1970s', '1980s', '1990s', '2000s', '2010s', '2020s'];
+    const DECADE_OPTIONS = [{ value: 'all', label: 'All time' }, ...DECADES.map(d => ({ value: d, label: d }))];
+
+    // Labels/order for Sort By's single-select rows -- shared by the mobile
+    // filter sheet's drill-in list and the desktop dropdown popover, so they
+    // can never drift out of sync with each other.
+    const SORT_OPTIONS = [
+        { value: 'discoveries',  label: 'Discoveries', icon: 'sparkles' },
+        { value: 'recent',       label: 'Recent',      icon: 'clock' },
+        { value: 'plays',        label: 'Plays',       icon: 'headphones' },
+        { value: 'az',           label: 'A–Z' },
+        { value: 'release-date', label: 'Release' },
+        { value: 'random',       label: 'Random',      icon: 'shuffle' },
+    ];
+    const STATUS_OPTIONS = [
+        { value: 'all',     label: 'All' },
+        { value: 'heard',   label: 'Heard' },
+        { value: 'unheard', label: 'Unheard' },
+    ];
+    const OWNED_OPTIONS = [
+        { value: 'all',     label: 'All' },
+        { value: 'owned',   label: 'Owned' },
+        { value: 'unowned', label: 'Unowned' },
+    ];
+    const TYPE_OPTIONS = [
+        { value: 'all',    label: 'All types' },
+        { value: 'album',  label: 'Album' },
+        { value: 'ep',     label: 'EP' },
+        { value: 'single', label: 'Single' },
+    ];
+    // Top-level Soundtrack categories -- platform rows (one per distinct
+    // release_soundtrack_meta.platform under source_type='video_game') are
+    // appended after these by _populateSoundtrackOptions().
+    const SOUNDTRACK_BASE_OPTIONS = [
+        { value: 'all',        label: 'All soundtracks' },
+        { value: 'film',       label: 'Movie' },
+        { value: 'tv_series',  label: 'TV Series' },
+        { value: 'video_game', label: 'Video Game' },
+    ];
 
     function _decadeStart(d) { return parseInt(d, 10); }
 
@@ -59,6 +123,16 @@ const ViewBrowse = (() => {
         return null;
     }
 
+    // 'all' | 'film' | 'tv_series' | 'video_game' | 'video_game:<platform>' —
+    // see soundtrackFilter's declaration for the encoding.
+    function _soundtrackClause() {
+        if (soundtrackFilter === 'all') return '';
+        const [sourceType, platform] = soundtrackFilter.split(':');
+        const safeType = sourceType.replace(/'/g, "''");
+        const platformPart = platform ? ` AND sm.platform = '${platform.replace(/'/g, "''")}'` : '';
+        return `AND EXISTS (SELECT 1 FROM release_soundtrack_meta sm WHERE sm.release_id = r.id AND sm.source_type = '${safeType}'${platformPart})`;
+    }
+
     function _loadAlbums() {
         const yr = _yearRange();
         const yearClause = yr ? `AND r.release_year BETWEEN ${yr[0]} AND ${yr[1]}` : '';
@@ -66,9 +140,8 @@ const ViewBrowse = (() => {
         const genreClause = (genreFilter !== 'all' && !isNaN(gid))
             ? `AND EXISTS (SELECT 1 FROM release_genres rg WHERE rg.release_id = r.id AND rg.aoty_genre_id = ${gid})`
             : '';
-        const platformClause = platformFilter !== 'all'
-            ? `AND EXISTS (SELECT 1 FROM release_soundtrack_meta sm WHERE sm.release_id = r.id AND sm.platform = '${platformFilter.replace(/'/g, "''")}')`
-            : '';
+        const typeClause = typeFilter !== 'all' ? `AND r.type = '${typeFilter}'` : '';
+        const soundtrackClause = _soundtrackClause();
 
         const result = _db.exec(`
             SELECT r.id, r.title, r.slug, r.release_year,
@@ -88,7 +161,7 @@ const ViewBrowse = (() => {
                         WHERE t.release_id = r.id AND t.hidden = 0) as last_listen_ts,
                    ${OWNED_MEDIUM_SQL} as owned_medium
             FROM releases r
-            WHERE r.hidden = 0 ${yearClause} ${genreClause} ${platformClause}
+            WHERE r.hidden = 0 ${yearClause} ${genreClause} ${typeClause} ${soundtrackClause}
         `)[0];
 
         _rows = result ? result.values.map(([id, title, slug, releaseYear, art, artistName, artistId, artistSlug,
@@ -193,12 +266,23 @@ const ViewBrowse = (() => {
         const sub = entityType === 'albums'
             ? [row.artistName, row.releaseYear].filter(Boolean).join(' · ')
             : formatNumber(row.totalListens) + ' plays';
+        // Native title tooltip -- a literal \n renders as a real line break
+        // here (unlike an HTML <br/>, which title attributes show as literal
+        // text), so this needs no CSS tooltip machinery of its own.
+        const tooltip = entityType === 'albums'
+            ? `"${row.title}" (${row.releaseYear})\n${row.artistName} · ${row.tracksHeard}/${row.totalTracks}`
+            : `${row.title}\n${formatNumber(row.totalListens)} plays`;
         const donut = _albumDonut(row);
         const posterOnly = viewMode !== 'list';
         if (posterOnly) {
-            return `<a href="${href}" class="browse-poster${row.totalListens === 0 ? ' unplayed' : ''}" title="${escapeHtml(row.title)}">
+            // Donut lives inside the art itself (bottom-right), not the caption
+            // below it -- that caption is hidden entirely on narrow viewports
+            // (see the max-width:768px rule for .browse-poster-caption) to fit
+            // more columns per row without losing the play-progress indicator.
+            return `<a href="${href}" class="browse-poster${row.totalListens === 0 ? ' unplayed' : ''}" title="${escapeHtml(tooltip)}">
                 <div class="browse-poster-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')">
                     ${entityType === 'albums' ? ownedBadgeHtml(row.ownedMedium) : ''}
+                    <div class="browse-poster-donut">${donut}</div>
                 </div>
                 <div class="browse-poster-caption">
                     <div class="browse-poster-info">
@@ -209,7 +293,7 @@ const ViewBrowse = (() => {
                 </div>
             </a>`;
         }
-        return `<a href="${href}" class="disc-card${row.totalListens === 0 ? ' unplayed' : ''}" title="${escapeHtml(row.title)}">
+        return `<a href="${href}" class="disc-card${row.totalListens === 0 ? ' unplayed' : ''}" title="${escapeHtml(tooltip)}">
             <div class="disc-card-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')">
                 ${entityType === 'albums' ? ownedBadgeHtml(row.ownedMedium) : ''}
             </div>
@@ -233,7 +317,8 @@ const ViewBrowse = (() => {
             const opt = _genreSelect.options[genreFilter];
             if (opt) parts.push(opt.text);
         }
-        if (platformFilter !== 'all') parts.push(platformLabel(platformFilter));
+        if (typeFilter !== 'all') parts.push(TYPE_OPTIONS.find(o => o.value === typeFilter)?.label || typeFilter);
+        if (soundtrackFilter !== 'all') parts.push(_soundtrackFilterLabel());
         if (status !== 'all') parts.push(status === 'heard' ? 'heard' : 'not yet heard');
         if (entityType === 'albums' && ownedFilter !== 'all') parts.push(ownedFilter === 'owned' ? 'owned' : 'not owned');
         return parts.join(' · ');
@@ -283,8 +368,8 @@ const ViewBrowse = (() => {
 
         const visible = rows.slice(0, _visibleCount);
         gridEl.innerHTML = rows.length
-            ? visible.map(_cardHtml).join('')
-            : '<p class="browse-empty">Nothing matches these filters.</p>';
+            ? visible.map(row => `<li>${_cardHtml(row)}</li>`).join('')
+            : '<li class="browse-empty">Nothing matches these filters.</li>';
 
         const sentinel = document.getElementById('browseSentinel');
         if (sentinel) sentinel.hidden = _visibleCount >= rows.length;
@@ -311,6 +396,251 @@ const ViewBrowse = (() => {
     function _applyFiltersAndRender() {
         _visibleCount = PAGE_SIZE;
         _render();
+    }
+
+    // ── Mobile filter sheet ──────────────────────────────────────────────
+    // Letterboxd's "Filters" sheet is the model: a full-screen overlay with
+    // Cancel/Filters/Done up top, grouped rows below. Ours applies instantly
+    // (everything here is a client-side re-filter of already-loaded rows, or
+    // a fast indexed query), so Cancel and Done both just dismiss — there's
+    // no staged state to revert or commit, unlike a query that only runs on
+    // a server round-trip.
+    function _sortLabel() { return (SORT_OPTIONS.find(o => o.value === sortBy) || SORT_OPTIONS[0]).label; }
+    function _decadeLabel() { return decade === 'all' ? 'All time' : decade; }
+    function _genreLabel() {
+        if (genreFilter === 'all') return 'All genres';
+        const g = _genresIndex.find(g => String(g.id) === genreFilter);
+        return g ? g.name : 'All genres';
+    }
+    function _typeLabel() { return (TYPE_OPTIONS.find(o => o.value === typeFilter) || TYPE_OPTIONS[0]).label; }
+    // soundtrackFilter is 'all' | 'film' | 'tv_series' | 'video_game' |
+    // 'video_game:<platform>' -- _soundtrackOptions already has a matching
+    // {value, label} row for every one of those forms, platform rows included.
+    function _soundtrackFilterLabel() {
+        return (_soundtrackOptions.find(o => o.value === soundtrackFilter) || _soundtrackOptions[0]).label;
+    }
+    function _statusLabel() { return status === 'all' ? 'All' : status === 'heard' ? 'Heard' : 'Unheard'; }
+    function _ownedLabel() { return ownedFilter === 'all' ? 'All' : ownedFilter === 'owned' ? 'Owned' : 'Unowned'; }
+
+    // A tap advances all -> first -> second -> all, matching Letterboxd's
+    // Watched/Liked/etc. rows under ACCOUNT (image referenced: tap once for
+    // "Watched", again for "Not Watched", again back to "Any").
+    function _cycle3(current, first, second) {
+        return current === 'all' ? first : current === first ? second : 'all';
+    }
+
+    // ── Desktop toolbar dropdowns ─────────────────────────────────────────
+    // Shared component (utils.js's dropdownHtml/setupDropdowns) -- rendered
+    // as a small anchored popover under its own trigger instead of a
+    // full-screen sheet, since a bottom sheet reads as a mobile pattern
+    // even on a mouse-driven wide screen; desktop gets Letterboxd's other
+    // treatment (its own #content-nav row of click-to-open dropdown
+    // labels). Decade used to be a plain <select> -- a native <select>'s
+    // open list is the browser's own OS-level popup, which no CSS can
+    // restyle, so it kept looking different from Sort/Status even after the
+    // closed box was restyled to match. Converting it to this shared
+    // component fixed that at the root, and now every view with a small
+    // "pick one of these" filter reuses the exact same component instead of
+    // each hand-rolling its own.
+    function _filterSheetRootHtml() {
+        return `
+            <div class="filter-sheet-group">
+                <div class="filter-sheet-group-label">Browse</div>
+                <button type="button" class="filter-sheet-row" data-sheet-open="sort">
+                    <span>Sort By</span>
+                    <span class="filter-sheet-row-value">${escapeHtml(_sortLabel())} <i data-lucide="chevron-right"></i></span>
+                </button>
+            </div>
+            <div class="filter-sheet-group">
+                <div class="filter-sheet-group-label">Content</div>
+                <button type="button" class="filter-sheet-row" data-sheet-open="decade">
+                    <span>Decade</span>
+                    <span class="filter-sheet-row-value">${escapeHtml(_decadeLabel())} <i data-lucide="chevron-right"></i></span>
+                </button>
+                <button type="button" class="filter-sheet-row" data-sheet-open="genre">
+                    <span>Genre</span>
+                    <span class="filter-sheet-row-value">${escapeHtml(_genreLabel())} <i data-lucide="chevron-right"></i></span>
+                </button>
+                ${entityType === 'albums' ? `
+                <button type="button" class="filter-sheet-row" data-sheet-open="type">
+                    <span>Type</span>
+                    <span class="filter-sheet-row-value">${escapeHtml(_typeLabel())} <i data-lucide="chevron-right"></i></span>
+                </button>` : ''}
+                ${entityType === 'albums' ? `
+                <button type="button" class="filter-sheet-row" data-sheet-open="soundtrack">
+                    <span>Soundtrack</span>
+                    <span class="filter-sheet-row-value">${escapeHtml(_soundtrackFilterLabel())} <i data-lucide="chevron-right"></i></span>
+                </button>` : ''}
+            </div>
+            <div class="filter-sheet-group">
+                <div class="filter-sheet-group-label">Collection</div>
+                <button type="button" class="filter-sheet-row" data-sheet-cycle="status">
+                    <span>Status</span>
+                    <span class="filter-sheet-row-value">${_statusLabel()}</span>
+                </button>
+                ${entityType === 'albums' ? `
+                <button type="button" class="filter-sheet-row" data-sheet-cycle="owned">
+                    <span>Collection</span>
+                    <span class="filter-sheet-row-value">${_ownedLabel()}</span>
+                </button>` : ''}
+            </div>`;
+    }
+
+    function _filterSheetSubviewHtml(key) {
+        const rowHtml = (value, label, active, indent) =>
+            `<button type="button" class="filter-sheet-row${indent ? ' filter-sheet-row--indent' : ''}" data-sheet-pick="${escapeHtml(String(value))}">
+                <span>${escapeHtml(label)}</span>
+                ${active ? '<i data-lucide="check"></i>' : ''}
+            </button>`;
+        if (key === 'sort') {
+            return `<div class="filter-sheet-group">${
+                SORT_OPTIONS.map(o => rowHtml(o.value, o.label, sortBy === o.value)).join('')
+            }</div>`;
+        }
+        if (key === 'decade') {
+            return `<div class="filter-sheet-group">${
+                [rowHtml('all', 'All time', decade === 'all')]
+                    .concat(DECADES.map(d => rowHtml(d, d, decade === d)))
+                    .join('')
+            }</div>`;
+        }
+        if (key === 'genre') {
+            return `<div class="filter-sheet-group">${
+                [rowHtml('all', 'All genres', genreFilter === 'all')]
+                    .concat(_genresIndex.map(g => rowHtml(g.id, g.name, genreFilter === String(g.id))))
+                    .join('')
+            }</div>`;
+        }
+        if (key === 'type') {
+            return `<div class="filter-sheet-group">${
+                TYPE_OPTIONS.map(o => rowHtml(o.value, o.label, typeFilter === o.value)).join('')
+            }</div>`;
+        }
+        if (key === 'soundtrack') {
+            return `<div class="filter-sheet-group">${
+                _soundtrackOptions.map(o => rowHtml(o.value, o.label, soundtrackFilter === o.value, o.indent)).join('')
+            }</div>`;
+        }
+        return '';
+    }
+
+    const _SHEET_SUBVIEW_TITLES = { sort: 'Sort By', decade: 'Decade', genre: 'Genre', type: 'Type', soundtrack: 'Soundtrack' };
+
+    function _renderFilterSheet() {
+        const header = document.getElementById('browseFilterSheetHeader');
+        const body = document.getElementById('browseFilterSheetBody');
+        if (!header || !body) return;
+
+        header.innerHTML = _sheetSubviewKey
+            ? `<button type="button" class="filter-sheet-back" id="filterSheetBack"><i data-lucide="chevron-left"></i> Filters</button>
+               <span class="filter-sheet-title">${_SHEET_SUBVIEW_TITLES[_sheetSubviewKey] || ''}</span>
+               <button type="button" class="filter-sheet-done" id="filterSheetDone">Done</button>`
+            : `<span class="filter-sheet-title">Filters</span>
+               <button type="button" class="filter-sheet-done" id="filterSheetDone">Done</button>`;
+
+        body.innerHTML = _sheetSubviewKey ? _filterSheetSubviewHtml(_sheetSubviewKey) : _filterSheetRootHtml();
+
+        document.getElementById('filterSheetDone')?.addEventListener('click', _closeFilterSheet);
+        document.getElementById('filterSheetBack')?.addEventListener('click', () => {
+            _sheetSubviewKey = null;
+            _renderFilterSheet();
+        });
+
+        body.querySelectorAll('[data-sheet-open]').forEach(btn => btn.addEventListener('click', () => {
+            _sheetSubviewKey = btn.dataset.sheetOpen;
+            _renderFilterSheet();
+        }));
+        body.querySelectorAll('[data-sheet-pick]').forEach(btn => btn.addEventListener('click', () => {
+            const value = btn.dataset.sheetPick;
+            if (_sheetSubviewKey === 'sort') {
+                sortBy = value;
+                if (sortBy === 'random') _shuffleSeed = Date.now() % 100000;
+                refreshDropdownTrigger(_container, 'sort', SORT_OPTIONS, () => sortBy);
+                _syncUrl();
+                _applyFiltersAndRender();
+            } else if (_sheetSubviewKey === 'decade') {
+                decade = value;
+                year = null;
+                document.getElementById('browseDecadeCarousel').innerHTML = _decadeCarouselHtml();
+                _wireCarousel(_container);
+                refreshDropdownTrigger(_container, 'decade', DECADE_OPTIONS, () => decade);
+                _syncUrl();
+                _reloadAndRender();
+            } else if (_sheetSubviewKey === 'genre') {
+                genreFilter = value;
+                if (_genreSelect) _genreSelect.setValue(value, true);
+                _syncUrl();
+                _reloadAndRender();
+            } else if (_sheetSubviewKey === 'type') {
+                typeFilter = value;
+                refreshDropdownTrigger(_container, 'type', TYPE_OPTIONS, () => typeFilter);
+                _syncUrl();
+                _reloadAndRender();
+            } else if (_sheetSubviewKey === 'soundtrack') {
+                soundtrackFilter = value;
+                refreshDropdownTrigger(_container, 'soundtrack', () => _soundtrackOptions, () => soundtrackFilter);
+                _syncUrl();
+                _reloadAndRender();
+            }
+            _sheetSubviewKey = null;
+            _renderFilterSheet();
+        }));
+        body.querySelectorAll('[data-sheet-cycle]').forEach(btn => btn.addEventListener('click', () => {
+            const key = btn.dataset.sheetCycle;
+            if (key === 'status') {
+                status = _cycle3(status, 'heard', 'unheard');
+                refreshDropdownTrigger(_container, 'status', STATUS_OPTIONS, () => status);
+            } else if (key === 'owned') {
+                ownedFilter = _cycle3(ownedFilter, 'owned', 'unowned');
+                refreshDropdownTrigger(_container, 'owned', OWNED_OPTIONS, () => ownedFilter);
+            }
+            _syncUrl();
+            _applyFiltersAndRender();
+            _renderFilterSheet();
+        }));
+
+        lucide.createIcons({ el: header });
+        lucide.createIcons({ el: body });
+    }
+
+    function _openFilterSheet() {
+        _sheetSubviewKey = null;
+        // Appended straight to <body>, not left in the shell markup: the view
+        // container gets `transform: translateY(...)` from app.js's mount
+        // fade-in animation (left behind at rest by the `forwards` fill mode),
+        // and any transform on an ancestor turns `position: fixed` descendants
+        // into positioned-relative-to-that-ancestor instead of the viewport --
+        // on an 11k-row page that put the sheet thousands of pixels below the
+        // fold. views/release.js's art modal sidesteps the same trap the same
+        // way.
+        let backdrop = document.getElementById('browseFilterBackdrop');
+        let sheet = document.getElementById('browseFilterSheet');
+        if (!backdrop || !sheet) {
+            backdrop = document.createElement('div');
+            backdrop.className = 'filter-sheet-backdrop';
+            backdrop.id = 'browseFilterBackdrop';
+            backdrop.addEventListener('click', _closeFilterSheet);
+
+            sheet = document.createElement('div');
+            sheet.className = 'filter-sheet';
+            sheet.id = 'browseFilterSheet';
+            sheet.innerHTML = `
+                <div class="filter-sheet-header" id="browseFilterSheetHeader"></div>
+                <div class="filter-sheet-body" id="browseFilterSheetBody"></div>`;
+
+            document.body.appendChild(backdrop);
+            document.body.appendChild(sheet);
+        }
+        backdrop.hidden = false;
+        sheet.hidden = false;
+        _renderFilterSheet();
+    }
+
+    function _closeFilterSheet() {
+        const backdrop = document.getElementById('browseFilterBackdrop');
+        const sheet = document.getElementById('browseFilterSheet');
+        if (backdrop) backdrop.hidden = true;
+        if (sheet) sheet.hidden = true;
     }
 
     // Decade/year/genre/platform are baked into the SQL WHERE clause (see
@@ -340,78 +670,52 @@ const ViewBrowse = (() => {
 
     function _renderShell() {
         return `
-            <header>
+            <header class="browse-header">
                 <h1>Browse</h1>
                 <p class="subtitle" id="browseSubtitle"></p>
             </header>
 
-            <div class="page-controls">
-                <div class="control-block">
-                    <span class="control-block-label">Type</span>
+            <div class="browse-mobile-bar">
+                <div class="browse-mobile-bar-scroll">
                     <div class="sort-controls">
                         <button class="sort-btn${entityType === 'albums' ? ' active' : ''}" data-type="albums"><i data-lucide="disc-3"></i>Albums</button>
                         <button class="sort-btn${entityType === 'artists' ? ' active' : ''}" data-type="artists"><i data-lucide="mic-2"></i>Artists</button>
                     </div>
-                </div>
-                <div class="control-block">
-                    <span class="control-block-label">Sort By</span>
-                    <div class="sort-controls">
-                        <button class="sort-btn${sortBy === 'discoveries' ? ' active' : ''}" data-sort="discoveries" title="Newest first-listen date"><i data-lucide="sparkles"></i>Discoveries</button>
-                        <button class="sort-btn${sortBy === 'recent' ? ' active' : ''}" data-sort="recent" title="Most recently played"><i data-lucide="clock"></i>Recent</button>
-                        <button class="sort-btn${sortBy === 'plays' ? ' active' : ''}" data-sort="plays" title="Most played"><i data-lucide="headphones"></i>Plays</button>
-                        <button class="sort-btn${sortBy === 'az' ? ' active' : ''}" data-sort="az" title="A to Z">A–Z</button>
-                        <button class="sort-btn${sortBy === 'release-date' ? ' active' : ''}" data-sort="release-date" title="Newest release date">Release</button>
-                        <button class="sort-btn${sortBy === 'random' ? ' active' : ''}" data-sort="random" title="Shuffle"><i data-lucide="shuffle"></i>Random</button>
-                    </div>
-                </div>
-                <div class="control-block">
-                    <span class="control-block-label">Decade</span>
-                    <select id="decadeFilter" class="year-filter-select">
-                        <option value="all"${decade === 'all' ? ' selected' : ''}>All time</option>
-                        ${DECADES.map(d => `<option value="${d}"${decade === d ? ' selected' : ''}>${d}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="control-block">
-                    <span class="control-block-label">Genre</span>
-                    <select id="browseGenreFilter"><option value="all">All genres</option></select>
-                </div>
-                ${entityType === 'albums' ? `
-                <div class="control-block">
-                    <span class="control-block-label">Platform</span>
-                    <select id="browsePlatformFilter"><option value="all">All platforms</option></select>
-                </div>` : ''}
-                <div class="control-block">
-                    <span class="control-block-label">Status</span>
-                    <div class="sort-controls">
-                        <button class="sort-btn${status === 'all' ? ' active' : ''}" data-status="all">All</button>
-                        <button class="sort-btn${status === 'heard' ? ' active' : ''}" data-status="heard">Heard</button>
-                        <button class="sort-btn${status === 'unheard' ? ' active' : ''}" data-status="unheard">Unheard</button>
-                    </div>
-                </div>
-                ${entityType === 'albums' ? `
-                <div class="control-block">
-                    <span class="control-block-label">Collection</span>
-                    <div class="sort-controls">
-                        <button class="sort-btn${ownedFilter === 'all' ? ' active' : ''}" data-owned="all">All</button>
-                        <button class="sort-btn${ownedFilter === 'owned' ? ' active' : ''}" data-owned="owned">Owned</button>
-                        <button class="sort-btn${ownedFilter === 'unowned' ? ' active' : ''}" data-owned="unowned">Unowned</button>
-                    </div>
-                </div>` : ''}
-                <div class="control-block">
-                    <span class="control-block-label">Display</span>
                     <div class="sort-controls">
                         <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
                         <button class="sort-btn${viewMode === 'poster-sm' ? ' active' : ''}" data-view="poster-sm" title="Small posters"><i data-lucide="grid-3x3"></i></button>
                         <button class="sort-btn${viewMode === 'poster-lg' ? ' active' : ''}" data-view="poster-lg" title="Large posters"><i data-lucide="layout-grid"></i></button>
                     </div>
                 </div>
+                <button type="button" class="browse-filters-btn" id="browseFiltersBtn">
+                    <i data-lucide="sliders-horizontal"></i> Filters
+                </button>
+            </div>
+
+            <div class="browse-toolbar-desktop">
+                <div class="sort-controls">
+                    <button class="sort-btn${entityType === 'albums' ? ' active' : ''}" data-type="albums"><i data-lucide="disc-3"></i>Albums</button>
+                    <button class="sort-btn${entityType === 'artists' ? ' active' : ''}" data-type="artists"><i data-lucide="mic-2"></i>Artists</button>
+                </div>
+                ${dropdownHtml('sort', 'Sort by', SORT_OPTIONS, () => sortBy)}
+                ${dropdownHtml('decade', 'Decade', DECADE_OPTIONS, () => decade)}
+                <select id="browseGenreFilter"><option value="all">All genres</option></select>
+                ${entityType === 'albums' ? dropdownHtml('type', 'Type', TYPE_OPTIONS, () => typeFilter) : ''}
+                ${entityType === 'albums' ? dropdownHtml('soundtrack', 'Soundtrack', () => _soundtrackOptions, () => soundtrackFilter) : ''}
+                ${dropdownHtml('status', 'Status', STATUS_OPTIONS, () => status)}
+                ${entityType === 'albums' ? dropdownHtml('owned', 'Collection', OWNED_OPTIONS, () => ownedFilter) : ''}
+                <div class="sort-controls">
+                    <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
+                    <button class="sort-btn${viewMode === 'poster-sm' ? ' active' : ''}" data-view="poster-sm" title="Small posters"><i data-lucide="grid-3x3"></i></button>
+                    <button class="sort-btn${viewMode === 'poster-lg' ? ' active' : ''}" data-view="poster-lg" title="Large posters"><i data-lucide="layout-grid"></i></button>
+                </div>
             </div>
 
             <div id="browseDecadeCarousel">${_decadeCarouselHtml()}</div>
 
-            <div class="list-with-sidebar">
+            <div class="list-with-sidebar browse-list-with-sidebar">
                 <section>
-                    <div id="browseGrid"></div>
+                    <ul id="browseGrid"></ul>
                     <div id="browseSentinel" style="height:1px" hidden></div>
                 </section>
                 <aside class="view-sidebar" id="browseSidebar"></aside>
@@ -423,11 +727,13 @@ const ViewBrowse = (() => {
     }
 
     function _populateGenreSelect() {
-        const el = document.getElementById('browseGenreFilter');
-        if (!el || typeof TomSelect === 'undefined') return;
         const cacheRes = _db.exec("SELECT value_json FROM stats_cache WHERE key = 'genresIndex'")[0];
         const genres = cacheRes ? JSON.parse(cacheRes.values[0][0]) : [];
         genres.sort((a, b) => a.name.localeCompare(b.name));
+        _genresIndex = genres;
+
+        const el = document.getElementById('browseGenreFilter');
+        if (!el || typeof TomSelect === 'undefined') return;
         for (const g of genres) {
             const opt = document.createElement('option');
             opt.value = String(g.id);
@@ -448,44 +754,53 @@ const ViewBrowse = (() => {
         });
     }
 
-    function _populatePlatformSelect() {
-        const el = document.getElementById('browsePlatformFilter');
-        if (!el || typeof TomSelect === 'undefined') return;
+    // ~25 platforms -- small enough (like Sort/Status/Decade) that TomSelect's
+    // search box was never load-bearing here the way it is for Genre's ~600
+    // entries; using the shared dropdown instead keeps the trigger/panel
+    // chrome (sticky header, current-row, scroll-fade) consistent with the
+    // rest of the toolbar rather than a fourth visual species. Controllercons
+    // icon carried through as pre-built HTML in each option (see
+    // _dropdownPanelContentHtml's optional `icon` field) -- same markup the
+    // TomSelect render.option/item functions used to build.
+    //
+    // Platforms are always video-game-specific (release_soundtrack_meta.platform
+    // is only ever populated for source_type='video_game' rows), so they're
+    // appended as indented children under the "Video Game" row rather than as
+    // siblings of Movie/TV Series/Video Game -- picking "Video Game" itself
+    // stays platform-agnostic (matches every video-game soundtrack), while a
+    // platform row narrows further to that one console.
+    function _populateSoundtrackOptions() {
         const res = _db.exec(`
             SELECT DISTINCT platform FROM release_soundtrack_meta
-            WHERE platform IS NOT NULL AND platform != 'None'
+            WHERE source_type = 'video_game' AND platform IS NOT NULL AND platform != 'None'
             ORDER BY platform
         `)[0];
-        const platforms = res ? res.values.map(r => r[0]) : [];
-        for (const p of platforms) {
-            const opt = document.createElement('option');
-            opt.value = p;
-            opt.textContent = platformLabel(p);
-            el.appendChild(opt);
-        }
-        if (_platformSelect) _platformSelect.destroy();
-        _platformSelect = new TomSelect(el, {
-            create: false,
-            maxOptions: null,
-            placeholder: 'All platforms',
-        });
-        _platformSelect.setValue(platformFilter, true);
-        _platformSelect.on('change', v => {
-            platformFilter = v || 'all';
-            _syncUrl();
-            _reloadAndRender();
-        });
+        _platformsList = res ? res.values.map(r => r[0]) : [];
+        _soundtrackOptions = SOUNDTRACK_BASE_OPTIONS.concat(
+            _platformsList.map(p => {
+                const icon = platformIconMarkup(p);
+                return {
+                    value: `video_game:${p}`,
+                    label: platformLabel(p),
+                    icon: icon ? `<span class="ts-platform-icon">${icon}</span>` : null,
+                    indent: true,
+                };
+            })
+        );
     }
 
     function _syncUrl() {
         const p = new URLSearchParams();
         p.set('view', 'browse');
         if (entityType !== 'albums') p.set('type', entityType);
-        if (sortBy !== 'discoveries') p.set('sort', sortBy);
+        if (sortBy !== 'release-date') p.set('sort', sortBy);
         if (decade !== 'all') p.set('decade', decade);
         if (year) p.set('year', String(year));
         if (genreFilter !== 'all') p.set('genre', genreFilter);
-        if (platformFilter !== 'all') p.set('platform', platformFilter);
+        // 'rtype', not 'type' -- that param name is already the entityType
+        // (albums/artists) toggle above.
+        if (typeFilter !== 'all') p.set('rtype', typeFilter);
+        if (soundtrackFilter !== 'all') p.set('soundtrack', soundtrackFilter);
         if (status !== 'all') p.set('status', status);
         if (entityType === 'albums' && ownedFilter !== 'all') p.set('owned', ownedFilter);
         if (viewMode !== 'poster-lg') p.set('display', viewMode);
@@ -498,41 +813,19 @@ const ViewBrowse = (() => {
             _syncUrl();
             _remount(container);
         }));
-        container.querySelectorAll('[data-sort]').forEach(btn => btn.addEventListener('click', () => {
-            sortBy = btn.dataset.sort;
-            container.querySelectorAll('[data-sort]').forEach(b => b.classList.toggle('active', b === btn));
-            if (sortBy === 'random') _shuffleSeed = Date.now() % 100000;
-            _syncUrl();
-            _applyFiltersAndRender();
-        }));
-        container.querySelectorAll('[data-status]').forEach(btn => btn.addEventListener('click', () => {
-            status = btn.dataset.status;
-            container.querySelectorAll('[data-status]').forEach(b => b.classList.toggle('active', b === btn));
-            _syncUrl();
-            _applyFiltersAndRender();
-        }));
-        container.querySelectorAll('[data-owned]').forEach(btn => btn.addEventListener('click', () => {
-            ownedFilter = btn.dataset.owned;
-            container.querySelectorAll('[data-owned]').forEach(b => b.classList.toggle('active', b === btn));
-            _syncUrl();
-            _applyFiltersAndRender();
-        }));
+        // Display exists in both the mobile bar and the desktop toolbar --
+        // match by value across every button sharing the attribute, not by
+        // identity with the clicked one, or the other bar's copy goes stale.
         container.querySelectorAll('[data-view]').forEach(btn => btn.addEventListener('click', () => {
             viewMode = btn.dataset.view;
-            container.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b === btn));
+            container.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === viewMode));
             _syncUrl();
             _render();
         }));
-        const decadeSel = document.getElementById('decadeFilter');
-        if (decadeSel) decadeSel.addEventListener('change', () => {
-            decade = decadeSel.value;
-            year = null;
-            document.getElementById('browseDecadeCarousel').innerHTML = _decadeCarouselHtml();
-            _wireCarousel(container);
-            _syncUrl();
-            _reloadAndRender();
-        });
         _wireCarousel(container);
+
+        document.getElementById('browseFiltersBtn')?.addEventListener('click', _openFilterSheet);
+        document.getElementById('browseFilterBackdrop')?.addEventListener('click', _closeFilterSheet);
     }
 
     function _wireCarousel(container) {
@@ -557,10 +850,17 @@ const ViewBrowse = (() => {
     }
 
     function _remount(container) {
+        _container = container;
+        // Soundtrack options must be populated before _renderShell(): dropdownHtml()
+        // bakes the trigger's initial label from _soundtrackOptions at render
+        // time, so a stale ("All soundtracks") cache would show through on
+        // first paint. Genre doesn't have this problem -- it's still
+        // TomSelect, which needs its <select> DOM to exist first, so
+        // _populateGenreSelect() stays after the render below.
+        if (entityType === 'albums') _populateSoundtrackOptions();
         container.innerHTML = _renderShell();
         _setupControls(container);
         _populateGenreSelect();
-        if (entityType === 'albums') _populatePlatformSelect();
         _load();
         _applyFiltersAndRender();
     }
@@ -568,23 +868,72 @@ const ViewBrowse = (() => {
     function mount(container, db, params) {
         _db = db;
         entityType = params.type === 'artists' ? 'artists' : 'albums';
-        sortBy = ['discoveries', 'recent', 'plays', 'az', 'release-date', 'random'].includes(params.sort) ? params.sort : 'discoveries';
+        sortBy = ['discoveries', 'recent', 'plays', 'az', 'release-date', 'random'].includes(params.sort) ? params.sort : 'release-date';
         decade = DECADES.includes(params.decade) ? params.decade : 'all';
         year = params.year && /^\d{4}$/.test(params.year) ? parseInt(params.year, 10) : null;
         genreFilter = params.genre || 'all';
-        platformFilter = params.platform || 'all';
+        typeFilter = ['all', 'album', 'ep', 'single'].includes(params.rtype) ? params.rtype : 'all';
+        soundtrackFilter = params.soundtrack || 'all';
         status = ['all', 'heard', 'unheard'].includes(params.status) ? params.status : 'all';
         ownedFilter = ['all', 'owned', 'unowned'].includes(params.owned) ? params.owned : 'all';
         viewMode = ['list', 'poster-sm', 'poster-lg'].includes(params.display) ? params.display : 'poster-lg';
         setPageTitle('Browse');
+        _ac = new AbortController();
+        // Bound once here rather than in _setupControls (which reruns on
+        // every entityType toggle via _remount, against the same container
+        // node) -- binding there would stack a duplicate listener per toggle.
+        setupDropdowns(container, {
+            sort: {
+                label: 'Sort by', options: SORT_OPTIONS, getValue: () => sortBy,
+                onPick: value => {
+                    sortBy = value;
+                    if (sortBy === 'random') _shuffleSeed = Date.now() % 100000;
+                    _syncUrl();
+                    _applyFiltersAndRender();
+                },
+            },
+            status: {
+                label: 'Status', options: STATUS_OPTIONS, getValue: () => status,
+                onPick: value => { status = value; _syncUrl(); _applyFiltersAndRender(); },
+            },
+            owned: {
+                label: 'Collection', options: OWNED_OPTIONS, getValue: () => ownedFilter,
+                onPick: value => { ownedFilter = value; _syncUrl(); _applyFiltersAndRender(); },
+            },
+            decade: {
+                label: 'Decade', options: DECADE_OPTIONS, getValue: () => decade,
+                onPick: value => {
+                    decade = value;
+                    year = null;
+                    document.getElementById('browseDecadeCarousel').innerHTML = _decadeCarouselHtml();
+                    _wireCarousel(container);
+                    _syncUrl();
+                    _reloadAndRender();
+                },
+            },
+            type: {
+                label: 'Type', options: TYPE_OPTIONS, getValue: () => typeFilter,
+                onPick: value => { typeFilter = value; _syncUrl(); _reloadAndRender(); },
+            },
+            soundtrack: {
+                label: 'Soundtrack', options: () => _soundtrackOptions, getValue: () => soundtrackFilter,
+                onPick: value => { soundtrackFilter = value; _syncUrl(); _reloadAndRender(); },
+            },
+        }, _ac.signal);
         _remount(container);
     }
 
     function unmount() {
         _db = null;
+        _container = null;
         _rows = [];
         if (_genreSelect) { _genreSelect.destroy(); _genreSelect = null; }
-        if (_platformSelect) { _platformSelect.destroy(); _platformSelect = null; }
+        _ac?.abort();
+        _ac = null;
+        // Body-appended, not part of the shell markup -- navigating away
+        // wouldn't otherwise remove these (see _openFilterSheet).
+        document.getElementById('browseFilterBackdrop')?.remove();
+        document.getElementById('browseFilterSheet')?.remove();
     }
 
     return { mount, unmount };

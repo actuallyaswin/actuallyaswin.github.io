@@ -264,6 +264,187 @@ function setupToggleGroup(selector, onChange) {
     });
 }
 
+// Shared toolbar dropdown -- Letterboxd's own .smenu-menu is the model: a
+// sticky category header, the current pick shown once right below it (not
+// buried mid-list with just a checkmark), a divider, the rest of the list,
+// and a bottom scroll-fade that only appears when the list is actually
+// taller than the panel. Any view with a small "pick one of these" filter
+// (Sort/Status/Decade/Range/Period/Count/...) can use this instead of
+// hand-rolling its own <select> or button row, so a Letterboxd-style
+// restyle only has to happen once instead of once per view.
+//
+// container: the view's root element (dropdowns are looked up/wired within
+//   it, so a full container.innerHTML replace on view re-render doesn't
+//   leave stale references).
+// key: unique id for this dropdown within the container (becomes the
+//   data-dropdown-key value).
+// label: category header shown in the panel and as the trigger's prefix.
+// options: [{ value, label }, ...] in display order, OR a function
+//   returning that array -- a function is for options whose labels depend
+//   on state outside this dropdown (year.js/top.js's Count filter relabels
+//   10/20/50/100 as 3x3/4x4/7x7/10x10 once Display switches to Collage;
+//   the label is a live view of that state, not a fixed set of choices).
+// getValue: () => current value.
+// onPick: (value) => void, called after the trigger/panel are already
+//   updated to reflect the pick -- do the actual filter/reload here.
+function _resolveDropdownOptions(options) {
+    return typeof options === 'function' ? options() : options;
+}
+
+function dropdownHtml(key, label, options, getValue) {
+    const list = _resolveDropdownOptions(options);
+    const current = getValue();
+    const currentOpt = list.find(o => o.value === current) || list[0];
+    return `<div class="toolbar-dropdown" data-dropdown="${escapeHtml(key)}">
+        <button type="button" class="toolbar-dropdown-trigger" data-dropdown-trigger="${escapeHtml(key)}">
+            <span class="toolbar-dropdown-label">${escapeHtml(label)}</span>
+            <span class="toolbar-dropdown-value" data-dropdown-value="${escapeHtml(key)}">${escapeHtml(currentOpt ? currentOpt.label : '')}</span>
+        </button>
+        <div class="toolbar-dropdown-panel" data-dropdown-panel="${escapeHtml(key)}" hidden></div>
+    </div>`;
+}
+
+// Re-syncs a dropdown's trigger label after its options/value changed via
+// some OTHER control -- e.g. year.js's Display toggle (not this dropdown)
+// changes what "10" means for Count. dropdownHtml() only sets the label at
+// initial render; setupDropdowns() only refreshes it after a pick through
+// this dropdown itself. This covers the third case: an outside change.
+function refreshDropdownTrigger(container, key, options, getValue) {
+    const valueEl = container.querySelector(`[data-dropdown-value="${key}"]`);
+    if (!valueEl) return;
+    const list = _resolveDropdownOptions(options);
+    const current = getValue();
+    const currentOpt = list.find(o => o.value === current) || list[0];
+    valueEl.textContent = currentOpt ? currentOpt.label : '';
+}
+
+function _dropdownPanelContentHtml(label, options, current) {
+    const currentOpt = options.find(o => o.value === current) || options[0];
+    const rest = options.filter(o => o !== currentOpt);
+    // icon is either a bare lucide icon name (e.g. browse.js's Sort options:
+    // 'sparkles', 'clock') or pre-built HTML (e.g. browse.js's Soundtrack
+    // dropdown, which reuses the same Controllercons markup its former
+    // TomSelect render.option did) -- most callers have no use for it and
+    // leave it undefined.
+    const iconHtml = icon => (icon.includes('<') ? icon : `<i data-lucide="${escapeHtml(icon)}"></i>`);
+    const rowInner = o => `${o.icon ? `<span class="toolbar-dropdown-row-icon">${iconHtml(o.icon)}</span>` : ''}<span>${escapeHtml(o.label)}</span>`;
+    // `indent: true` -- a sub-option nested under the row directly above it
+    // (browse.js's Soundtrack dropdown: platforms nested under "Video Game")
+    // rather than a sibling of equal standing in the flat list.
+    const row = o => `<button type="button" class="toolbar-dropdown-row${o.indent ? ' toolbar-dropdown-row--indent' : ''}" data-dropdown-pick="${escapeHtml(String(o.value))}">
+        ${rowInner(o)}
+    </button>`;
+    return `
+        <div class="toolbar-dropdown-panel-scroll">
+            <div class="toolbar-dropdown-panel-header">${escapeHtml(label)}</div>
+            ${currentOpt ? `<button type="button" class="toolbar-dropdown-row toolbar-dropdown-row-current${currentOpt.indent ? ' toolbar-dropdown-row--indent' : ''}" data-dropdown-pick="${escapeHtml(String(currentOpt.value))}">
+                ${rowInner(currentOpt)}
+                <i data-lucide="check"></i>
+            </button>
+            <div class="toolbar-dropdown-divider"></div>` : ''}
+            ${rest.map(row).join('')}
+        </div>
+        <div class="toolbar-dropdown-fade" hidden></div>`;
+}
+
+// Flips the panel to whichever side/direction actually has room -- a naive
+// top-left anchor would run a dropdown near the right edge off-screen, or
+// one near the bottom under the fold.
+function _positionDropdownPanel(trigger, panel) {
+    panel.style.left = '';
+    panel.style.right = '';
+    panel.style.top = '';
+    panel.style.bottom = '';
+    const triggerRect = trigger.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const overflowsRight = triggerRect.left + panelRect.width > window.innerWidth - 8;
+    const overflowsBottom = triggerRect.bottom + panelRect.height > window.innerHeight - 8;
+    if (overflowsRight) panel.style.right = '0';
+    else panel.style.left = '0';
+    if (overflowsBottom) panel.style.bottom = 'calc(100% + 4px)';
+    else panel.style.top = 'calc(100% + 4px)';
+}
+
+// Shows the bottom scroll-fade only while there's more list below the fold
+// -- a short list (Sort, Status) never scrolls and never shows one; a long
+// one (Decade, Genre) does, matching Letterboxd's own
+// .smenu-overflowindicator.-scrollable toggle rather than always/never.
+function _updateDropdownFade(panel) {
+    if (!panel) return;
+    const scroll = panel.querySelector('.toolbar-dropdown-panel-scroll');
+    const fade = panel.querySelector('.toolbar-dropdown-fade');
+    if (!scroll || !fade) return;
+    const hasMore = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight > 2;
+    fade.hidden = !hasMore;
+}
+
+// Wires every `[data-dropdown-trigger]`/`[data-dropdown-panel]` pair inside
+// `container` that was rendered via dropdownHtml(). `specs` is
+// `{ [key]: { label, options, getValue, onPick } }`. Call once per view
+// mount (not per re-render of a reused container node) -- see browse.js's
+// own mount()/_ac AbortController pattern for why binding this inside a
+// function that reruns on every filter change stacks duplicate listeners.
+// Panel content is rendered lazily on open (not once up front), since a
+// view like browse.js can rebuild the whole toolbar's markup independently
+// of this one-time setup call (e.g. its Albums/Artists toggle) -- rendering
+// once at setup would leave every reopened panel showing stale or empty
+// content after the first such rebuild.
+function setupDropdowns(container, specs, signal) {
+    const renderPanel = key => {
+        const spec = specs[key];
+        const panel = container.querySelector(`[data-dropdown-panel="${key}"]`);
+        if (panel) {
+            panel.innerHTML = _dropdownPanelContentHtml(spec.label, _resolveDropdownOptions(spec.options), spec.getValue());
+            lucide.createIcons({ el: panel });
+        }
+    };
+
+    container.addEventListener('click', e => {
+        const trigger = e.target.closest('[data-dropdown-trigger]');
+        if (trigger) {
+            e.stopPropagation();
+            const key = trigger.dataset.dropdownTrigger;
+            if (!specs[key]) return;
+            const panel = container.querySelector(`[data-dropdown-panel="${key}"]`);
+            const wasOpen = panel && !panel.hidden;
+            container.querySelectorAll('[data-dropdown-panel]').forEach(p => { p.hidden = true; });
+            if (panel && !wasOpen) {
+                renderPanel(key);
+                panel.hidden = false;
+                _positionDropdownPanel(trigger, panel);
+                _updateDropdownFade(panel);
+            }
+            return;
+        }
+        const pick = e.target.closest('[data-dropdown-pick]');
+        if (pick) {
+            e.stopPropagation();
+            const panel = pick.closest('[data-dropdown-panel]');
+            const key = panel?.dataset.dropdownPanel;
+            const spec = key && specs[key];
+            if (!spec) return;
+            const value = pick.dataset.dropdownPick;
+            // onPick first -- it's expected to update whatever getValue()
+            // reads synchronously, so the re-render right after reflects the
+            // new pick instead of re-highlighting the stale one.
+            spec.onPick(value);
+            const valueEl = container.querySelector(`[data-dropdown-value="${key}"]`);
+            if (valueEl) {
+                const opt = _resolveDropdownOptions(spec.options).find(o => String(o.value) === value);
+                valueEl.textContent = opt ? opt.label : '';
+            }
+            panel.hidden = true;
+        }
+    }, { signal });
+    container.addEventListener('scroll', e => {
+        const scroll = e.target.closest?.('.toolbar-dropdown-panel-scroll');
+        if (scroll) _updateDropdownFade(scroll.closest('.toolbar-dropdown-panel'));
+    }, { capture: true, signal });
+    document.addEventListener('click', () => {
+        container.querySelectorAll('[data-dropdown-panel]').forEach(p => { p.hidden = true; });
+    }, { signal });
+}
+
 function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes,
                           rounded = false, cert = null, viaArtist = null }) {
     const card = document.createElement('a');

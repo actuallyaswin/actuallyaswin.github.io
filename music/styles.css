@@ -1674,10 +1674,272 @@ a.stat-card:hover .stat-label::after {
     padding-left: 0.25rem;
 }
 
+/* Browse — mobile compact header + Letterboxd-style filter sheet. Hidden on
+   desktop, where the compact toolbar row below does the equivalent job. */
+.browse-mobile-bar {
+    display: none;
+}
+/* Only this inner wrapper scrolls -- Filters is a fixed sibling next to it,
+   not a scroll-area child, so it can't be pushed off-screen by Albums/
+   Artists + the three Display buttons overflowing on a narrow phone. */
+.browse-mobile-bar-scroll {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+    flex: 1;
+    min-width: 0;
+}
+.browse-filters-btn {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.85rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+.browse-filters-btn i { width: 16px; height: 16px; }
+
+/* Compact heading, Letterboxd's slim "Films" section-heading -- small,
+   muted, left-aligned, sharing a line with the count instead of the big
+   centered gradient <h1> every other page uses. Applies at every width: it
+   replaced the old desktop-only rule that left mobile falling through to
+   the generic `header h1` mobile rule instead -- same gradient, same
+   centered stack, just smaller, not the compact single-line treatment this
+   page actually wants everywhere. */
+.browse-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    text-align: left;
+    margin-bottom: 1.25rem;
+}
+.browse-header h1 {
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    color: var(--text-secondary);
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    margin: 0;
+}
+.browse-header .subtitle {
+    font-size: 0.85rem;
+    margin: 0;
+}
+
+/* Desktop toolbar — Letterboxd's #content-nav is the model: everything in
+   one slim row, Sort/Status/Collection as click-to-open dropdown labels
+   instead of always-visible pill rows (Decade/Genre/Platform already are
+   dropdown-shaped via <select>/TomSelect, so they're untouched here). Hidden
+   on mobile, where .browse-mobile-bar + the filter sheet do the equivalent
+   job with room for a bottom sheet instead of an inline popover. */
+.browse-toolbar-desktop {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 1.5rem;
+}
+.toolbar-dropdown {
+    position: relative;
+}
+/* Same recipe as .ts-control (Genre/Platform) -- borderless, bg-secondary,
+   the identical inline chevron SVG as a background-image rather than a
+   separate icon element -- so all six toolbar dropdowns read as one control
+   family instead of three different ones sitting side by side. */
+.toolbar-dropdown-trigger {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: var(--bg-secondary);
+    border: none;
+    border-radius: 4px;
+    padding: 0.45rem 1.8rem 0.45rem 0.65rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-family: inherit;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    line-height: 1;
+    transition: color 0.15s;
+}
+.toolbar-dropdown-trigger:hover { color: var(--text-primary); }
+.toolbar-dropdown-label { color: var(--text-tertiary); }
+.toolbar-dropdown-value { font-weight: 600; color: inherit; }
+.toolbar-dropdown-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 160px;
+    max-width: 260px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    z-index: 20;
+    overflow: hidden;
+}
+/* Scrolls independently of .toolbar-dropdown-panel so the fade overlay
+   (a sibling, not a child of the scroller) can sit fixed at the bottom
+   without scrolling away with the content underneath it. */
+.toolbar-dropdown-panel-scroll {
+    max-height: 320px;
+    overflow-y: auto;
+}
+/* Pinned above the list while it scrolls, same as Letterboxd's own
+   .smenu-menu > .smenu-selected -- keeps "what am I picking" visible no
+   matter how far down a long list (Genre, Decade) has scrolled. */
+.toolbar-dropdown-panel-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+/* The current pick, shown once directly under the header rather than as a
+   checkmark buried mid-list -- Letterboxd's own .smenu-subselected row. */
+.toolbar-dropdown-row-current {
+    font-weight: 600;
+    color: var(--accent);
+}
+.toolbar-dropdown-row-current i { width: 14px; height: 14px; color: var(--accent); }
+.toolbar-dropdown-divider {
+    border-top: 1px solid var(--border);
+}
+/* Bottom fade hinting more content below the fold -- toggled by
+   _updateDropdownFade() in browse.js, mirroring Letterboxd's own
+   .smenu-overflowindicator.-scrollable. Sits over the scroller, not inside
+   it, so it doesn't scroll away with the content it's fading. */
+.toolbar-dropdown-fade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 20px;
+    pointer-events: none;
+    background: linear-gradient(to top, var(--bg-secondary), transparent);
+}
+.toolbar-dropdown-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    color: var(--text);
+    font-size: 0.85rem;
+    text-align: left;
+}
+.toolbar-dropdown-row:hover { background: var(--bg); }
+.toolbar-dropdown-row i { width: 15px; height: 15px; color: var(--accent); }
+/* Sub-option nested under the row directly above it (Soundtrack dropdown's
+   platforms under "Video Game") rather than a sibling of equal standing. */
+.toolbar-dropdown-row--indent { padding-left: 1.75rem; }
+
+.filter-sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 700;
+}
+.filter-sheet {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    max-height: 85vh;
+    overflow-y: auto;
+    background: var(--bg-secondary);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.4);
+    z-index: 701;
+    padding-bottom: env(safe-area-inset-bottom, 0);
+}
+.filter-sheet-header {
+    position: sticky;
+    top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.1rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+}
+.filter-sheet-title { color: var(--text); }
+.filter-sheet-back {
+    display: flex;
+    align-items: center;
+    color: var(--text-tertiary);
+    font-weight: 400;
+}
+.filter-sheet-back i { width: 18px; height: 18px; }
+.filter-sheet-done {
+    color: var(--accent);
+    font-weight: 600;
+}
+.filter-sheet-body {
+    padding: 0.5rem 0 1rem;
+}
+.filter-sheet-group {
+    margin: 0.75rem 0;
+}
+.filter-sheet-group-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    padding: 0 1.1rem 0.4rem;
+}
+.filter-sheet-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0.85rem 1.1rem;
+    border-top: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.95rem;
+    text-align: left;
+}
+.filter-sheet-group .filter-sheet-row:first-child { border-top: none; }
+.filter-sheet-row-value {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--text-tertiary);
+    font-size: 0.9rem;
+}
+.filter-sheet-row-value i { width: 16px; height: 16px; }
+.filter-sheet-row i[data-lucide="check"] { width: 18px; height: 18px; color: var(--accent); }
+/* Same nesting idea as .toolbar-dropdown-row--indent, for the mobile sheet's
+   drill-in list. */
+.filter-sheet-row--indent { padding-left: 2.2rem; }
+
 /* Collage Grid */
+/* Most usages are <ul> now (list.js/home.js/recommendations.js/soundtracks.js/
+   browse.js/top.js/year.js/genre.js/release.js/artist.js card grids all wrap
+   items in <li> — screen readers get "list, N items" instead of an
+   undifferentiated pile of <div>s). top.js's decorative collage/topster
+   photo-wall modes still append cards straight into a plain <div> since
+   that container is reused for non-grid layouts elsewhere in the same view;
+   these reset properties are harmless no-ops there either way. */
 .collage-grid {
     display: grid;
     gap: 0;
+    list-style: none;
+    margin: 0;
+    padding: 0;
 }
 
 .collage-grid .image-card {
@@ -3983,6 +4245,16 @@ footer a:hover {
 }
 
 /* Browse — poster-grid density modes and the Letterboxd-style decade carousel */
+/* #browseGrid is a <ul> (screen readers announce "list, N items" / "item N
+   of N" for a countable collection of comparable cards -- a plain <div>
+   grid never does) -- reset list default styling here rather than on the
+   shared .disc-grid/.browse-grid-* classes, which list.js/home.js/
+   recommendations.js/soundtracks.js also apply to plain <div>s. */
+#browseGrid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
 .browse-grid-posters {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -4009,6 +4281,17 @@ footer a:hover {
     overflow: hidden;
 }
 .browse-poster.unplayed .browse-poster-img { filter: grayscale(0.6) brightness(0.55); }
+/* Lives inside the art in the mobile-dense view where the caption below is
+   hidden entirely (see the max-width:768px rule further down) -- desktop
+   keeps the caption as the primary home for this and hides this overlay
+   copy instead, so the ring doesn't render twice. */
+.browse-poster-donut {
+    display: none;
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+}
 .browse-poster-caption {
     display: flex;
     align-items: center;
@@ -4073,7 +4356,7 @@ footer a:hover {
 
 /* TomSelect — recolor to match the site's dark/light theme instead of its
    default light-only look, and match the height/shape of the plain
-   .year-filter-select dropdowns it sits beside in the same toolbar row.
+   <select> dropdowns it sits beside in the same toolbar row.
    Genre (~600 heard) and Platform (~25) dropdowns use this; everything
    smaller stays a plain <select> or button row. */
 .ts-wrapper {
@@ -4100,8 +4383,8 @@ footer a:hover {
 .ts-control > .item { color: var(--text-secondary) !important; }
 .ts-wrapper.single .ts-control { padding: 0.45rem 1.8rem 0.45rem 0.65rem !important; }
 /* TomSelect's built-in caret is a border-triangle hack styled for its light
-   theme — swap in the same chevron glyph .year-filter-select already uses so
-   every dropdown in the toolbar reads as one consistent control. */
+   theme — swap in the same chevron glyph .toolbar-dropdown-trigger already
+   uses so every dropdown in the toolbar reads as one consistent control. */
 .ts-control:not(.rtl):after {
     display: none;
 }
