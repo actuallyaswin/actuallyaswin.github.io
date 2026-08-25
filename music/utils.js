@@ -141,6 +141,21 @@ function donutHtml(heard, total, { small = false, label = 'tracks' } = {}) {
     return `<div class="donut-wrap${sizeClass}" style="--p:${Math.round(pct * 100)};--c:${donutColor(pct)}" data-tooltip="${heard} / ${total} ${label}"><div class="donut"></div></div>`;
 }
 
+// "How mainstream is this artist" bar for an inline dt/dd stats row —
+// same hand-rolled track/fill convention as .lang-bar-fill/.pub-list-card-fill
+// elsewhere in this app, rather than a native <meter> (rendering differs
+// enough across browsers' UA shadow parts that it wouldn't match the rest
+// of the app's bars). role="meter" + aria-value* keep the accessibility
+// semantics a real <meter> would give, without native rendering.
+function popularityMeterHtml(popularity) {
+    if (popularity == null) return '';
+    return `<span class="popularity-meter" role="meter" aria-valuenow="${popularity}" aria-valuemin="0" aria-valuemax="100"
+                  aria-label="Spotify popularity" title="Spotify popularity: ${popularity}/100">
+        <span class="popularity-meter-track"><span class="popularity-meter-fill" style="width:${popularity}%"></span></span>
+        <span class="popularity-meter-value">${popularity}</span>
+    </span>`;
+}
+
 function formatRelativeTime(ts) {
     const diffSec = Math.floor(Date.now() / 1000) - ts;
     if (diffSec < 86400)       return 'today';

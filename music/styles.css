@@ -4125,8 +4125,130 @@ footer a:hover {
 .ts-dropdown .no-results { color: var(--text-tertiary) !important; }
 .ts-wrapper.focus .ts-control { box-shadow: 0 0 0 2px var(--primary); }
 
+/* Platform dropdown's per-option controller icon (see browse.js's
+   TomSelect render.option/item) -- same Controllercons SVGs as
+   .vgst-group-icon, scaled down to sit inline with a dropdown row's text. */
+.ts-platform-icon {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: -2px;
+    margin-right: 0.35rem;
+    color: inherit;
+}
+.ts-platform-icon svg { width: 13px; height: 13px; }
+.ts-platform-icon .ccsvg__primary,
+.ts-platform-icon .ccsvg__secondary { fill: currentColor; }
+
 @media (max-width: 768px) {
-    .browse-grid-posters { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
-    .browse-grid-posters-sm { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
+    .browse-mobile-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    .browse-toolbar-desktop { display: none; }
+
+    /* Denser than desktop's mobile fallback (120px/90px) -- Letterboxd fits
+       4 comfortably on a similar-width phone by dropping caption text, which
+       .browse-poster-caption below also does here. */
+    .browse-grid-posters { grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 0.6rem 0.5rem; }
+    .browse-grid-posters-sm { grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 0.5rem 0.4rem; }
+    .browse-poster-caption { display: none; }
+    .browse-poster-donut { display: block; }
+    .disc-owned-badge { border-width: 0 14px 14px 0; }
+
     .ts-wrapper { width: 100%; }
+
+    /* Browse-specific override of the shared .view-sidebar mobile reorder
+       (History/Lists/Top still want it first) -- the stats card pushing the
+       entire album grid below the fold is exactly the "too much scrolling
+       before browsing starts" problem, so here it stays put after the grid. */
+    .browse-list-with-sidebar .view-sidebar { order: 0; margin-bottom: 0; margin-top: 1.5rem; }
+}
+
+/* ── Mainstream Score section (views/stats.js) ────────────────────────────── */
+.mainstream-hist-wrap {
+    height: 180px;
+    margin-top: 1rem;
+}
+
+.mainstream-spotlight-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.mainstream-spotlight-card {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 1rem;
+    color: inherit;
+    text-decoration: none;
+    transition: background 0.12s;
+}
+.mainstream-spotlight-card:hover { background: var(--bg-tertiary); }
+
+.mainstream-spotlight-icon {
+    width: 36px; height: 36px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--primary);
+}
+.mainstream-spotlight-icon i { width: 18px; height: 18px; }
+
+.mainstream-spotlight-text { min-width: 0; }
+.mainstream-spotlight-label {
+    font-size: 0.72rem;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.mainstream-spotlight-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.mainstream-spotlight-sub {
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+}
+
+/* ── Popularity meter (artist page) — utils.js popularityMeterHtml() ─────── */
+.popularity-meter {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.popularity-meter-track {
+    width: 56px;
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.popularity-meter-fill {
+    display: block;
+    height: 100%;
+    min-width: 3px;
+    border-radius: 3px;
+    background: var(--primary);
+}
+
+.popularity-meter-value {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
 }

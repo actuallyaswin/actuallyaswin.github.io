@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import struct
 import sys
@@ -5228,6 +5229,19 @@ def cmd_artist_merge(args):
         ]
         from_row = conn.execute('SELECT * FROM artists WHERE id = ?', [from_id]).fetchone()
         to_row   = conn.execute('SELECT * FROM artists WHERE id = ?', [to_id]).fetchone()
+
+        # Delete FROM now, before backfilling its fields onto TO below --
+        # mbid/spotify_id are UNIQUE, so if FROM's row (holding that same
+        # value) is still around when we UPDATE TO to match it, the UPDATE
+        # collides with itself. external_links has no FK to artists (plain
+        # TEXT entity_id), so the later transfer of FROM's links still works
+        # after this delete.
+        if not getattr(args, 'no_alias', False):
+            upsert_artist_alias(conn, to_id, from_name, alias_type='past_name', source='manual')
+            console.print(f'  [dim]Added past_name alias: "{from_name}"[/dim]')
+        conn.execute('DELETE FROM artists WHERE id = ?', [from_id])
+        console.print(f'  [dim]Deleted artist row: {from_name} ({from_id})[/dim]')
+
         transferred = []
         for field in fields_to_transfer:
             try:
@@ -5247,15 +5261,6 @@ def cmd_artist_merge(args):
         )
         if transferred:
             console.print(f'  [dim]Transferred metadata: {", ".join(transferred)}[/dim]')
-
-        # Add FROM name as past_name alias on TO (unless suppressed)
-        if not getattr(args, 'no_alias', False):
-            upsert_artist_alias(conn, to_id, from_name, alias_type='past_name', source='manual')
-            console.print(f'  [dim]Added past_name alias: "{from_name}"[/dim]')
-
-        # Delete the FROM artist
-        conn.execute('DELETE FROM artists WHERE id = ?', [from_id])
-        console.print(f'  [dim]Deleted artist row: {from_name} ({from_id})[/dim]')
 
         conn.commit()
     console.print(f'\n  [green]✓[/green]  Merged [bold]{from_name}[/bold] → [bold]{to_name}[/bold]')
@@ -5940,21 +5945,28 @@ def cmd_list_import_csv(args):
         # (artist_name, album_title) since rank can legitimately shift
         # between an existing DB copy and a freshly re-exported CSV.
         existing_matches = {}
+        existing_publication = None
         if conn.execute('SELECT 1 FROM canonical_lists WHERE id=?', (args.id,)).fetchone():
             for r in conn.execute(
                 'SELECT artist_name, album_title, release_id FROM canonical_list_entries '
                 'WHERE list_id=? AND release_id IS NOT NULL', (args.id,)
             ).fetchall():
                 existing_matches[(r['artist_name'], r['album_title'])] = r['release_id']
+            existing_publication = conn.execute(
+                'SELECT publication FROM canonical_lists WHERE id=?', (args.id,)
+            ).fetchone()['publication']
+
+        publication = args.publication if args.publication is not None else existing_publication
 
         conn.execute('''
-            INSERT INTO canonical_lists (id, name, short_name, source_url, total_count, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO canonical_lists (id, name, short_name, source_url, total_count, publication, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, short_name=excluded.short_name,
                 source_url=excluded.source_url, total_count=excluded.total_count,
+                publication=excluded.publication,
                 updated_at=excluded.updated_at
-        ''', (args.id, args.name, args.short_name, args.source_url, len(entries), now, now))
+        ''', (args.id, args.name, args.short_name, args.source_url, len(entries), publication, now, now))
 
         conn.execute('DELETE FROM canonical_list_entries WHERE list_id=?', (args.id,))
         for rank, artist, album, year, label in entries:
@@ -6708,28 +6720,82 @@ def _stats_explicit(conn, cache, vlog):
 
 
 def _stats_popularity(conn, cache, vlog):
+    """Personal "mainstream-ness": headline mean/median, a histogram, an
+    artist spotlight, and a per-year trend, all built from the same
+    primitive (spotify_popularity, play-weighted). Deliberately just one
+    section -- an earlier version also had a coarse 3-tier play-share
+    breakdown here, but that's a strict low-resolution subset of the
+    histogram below, so showing both would just be the same story twice."""
     t0 = time.perf_counter()
-    popularity_tiers = {
-        'Mainstream (70+)': ' AND a.spotify_popularity >= 70',
-        'Mid-tier (40-69)': ' AND a.spotify_popularity >= 40 AND a.spotify_popularity < 70',
-        'Deep cuts (<40)':  ' AND a.spotify_popularity < 40',
-    }
-    pop_rows = conn.execute('''
-        SELECT
-          CASE WHEN a.spotify_popularity >= 70 THEN 'Mainstream (70+)'
-               WHEN a.spotify_popularity >= 40 THEN 'Mid-tier (40-69)'
-               ELSE 'Deep cuts (<40)' END as tier,
-          COUNT(l.id) n
+
+    # Play-weighted (not artist-weighted): average/median of the main
+    # artist's spotify_popularity across every listen, so an artist played
+    # 1,000 times counts proportionally more than one played once. Same
+    # primitive as the per-list score in _stats_canonical_lists, just
+    # aggregated over listens instead of over a list's entries.
+    pop_by_year = conn.execute('''
+        SELECT l.year as yr, a.spotify_popularity as pop
         FROM listens l JOIN tracks t ON l.track_id = t.id
         JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
         JOIN artists a ON a.id = ta.artist_id
         WHERE a.spotify_popularity IS NOT NULL
-        GROUP BY tier ORDER BY n DESC
     ''').fetchall()
-    cache['popularity'] = _breakdown_section(
-        conn, [(r['tier'], r['tier'], r['n']) for r in pop_rows],
-        'artist', lambda tier: (' AND a.spotify_popularity IS NOT NULL' + popularity_tiers[tier], ()))
-    vlog('popularity', cache['popularity'], t0)
+    all_pops = [r['pop'] for r in pop_by_year]
+    by_year = {}
+    for r in pop_by_year:
+        by_year.setdefault(r['yr'], []).append(r['pop'])
+
+    # Histogram in width-10 buckets (0-9 .. 90-100) of every listen's artist
+    # popularity -- the fine-grained replacement for the old 3-tier breakdown.
+    histogram = [0] * 10
+    for p in all_pops:
+        histogram[min(p // 10, 9)] += 1
+
+    # Spotlight: most-mainstream / most-obscure artist you actually listen
+    # to, by play count. A >=5-plays floor keeps a single stray play of some
+    # Spotlight: most-mainstream / most-obscure artist you actually listen
+    # to, by play count. Two floors keep this fair: >=5 plays (a single
+    # stray play of some random deep cut shouldn't win "most obscure"
+    # outright -- a real failure mode other mainstream-score tools have),
+    # and >=1000 followers (below that an artist barely has a Spotify
+    # presence at all -- "obscure" should mean "real but niche," not "this
+    # artist is essentially unlisted." 1000 was picked by inspecting the
+    # actual tail: real bedroom/indie acts here start around 1000-1200
+    # followers, while near-zero-presence rows sit at 2-95 followers).
+    # "Various Artists" is a compilation placeholder, not a real artist --
+    # excluded explicitly since its follower count is meaningless.
+    artist_rows = conn.execute('''
+        SELECT a.id, a.name, a.slug, a.spotify_popularity as pop,
+               a.spotify_followers as followers, COUNT(l.id) as plays
+        FROM listens l JOIN tracks t ON l.track_id = t.id
+        JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+        JOIN artists a ON a.id = ta.artist_id
+        WHERE a.spotify_popularity IS NOT NULL AND (a.hidden IS NULL OR a.hidden = 0)
+          AND a.spotify_followers >= 1000 AND a.name != 'Various Artists'
+        GROUP BY a.id
+        HAVING plays >= 5
+    ''').fetchall()
+
+    def _spotlight(row):
+        return {'id': row['id'], 'name': row['name'], 'slug': row['slug'],
+                'popularity': row['pop'], 'followers': row['followers'], 'plays': row['plays']}
+
+    most_mainstream = max(artist_rows, key=lambda r: (r['pop'], r['plays'])) if artist_rows else None
+    most_obscure = min(artist_rows, key=lambda r: (r['pop'], -r['plays'])) if artist_rows else None
+
+    cache['tasteMainstream'] = {
+        'mean': round(statistics.mean(all_pops), 1) if all_pops else None,
+        'median': statistics.median(all_pops) if all_pops else None,
+        'n_listens': len(all_pops),
+        'histogram': histogram,
+        'most_mainstream': _spotlight(most_mainstream) if most_mainstream else None,
+        'most_obscure': _spotlight(most_obscure) if most_obscure else None,
+        'by_year': [
+            {'year': yr, 'mean': round(statistics.mean(vals), 1), 'median': statistics.median(vals), 'n_listens': len(vals)}
+            for yr, vals in sorted(by_year.items())
+        ],
+    }
+    vlog('tasteMainstream', cache['tasteMainstream'], t0)
 
 
 def _stats_labels(conn, cache, vlog):
@@ -6839,6 +6905,34 @@ def _stats_certified(conn, cache, vlog):
         key=lambda r: cert_order.get(r['cert'], 99))
     cache['cert'] = [{'id': r['id'], 'name': r['name'], 'cert': r['cert'], 'slug': r['slug']} for r in cert_rows]
     vlog('cert', cache['cert'], t0)
+
+
+def _stats_top_releases_month(conn, cache, vlog):
+    """Home page 'Top Releases This Month' collage. A moving 30-day window
+    computed as of checkpoint time -- goes stale between checkpoints, same
+    tradeoff as every other stats_cache section, and far better than the
+    live join+group-by this replaced (slow enough in sql.js/WASM to make the
+    home page visibly hang)."""
+    t0 = time.perf_counter()
+    thirty_days_ago = int(time.time()) - 30 * 86400
+    rows = conn.execute('''
+        SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
+               a.name as artist_name, COUNT(l.id) as plays, r.slug
+        FROM listens l
+        JOIN tracks t ON l.track_id = t.id
+        JOIN releases r ON t.release_id = r.id
+        LEFT JOIN artists a ON r.primary_artist_id = a.id
+        WHERE l.timestamp >= ? AND t.hidden = 0 AND r.hidden = 0
+        GROUP BY r.id
+        ORDER BY plays DESC
+        LIMIT 16
+    ''', (thirty_days_ago,)).fetchall()
+    cache['topReleasesMonth'] = [
+        {'id': r['id'], 'title': r['title'], 'art_url': r['art_url'],
+         'artist_name': r['artist_name'], 'plays': r['plays'], 'slug': r['slug']}
+        for r in rows
+    ]
+    vlog('topReleasesMonth', cache['topReleasesMonth'], t0)
 
 
 def _stats_nerd(conn, cache, vlog):
@@ -7003,6 +7097,7 @@ def _stats_canonical_lists(conn, cache, vlog):
                    cle.position_label,
                    r.title as release_title, r.album_art_thumb_url, r.album_art_url,
                    r.primary_artist_id, r.release_year, r.slug as release_slug,
+                   a.spotify_popularity as artist_popularity,
                    EXISTS (
                        SELECT 1 FROM tracks t JOIN listens l ON l.track_id = t.id
                        WHERE t.release_id = r.id
@@ -7017,6 +7112,7 @@ def _stats_canonical_lists(conn, cache, vlog):
                    ) as listened_tracks
             FROM canonical_list_entries cle
             LEFT JOIN releases r ON r.id = cle.release_id
+            LEFT JOIN artists a ON a.id = r.primary_artist_id
             WHERE cle.list_id = ?
             ORDER BY cle.rank
         ''', (lst['id'],)).fetchall()
@@ -7033,10 +7129,19 @@ def _stats_canonical_lists(conn, cache, vlog):
             for e in entries if e['release_id'] and e['total_tracks']
         ]
         avg_completion = round(sum(completions) / len(completions) * 100, 1) if completions else 0
+        # List "mainstream-ness": mean+median of the primary artist's
+        # spotify_popularity across matched entries only, rank-agnostic --
+        # these are quality rankings, not popularity rankings, so weighting
+        # by rank would conflate the two. Median guards against a handful of
+        # outliers (one huge pop crossover) skewing an otherwise-niche list.
+        list_pops = [e['artist_popularity'] for e in entries if e['release_id'] and e['artist_popularity'] is not None]
+        mainstream_mean = round(statistics.mean(list_pops), 1) if list_pops else None
+        mainstream_median = statistics.median(list_pops) if list_pops else None
         canon_lists.append({
             'id': lst['id'], 'name': lst['name'], 'short_name': lst['short_name'],
-            'source_url': lst['source_url'], 'total': lst['total_count'],
+            'source_url': lst['source_url'], 'publication': lst['publication'], 'total': lst['total_count'],
             'heard': heard_n, 'matched': matched_n, 'avg_completion': avg_completion,
+            'mainstream_mean': mainstream_mean, 'mainstream_median': mainstream_median,
             'entries': [{
                 'rank': e['rank'], 'artist': e['artist_name'], 'album': e['album_title'],
                 'year': e['year'] or e['release_year'], 'release_id': e['release_id'],
@@ -7045,6 +7150,7 @@ def _stats_canonical_lists(conn, cache, vlog):
                 'title': e['release_title'] or e['album_title'],
                 'art': e['album_art_thumb_url'] or e['album_art_url'],
                 'primary_artist_id': e['primary_artist_id'],
+                'artist_popularity': e['artist_popularity'],
                 'heard': bool(e['heard']),
                 'total_tracks': e['total_tracks'],
                 'listened_tracks': e['listened_tracks'],
@@ -7284,6 +7390,7 @@ def cmd_stats_refresh(args):
         _stats_relistened(conn, cache, _vlog)
         _stats_vinyl(conn, cache, _vlog)
         _stats_certified(conn, cache, _vlog)
+        _stats_top_releases_month(conn, cache, _vlog)
         _stats_nerd(conn, cache, _vlog)
         _stats_genres_index(conn, cache, _vlog)
         _stats_canonical_lists(conn, cache, _vlog)
@@ -9344,6 +9451,8 @@ def main():
     p_l_import.add_argument('--name', required=True, metavar='NAME', help='Full display name')
     p_l_import.add_argument('--short-name', dest='short_name', metavar='NAME', help='Compact label for tight UI')
     p_l_import.add_argument('--source-url', dest='source_url', metavar='URL')
+    p_l_import.add_argument('--publication', metavar='SLUG',
+        help="Groups this list on the Lists page, e.g. 'rollingstone', 'pitchfork', 'other'")
     p_l_import.add_argument('--csv', required=True, metavar='PATH', help='CSV or .json file path')
     p_l_import.add_argument('--rank-col', metavar='COL', help='CSV column holding the rank (CSV only, required for CSV)')
     p_l_import.add_argument('--artist-col', default='Artist', metavar='COL')

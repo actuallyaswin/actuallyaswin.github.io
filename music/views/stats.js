@@ -1,5 +1,10 @@
 const ViewStats = (() => {
     let _db = null;
+    // Chart.js instance for the popularity histogram -- created after
+    // _render()'s innerHTML assignment (the canvas doesn't exist until
+    // then), destroyed on unmount/re-render so this view doesn't leak a
+    // chart bound to a canvas that no longer exists.
+    let _histChart = null;
 
     function mount(container, db, params) {
         _db = db;
@@ -15,7 +20,10 @@ const ViewStats = (() => {
         _render();
     }
 
-    function unmount() { _db = null; }
+    function unmount() {
+        _db = null;
+        if (_histChart) { _histChart.destroy(); _histChart = null; }
+    }
 
     // ── Cache access ─────────────────────────────────────────────────────────
     // Every section below is precomputed into `stats_cache` by `mdb.py stats
@@ -115,7 +123,7 @@ const ViewStats = (() => {
             const color = CATEGORY_COLORS[i % CATEGORY_COLORS.length];
             const rowHtml = `
                 <span class="lang-code">
-                    <span class="segbar-legend-dot" style="background:${color}"></span>
+                    <span class="lang-legend-dot" style="background:${color}"></span>
                     ${escapeHtml(String(label))}
                 </span>
                 <div class="lang-bar-track">
@@ -187,6 +195,10 @@ const ViewStats = (() => {
             title: 'Mainstream Meter',
             desc: "Share of plays by artist popularity, per Spotify's score.",
             kind: 'artist',
+        },
+        tasteMainstream: {
+            title: 'Mainstream Score',
+            desc: 'Play-weighted average Spotify popularity (0-100) across everything you\'ve heard.',
         },
         labels: {
             title: 'Top Labels',
@@ -271,7 +283,102 @@ const ViewStats = (() => {
     function _releaseTypeSection() { return _drillSection('releaseType', 'breakdown'); }
     function _recencySection()  { return _drillSection('recency', 'breakdown'); }
     function _explicitSection() { return _drillSection('explicit', 'colored'); }
-    function _popularitySection() { return _drillSection('popularity', 'colored'); }
+
+    function _mainstreamSpotlightCardHtml(label, icon, artist) {
+        if (!artist) return '';
+        return `
+            <a href="${artistHref(artist.id, artist.slug)}" class="mainstream-spotlight-card">
+                <div class="mainstream-spotlight-icon"><i data-lucide="${icon}"></i></div>
+                <div class="mainstream-spotlight-text">
+                    <div class="mainstream-spotlight-label">${escapeHtml(label)}</div>
+                    <div class="mainstream-spotlight-name">${escapeHtml(artist.name)}</div>
+                    <div class="mainstream-spotlight-sub">Popularity ${artist.popularity} · ${formatNumber(artist.plays)} plays</div>
+                </div>
+            </a>`;
+    }
+
+    function _tasteMainstreamSection() {
+        const data = _cache('tasteMainstream');
+        if (!data || !data.n_listens) return _emptySection('tasteMainstream', 'No data yet — run `mdb stats refresh`.');
+
+        const years = data.by_year.filter(y => y.n_listens >= 20);
+        const max = Math.max(...years.map(y => y.mean), 1);
+        const rows = years.map(y => {
+            const pct = (y.mean / max) * 100;
+            return `
+                <div class="lang-row lang-row-static">
+                    <span class="lang-code">${y.year}</span>
+                    <div class="lang-bar-track">
+                        <div class="lang-bar-fill" style="width:${pct}%;background:var(--primary)"></div>
+                    </div>
+                    <span class="lang-count">${y.mean}</span>
+                    <span class="lang-pct">${formatNumber(y.n_listens)} plays</span>
+                </div>`;
+        }).join('');
+
+        const spotlights = [
+            _mainstreamSpotlightCardHtml('Most mainstream', 'trending-up', data.most_mainstream),
+            _mainstreamSpotlightCardHtml('Most obscure', 'compass', data.most_obscure),
+        ].join('');
+
+        return `<section class="stat-section">
+            ${_sectionHeader('tasteMainstream')}
+            ${_statCards([['Mean', data.mean], ['Median', data.median]])}
+            <div class="mainstream-hist-wrap"><canvas id="mainstreamHistChart"></canvas></div>
+            ${spotlights ? `<div class="mainstream-spotlight-grid">${spotlights}</div>` : ''}
+            ${rows ? `<div class="lang-list has-drilldown" style="margin-top:1rem">${rows}</div>` : ''}
+        </section>`;
+    }
+
+    function _renderMainstreamHistogram() {
+        const data = _cache('tasteMainstream');
+        const canvas = document.getElementById('mainstreamHistChart');
+        if (!data || !data.histogram || !canvas) return;
+
+        if (_histChart) { _histChart.destroy(); _histChart = null; }
+
+        const labels = data.histogram.map((_, i) => i === 9 ? '90-100' : `${i * 10}-${i * 10 + 9}`);
+        const primaryColor  = getCSSColor('--primary');
+        const textSecondary = getCSSColor('--text-secondary');
+        const borderColor   = getCSSColor('--border');
+        const bgSecondary   = getCSSColor('--bg-secondary');
+        const textColor     = getCSSColor('--text');
+
+        _histChart = new Chart(canvas.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    data: data.histogram,
+                    backgroundColor: primaryColor,
+                    borderRadius: 4,
+                    maxBarThickness: 40,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: bgSecondary,
+                        titleColor: textColor,
+                        bodyColor: textColor,
+                        borderColor,
+                        borderWidth: 1,
+                        callbacks: {
+                            title: items => `Popularity ${items[0].label}`,
+                            label: item => `${formatNumber(item.raw)} listens`,
+                        },
+                    },
+                },
+                scales: {
+                    y: { beginAtZero: true, ticks: { color: textSecondary }, grid: { color: borderColor } },
+                    x: { ticks: { color: textSecondary }, grid: { display: false } },
+                },
+            },
+        });
+    }
 
     const _countryNames = (() => {
         try { return new Intl.DisplayNames(['en'], { type: 'region' }); }
@@ -453,8 +560,8 @@ const ViewStats = (() => {
                 <div class="insights-grid insights-grid--thirds">
                     ${_genderSection()}
                     ${_artistTypeSection()}
-                    ${_popularitySection()}
                 </div>
+                ${_tasteMainstreamSection()}
                 <div class="insights-grid insights-grid--halves">
                     ${_decadeSection()}
                     ${_countrySection()}
@@ -495,6 +602,7 @@ const ViewStats = (() => {
         `;
 
         _wireDrillDowns(el);
+        _renderMainstreamHistogram();
         lucide.createIcons();
     }
 

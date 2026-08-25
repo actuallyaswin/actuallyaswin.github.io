@@ -51,7 +51,7 @@ const ViewArtist = (() => {
         }
 
         container.innerHTML = `
-            <nav class="genre-breadcrumb" id="artistBreadcrumb">
+            <nav class="genre-breadcrumb">
                 <a href="?" class="bc-home"><i data-lucide="home"></i></a>
                 <i data-lucide="chevron-right" class="bc-sep"></i>
                 <span class="bc-current" id="artistBreadcrumbName">Loading…</span>
@@ -60,7 +60,7 @@ const ViewArtist = (() => {
                 </a>
             </nav>
 
-            <div id="artistHero" class="artist-hero" hidden></div>
+            <div class="artist-hero" hidden></div>
 
             <header id="artistHeader" class="entity-header entity-header-grid">
                 <div class="artist-photo-container">
@@ -74,8 +74,8 @@ const ViewArtist = (() => {
                 </div>
                 <div class="artist-info-container">
                     <h1 id="artistName">Loading...</h1>
-                    <p id="artistAka" class="release-artist" hidden></p>
-                    <dl id="artistStatsTable" class="release-stats-table" hidden></dl>
+                    <p class="release-artist" hidden></p>
+                    <dl id="artistStatsTable" class="stats-table" hidden></dl>
                 </div>
                 <nav id="artistLinkPills" class="release-link-pills"></nav>
             </header>
@@ -150,7 +150,8 @@ const ViewArtist = (() => {
                 a.aoty_url,
                 a.stat_first_listen_ts,
                 a.stat_last_listen_ts,
-                a.stat_drift_days
+                a.stat_drift_days,
+                a.spotify_popularity
             FROM artists a
             WHERE a.id = '${safeId}' AND (a.hidden IS NULL OR a.hidden = 0)
         `)[0];
@@ -162,7 +163,7 @@ const ViewArtist = (() => {
         }
 
         const [name, imageUrl, imageFullUrl, uniqueTracksRaw, totalPlaysRaw, totalReleasesRaw,
-               spotifyId, mbid, aotyId, aotyUrl, firstTs, lastTs, driftDays] = result.values[0];
+               spotifyId, mbid, aotyId, aotyUrl, firstTs, lastTs, driftDays, popularity] = result.values[0];
         const uniqueTracks   = uniqueTracksRaw || 0;
         const totalPlays     = totalPlaysRaw || 0;
         const totalReleases  = totalReleasesRaw || 0;
@@ -229,6 +230,7 @@ const ViewArtist = (() => {
             if (totalPlays > 0)    rows.push(['Plays',       formatNumber(totalPlays)]);
             if (uniqueTracks > 0)  rows.push(['Tracks',      formatNumber(uniqueTracks)]);
             if (totalReleases > 0) rows.push(['Releases',    formatNumber(totalReleases)]);
+            if (popularity != null) rows.push(['Popularity', popularityMeterHtml(popularity)]);
             if (firstTs)           rows.push(['First heard', fmtTs(firstTs)]);
             if (lastTs)            rows.push(['Last played', formatRelativeTime(lastTs)]);
             if (driftDays !== null && totalPlays >= 3) rows.push(['Drift', driftDays < 1
@@ -236,10 +238,10 @@ const ViewArtist = (() => {
                 : `${driftDays.toFixed(1)} days between plays`]);
 
             const makeCell = ([lbl, val]) =>
-                `<div class="rst-row"><dt class="rst-label">${lbl}</dt><dd class="rst-value">${val}</dd></div>`;
+                `<div class="stats-table-row"><dt class="stats-table-label">${lbl}</dt><dd class="stats-table-value">${val}</dd></div>`;
             let html = '';
             for (let i = 0; i < rows.length; i += 2)
-                html += `<div class="rst-pair">${makeCell(rows[i])}${rows[i+1] ? makeCell(rows[i+1]) : ''}</div>`;
+                html += `<div class="stats-table-pair">${makeCell(rows[i])}${rows[i+1] ? makeCell(rows[i+1]) : ''}</div>`;
             statsEl.innerHTML = html;
             statsEl.removeAttribute('hidden');
         }
@@ -257,8 +259,8 @@ const ViewArtist = (() => {
             const tbl = document.getElementById('artistStatsTable');
             if (!tbl) return;
             const row = document.createElement('div');
-            row.className = 'rst-row rst-genres-row';
-            row.innerHTML = `<dt class="rst-label">${label}</dt><dd class="rst-value">${html}</dd>`;
+            row.className = 'stats-table-row stats-table-genres-row';
+            row.innerHTML = `<dt class="stats-table-label">${label}</dt><dd class="stats-table-value">${html}</dd>`;
             tbl.appendChild(row);
             tbl.removeAttribute('hidden');
         };
@@ -523,14 +525,22 @@ const ViewArtist = (() => {
         group.appendChild(h3);
 
         if (_discView === 'list') {
-            const list = document.createElement('div');
+            const list = document.createElement('ul');
             list.className = 'disc-list';
-            rows.forEach(row => list.appendChild(_makeDiscListRow(row, collab)));
+            rows.forEach(row => {
+                const li = document.createElement('li');
+                li.appendChild(_makeDiscListRow(row, collab));
+                list.appendChild(li);
+            });
             group.appendChild(list);
         } else {
-            const grid = document.createElement('div');
+            const grid = document.createElement('ul');
             grid.className = 'disc-grid';
-            rows.forEach(row => grid.appendChild(_makeDiscCard(row, collab)));
+            rows.forEach(row => {
+                const li = document.createElement('li');
+                li.appendChild(_makeDiscCard(row, collab));
+                grid.appendChild(li);
+            });
             group.appendChild(grid);
         }
 
@@ -715,12 +725,12 @@ const ViewArtist = (() => {
             const statsEl = document.getElementById('artistStatsTable');
             if (statsEl) {
                 const row = document.createElement('div');
-                row.className = 'rst-pair';
-                row.innerHTML = `<div class="rst-row" style="grid-column:1/-1;border-right:none">` +
-                    `<dt class="rst-label">Peak years</dt>` +
-                    `<dd class="rst-value" style="display:flex;flex-wrap:wrap;gap:0.2rem;justify-content:flex-end;font-weight:normal">${pills}</dd></div>`;
-                // Insert before Members/Genre rows (before first rst-genres-row, or at end)
-                const firstFull = statsEl.querySelector('.rst-genres-row');
+                row.className = 'stats-table-pair';
+                row.innerHTML = `<div class="stats-table-row" style="grid-column:1/-1;border-right:none">` +
+                    `<dt class="stats-table-label">Peak years</dt>` +
+                    `<dd class="stats-table-value" style="display:flex;flex-wrap:wrap;gap:0.2rem;justify-content:flex-end;font-weight:normal">${pills}</dd></div>`;
+                // Insert before Members/Genre rows (before first stats-table-genres-row, or at end)
+                const firstFull = statsEl.querySelector('.stats-table-genres-row');
                 if (firstFull) statsEl.insertBefore(row, firstFull);
                 else statsEl.appendChild(row);
                 statsEl.removeAttribute('hidden');
