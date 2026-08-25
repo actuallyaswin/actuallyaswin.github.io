@@ -1,0 +1,14 @@
+<script>
+  // Must stay blocking and in <head>: run any later and light-mode visitors
+  // get a dark flash before first contentful paint. Shared by every page
+  // shell (default layout, music/index.html) so Blog and Music always agree
+  // on the stored theme instead of one reading it and the other defaulting
+  // to dark on every load.
+  (function () {
+    try {
+      var t = localStorage.getItem('theme');
+      if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    } catch (e) {}
+  })();
+</script>
