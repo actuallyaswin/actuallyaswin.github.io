@@ -98,7 +98,7 @@ const ViewRelease = (() => {
 
     // Edition-tag-info (ETI) suffixes — "(Remastered 2022)", "(Deluxe Edition)", etc. —
     // stripped from display everywhere a title is shown (release header, tracklist).
-    const _ETI_CONTENT = 'original\\s+(?:motion\\s+picture\\s+)?(?:soundtrack|score)(?:\\s+from\\s+[^()\\[\\]]+)?|music\\s+from\\s+(?:the\\s+)?(?:original\\s+)?(?:motion\\s+picture|film|movie)(?:\\s+soundtrack)?|soundtrack\\s+from\\s+(?:the\\s+)?[^()\\[\\]]*|(?:original\\s+)?(?:game|video\\s+game)\\s+soundtrack|deluxe(?:\\s+edition)?|anniversary\\s+edition|(?:\\d{4}\\s+)?remaster(?:ed)?(?:\\s+\\d{4})?|special\\s+edition|expanded\\s+edition|complete\\s+edition|soundtrack';
+    const _ETI_CONTENT = 'original\\s+(?:motion\\s+picture\\s+)?(?:soundtrack|score)(?:\\s+from\\s+[^()\\[\\]]+)?|music\\s+from\\s+(?:the\\s+)?(?:original\\s+)?(?:motion\\s+picture|film|movie)(?:\\s+soundtrack)?|soundtrack\\s+from\\s+(?:the\\s+)?[^()\\[\\]]*|(?:original\\s+)?(?:game|video\\s+game)\\s+soundtrack|deluxe\\s+edition|anniversary\\s+edition|(?:\\d{4}\\s+)?remaster(?:ed)?(?:\\s+\\d{4})?|special\\s+edition|expanded\\s+edition|complete\\s+edition|soundtrack';
     const _ETI_RE = new RegExp(
         `(?:(\\s*:\\s*|\\s+[\\-–—]\\s*|\\s+)(?:${_ETI_CONTENT})|\\s*\\((?:${_ETI_CONTENT})\\)|\\s*\\[(?:${_ETI_CONTENT})\\])\\s*$`,
         'i'
@@ -143,7 +143,7 @@ const ViewRelease = (() => {
         container.innerHTML = `            <nav class="genre-breadcrumb" id="releaseBreadcrumb">
                 <a href="?" class="bc-home"><i data-lucide="home"></i></a>
                 <i data-lucide="chevron-right" class="bc-sep"></i>
-                <span class="bc-current" id="releaseBreadcrumbName">Loading…</span>
+                <span class="bc-current">Loading…</span>
             </nav>
 
             <header id="releaseHeader" class="entity-header entity-header-grid">
@@ -160,7 +160,7 @@ const ViewRelease = (() => {
                     <p class="release-artist">
                         <span id="releaseArtist"></span>
                     </p>
-                    <dl id="releaseStatsTable" class="release-stats-table" hidden></dl>
+                    <dl id="releaseStatsTable" class="stats-table" hidden></dl>
                     <p id="releaseAka" class="release-aka" hidden></p>
                     <p id="releaseGenres" class="genre-list" style="margin-top:0.5rem"></p>
                 </div>
@@ -439,8 +439,8 @@ const ViewRelease = (() => {
                 let html = '';
                 for (let i = 0; i < rows.length; i += 2) {
                     const makeCell = ([lbl, val]) =>
-                        `<div class="rst-row"><dt class="rst-label">${lbl}</dt><dd class="rst-value">${val}</dd></div>`;
-                    html += `<div class="rst-pair">${makeCell(rows[i])}${rows[i + 1] ? makeCell(rows[i + 1]) : ''}</div>`;
+                        `<div class="stats-table-row"><dt class="stats-table-label">${lbl}</dt><dd class="stats-table-value">${val}</dd></div>`;
+                    html += `<div class="stats-table-pair">${makeCell(rows[i])}${rows[i + 1] ? makeCell(rows[i + 1]) : ''}</div>`;
                 }
                 statsEl.innerHTML = html;
                 statsEl.removeAttribute('hidden');
@@ -616,7 +616,7 @@ const ViewRelease = (() => {
                     `<a href="?view=genre&id=${encodeURIComponent(aotyId)}" class="stat-genre-tag${isPrimary ? ' is-primary' : ''}">${escapeHtml(name)}</a>`
                 ).join('');
                 statsEl2.insertAdjacentHTML('beforeend',
-                    `<div class="rst-row rst-genres-row"><span class="rst-label">Genre</span><span class="rst-value">${pills}</span></div>`
+                    `<div class="stats-table-row stats-table-genres-row"><span class="stats-table-label">Genre</span><span class="stats-table-value">${pills}</span></div>`
                 );
                 statsEl2.removeAttribute('hidden');
             }
@@ -1198,7 +1198,7 @@ const ViewRelease = (() => {
                 LIMIT 1
             `)[0];
             const svcNum = svcResult?.values[0]?.[0];
-            const svcIconClass = svcNum === 2 ? 'vsi-spotify' : null;
+            const svcIconClass = svcNum === 2 ? 'variant-service-icon-spotify' : null;
             const serviceIndicator = svcIconClass
                 ? `<span class="variant-section-service"><span class="variant-service-icon ${svcIconClass}"></span>Spotify</span>`
                 : '';
@@ -1349,7 +1349,7 @@ const ViewRelease = (() => {
         heading.textContent = 'Compiled From';
         section.appendChild(heading);
 
-        const grid     = document.createElement('div');
+        const grid     = document.createElement('ul');
         grid.className = 'wide-grid';
 
         for (const [sourceId, discNumber, title, artUrl, year, sourceSlug, totalListens, totalMinutes]
@@ -1363,7 +1363,9 @@ const ViewRelease = (() => {
                 totalListens: totalListens || 0,
                 totalMinutes: totalMinutes || 0,
             });
-            grid.appendChild(card);
+            const li = document.createElement('li');
+            li.appendChild(card);
+            grid.appendChild(li);
         }
 
         section.appendChild(grid);
@@ -1397,7 +1399,7 @@ const ViewRelease = (() => {
         artistContainer.insertAdjacentElement('afterend', p);
     }
 
-    // Row appended after Genre in the stats table (same rst-genres-row pattern) —
+    // Row appended after Genre in the stats table (same stats-table-genres-row pattern) —
     // shows every canonical list (RS500, NME AOTY, etc.) this release appears on.
     function loadListRankings() {
         const safeId = _releaseId.replace(/'/g, "''");
@@ -1421,7 +1423,7 @@ const ViewRelease = (() => {
         }).join('');
 
         statsEl.insertAdjacentHTML('beforeend',
-            `<div class="rst-row rst-genres-row"><span class="rst-label">Lists</span><span class="rst-value">${pills}</span></div>`
+            `<div class="stats-table-row stats-table-genres-row"><span class="stats-table-label">Lists</span><span class="stats-table-value">${pills}</span></div>`
         );
         statsEl.removeAttribute('hidden');
     }

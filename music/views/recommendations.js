@@ -50,7 +50,7 @@ const ViewRecommendations = (() => {
                 <h2>${escapeHtml(title)}</h2>
                 <p class="rec-desc">${escapeHtml(desc)}</p>
             </div>
-            <div class="disc-grid">${rows.map(r => _card(r[0], r[1], r[3], r[2], r[4], r[5])).join('')}</div>
+            <ul class="disc-grid">${rows.map(r => `<li>${_card(r[0], r[1], r[3], r[2], r[4], r[5])}</li>`).join('')}</ul>
         </section>`;
     }
 

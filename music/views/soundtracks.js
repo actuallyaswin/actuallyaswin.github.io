@@ -175,7 +175,7 @@ const ViewSoundtracks = (() => {
             }
             const chevron = `<span class="lang-chevron${isOpen ? ' expanded' : ''}">▶</span>`;
             html += `<h2 class="list-year-header vgst-group-header vgst-group-header-clickable" data-vgst-key="${escapeHtml(storageKey)}">${headerInner}${chevron}</h2>`;
-            html += `<div class="disc-grid"${isOpen ? '' : ' hidden'}>${group.map(_cardHtml).join('')}</div>`;
+            html += `<ul class="disc-grid"${isOpen ? '' : ' hidden'}>${group.map(r => `<li>${_cardHtml(r)}</li>`).join('')}</ul>`;
         }
         gridEl.innerHTML = html || '<p class="vgst-empty">No soundtracks match.</p>';
     }

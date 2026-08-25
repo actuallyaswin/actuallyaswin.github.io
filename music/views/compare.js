@@ -4,6 +4,7 @@ const ViewCompare = (() => {
     let _idB = null;
     let _nameA = null;
     let _nameB = null;
+    let _slugA = null;
     let _chart = null;
     let _themeObserver = null;
     // 'monthly' | 'yearly'
@@ -16,13 +17,14 @@ const ViewCompare = (() => {
         _idB = params.b || null;
         _nameA = null;
         _nameB = null;
+        _slugA = null;
         _chart = null;
         _granularity = 'monthly';
 
         setPageTitle('Compare Artists');
 
         container.innerHTML = `
-            <nav class="genre-breadcrumb">
+            <nav class="genre-breadcrumb" id="compareBreadcrumb">
                 <a href="?" class="bc-home"><i data-lucide="home"></i></a>
                 <i data-lucide="chevron-right" class="bc-sep"></i>
                 <span class="bc-current">Compare</span>
@@ -60,6 +62,24 @@ const ViewCompare = (() => {
         navigate(params);
     }
 
+    // Reflects where this page was actually reached from -- always a specific
+    // artist's "Compare" link (see artist.js) -- rather than a bare "Compare"
+    // that implies it's a flat, top-level destination like History or Stats.
+    function _updateBreadcrumb() {
+        const el = document.getElementById('compareBreadcrumb');
+        if (!el) return;
+        const artistLink = (_idA && _nameA)
+            ? `<a href="${artistHref(_idA, _slugA)}" class="bc-link">${escapeHtml(_nameA)}</a>
+               <i data-lucide="chevron-right" class="bc-sep"></i>`
+            : '';
+        el.innerHTML = `
+            <a href="?" class="bc-home"><i data-lucide="home"></i></a>
+            <i data-lucide="chevron-right" class="bc-sep"></i>
+            ${artistLink}
+            <span class="bc-current">Compare</span>`;
+        lucide.createIcons({ el });
+    }
+
     // ── Picker slot — either a filled artist card or a search-to-pick box ──
     function renderSlot(which, artistId) {
         const el = document.getElementById(`compareSlot${which}`);
@@ -75,6 +95,7 @@ const ViewCompare = (() => {
                 </div>`;
             lucide.createIcons({ el });
             wirePicker(which, el.querySelector('.compare-picker-input'), el.querySelector('.compare-picker-results'));
+            if (which === 'A') _updateBreadcrumb();
             return;
         }
 
@@ -90,7 +111,7 @@ const ViewCompare = (() => {
         }
 
         const [name, img, cert, slug] = row.values[0];
-        if (which === 'A') _nameA = name; else _nameB = name;
+        if (which === 'A') { _nameA = name; _slugA = slug; } else { _nameB = name; }
         el.innerHTML = `
             <a href="${artistHref(artistId, slug)}" class="compare-card-photo">
                 <img src="${cssUrl(img || getFallbackImageUrl())}" alt="">
@@ -103,8 +124,9 @@ const ViewCompare = (() => {
                 <i data-lucide="repeat-2"></i>
             </button>`;
         lucide.createIcons({ el });
+        if (which === 'A') _updateBreadcrumb();
         el.querySelector('.compare-card-swap').addEventListener('click', () => {
-            if (which === 'A') { _idA = null; _nameA = null; } else { _idB = null; _nameB = null; }
+            if (which === 'A') { _idA = null; _nameA = null; _slugA = null; } else { _idB = null; _nameB = null; }
             renderSlot(which, null);
             renderBody();
             _updateUrl();
@@ -180,6 +202,9 @@ const ViewCompare = (() => {
                 ${_metricRow('Unique tracks', statsA.uniqueTracks, statsB.uniqueTracks, formatNumber)}
                 ${_metricRow('Minutes played', statsA.totalMinutes, statsB.totalMinutes, formatNumber)}
                 ${_metricRow('Releases heard', statsA.totalReleases, statsB.totalReleases, formatNumber)}
+                ${statsA.popularity != null && statsB.popularity != null
+                    ? _metricRow('Popularity', statsA.popularity, statsB.popularity, String)
+                    : ''}
                 ${_dateMetricRow('First heard', statsA.firstTs, statsB.firstTs)}
             </section>
 
@@ -236,10 +261,10 @@ const ViewCompare = (() => {
     function _artistStats(artistId) {
         const safeId = artistId.replace(/'/g, "''");
         const row = _db.exec(`
-            SELECT stat_total_plays, stat_unique_tracks, stat_total_releases, stat_first_listen_ts
+            SELECT stat_total_plays, stat_unique_tracks, stat_total_releases, stat_first_listen_ts, spotify_popularity
             FROM artists WHERE id = '${safeId}'
         `)[0];
-        const [totalPlays, uniqueTracks, totalReleases, firstTs] = row ? row.values[0] : [0, 0, 0, null];
+        const [totalPlays, uniqueTracks, totalReleases, firstTs, popularity] = row ? row.values[0] : [0, 0, 0, null, null];
 
         const minutesRow = _db.exec(`
             SELECT CAST(SUM(COALESCE(t.duration_ms, 0)) / 60000.0 AS INTEGER)
@@ -256,6 +281,7 @@ const ViewCompare = (() => {
             totalReleases: totalReleases || 0,
             firstTs: firstTs || null,
             totalMinutes,
+            popularity,
         };
     }
 

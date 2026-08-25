@@ -8,6 +8,10 @@ const ViewHistory = (() => {
     let _source   = 'all';
     let _query    = '';
     let _debounce = null;
+    // setupDropdowns() binds a document-level click listener to close open
+    // panels on an outside click -- document persists across navigation, so
+    // this needs explicit cleanup in unmount() or it leaks one per visit.
+    let _ac       = null;
 
     const ROW_H  = 48;
     const BUFFER = 10;
@@ -20,6 +24,8 @@ const ViewHistory = (() => {
         year:  365 * 86400,
         all:   null,
     };
+    const WINDOW_LABELS = { week: 'Week', month: 'Month', '3mo': '3 Mo', year: 'Year', all: 'All' };
+    const WINDOW_OPTIONS = Object.keys(WINDOWS).map(k => ({ value: k, label: WINDOW_LABELS[k] }));
 
     function mount(container, db, params) {
         _db = db;
@@ -37,18 +43,7 @@ const ViewHistory = (() => {
                 <p class="subtitle" id="historyCount"></p>
             </header>
             <div class="page-controls">
-                <div class="control-block">
-                    <span class="control-block-label">Period</span>
-                    <div class="sort-controls">
-                        <select id="periodFilter" class="year-filter-select">
-                            ${Object.keys(WINDOWS).map(k =>
-                                `<option value="${k}"${k===_window?' selected':''}>${
-                                    {week:'Week',month:'Month','3mo':'3 Mo',year:'Year',all:'All'}[k]
-                                }</option>`
-                            ).join('')}
-                        </select>
-                    </div>
-                </div>
+                ${dropdownHtml('period', 'Period', WINDOW_OPTIONS, () => _window)}
                 <div class="control-block">
                     <span class="control-block-label">Source</span>
                     <div class="sort-controls">
@@ -83,6 +78,13 @@ const ViewHistory = (() => {
         });
         _scrollEl.addEventListener('scroll', _schedule, { passive: true });
 
+        _ac = new AbortController();
+        setupDropdowns(container, {
+            period: {
+                label: 'Period', options: WINDOW_OPTIONS, getValue: () => _window,
+                onPick: value => { _window = value; _load(); },
+            },
+        }, _ac.signal);
         _setupControls();
         _load();
     }
@@ -93,6 +95,8 @@ const ViewHistory = (() => {
         _scrollEl = null;
         _allRows = [];
         _rows = [];
+        _ac?.abort();
+        _ac = null;
     }
 
     function _schedule() {
@@ -273,10 +277,6 @@ const ViewHistory = (() => {
     }
 
     function _setupControls() {
-        document.getElementById('periodFilter')?.addEventListener('change', e => {
-            _window = e.target.value;
-            _load();
-        });
         setupToggleGroup('[data-src]', btn => {
             _source = btn.dataset.src;
             _load();

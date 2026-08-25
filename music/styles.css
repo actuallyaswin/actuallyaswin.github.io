@@ -509,7 +509,7 @@ header h1 {
 }
 
 /* Release stats — nerds-list style */
-.release-stats-table {
+.stats-table {
     margin: 0.5rem 0 0;
     padding: 0;
     display: flex;
@@ -519,12 +519,12 @@ header h1 {
     overflow: hidden;
 }
 /* Each pair holds two stat cells side-by-side */
-.rst-pair {
+.stats-table-pair {
     display: flex;
     border-bottom: 1px solid var(--border);
 }
-.rst-pair:last-child { border-bottom: none; }
-.rst-pair .rst-row {
+.stats-table-pair:last-child { border-bottom: none; }
+.stats-table-pair .stats-table-row {
     flex: 1;
     display: flex;
     align-items: center;
@@ -533,11 +533,11 @@ header h1 {
     gap: 0.5rem;
     min-width: 0;
 }
-.rst-pair .rst-row:first-child { border-right: 1px solid var(--border); }
+.stats-table-pair .stats-table-row:first-child { border-right: 1px solid var(--border); }
 /* Odd-row-count: last lone cell fills full width */
-.rst-pair .rst-row:only-child { border-right: none; }
+.stats-table-pair .stats-table-row:only-child { border-right: none; }
 /* Genre row spans full width */
-.release-stats-table .rst-genres-row {
+.stats-table .stats-table-genres-row {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -545,7 +545,7 @@ header h1 {
     gap: 0.4rem;
     border-bottom: none;
 }
-.release-stats-table .rst-genres-row .rst-value {
+.stats-table .stats-table-genres-row .stats-table-value {
     flex: 1;
     display: flex;
     flex-wrap: wrap;
@@ -553,14 +553,14 @@ header h1 {
     justify-content: flex-end;
     font-weight: normal;
 }
-.release-stats-table .rst-row:last-child { border-bottom: none; }
-.release-stats-table .rst-label {
+.stats-table .stats-table-row:last-child { border-bottom: none; }
+.stats-table .stats-table-label {
     font-size: 0.75rem;
     color: var(--text-secondary);
     white-space: nowrap;
     flex-shrink: 0;
 }
-.release-stats-table .rst-value {
+.stats-table .stats-table-value {
     font-size: 0.78rem;
     font-weight: 600;
     color: var(--text);
@@ -650,7 +650,6 @@ header h1 {
     flex-shrink: 0;
     transition: background 0.1s;
 }
-.release-link-pill.pill-static { cursor: default; }
 .release-link-pill:last-child,
 .pill-variant-group:last-child + * { border-bottom: none; }
 .release-link-pill::after {
@@ -749,11 +748,6 @@ header h1 {
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     position: relative; z-index: 1;
 }
-.pill-variant-ext {
-    width: 8px; height: 8px; flex-shrink: 0; opacity: 0.2;
-    fill: none; stroke: currentColor; stroke-width: 2;
-    margin-left: auto; position: relative; z-index: 1;
-}
 
 /* Variant section: slim header */
 .variant-section-header {
@@ -776,7 +770,7 @@ header h1 {
     -webkit-mask-position: center; mask-position: center;
     background: var(--text-tertiary); opacity: 0.55;
 }
-.vsi-spotify { -webkit-mask-image: url('images/links/spotify.svg'); mask-image: url('images/links/spotify.svg'); }
+.variant-service-icon-spotify { -webkit-mask-image: url('images/links/spotify.svg'); mask-image: url('images/links/spotify.svg'); }
 
 .genre-tag {
     color: var(--text-secondary);
@@ -1285,25 +1279,6 @@ a.stat-card:hover .stat-label::after {
     color: #1a2d13;
 }
 
-.year-filter-select {
-    appearance: none;
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
-    border: none;
-    border-radius: 4px;
-    padding: 0.45rem 1.8rem 0.45rem 0.65rem;
-    font-size: 0.82rem;
-    font-family: inherit;
-    cursor: pointer;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.5rem center;
-    line-height: 1;
-    transition: color 0.15s;
-}
-.year-filter-select:hover { color: var(--text-primary); }
-.year-filter-select:focus { outline: none; box-shadow: 0 0 0 2px var(--primary); }
-
 .controls-dimmed {
     opacity: 0.35;
     pointer-events: none;
@@ -1315,6 +1290,9 @@ a.stat-card:hover .stat-label::after {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 1rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
 }
 
 /* Wide Grid (List mode) */
@@ -1322,6 +1300,9 @@ a.stat-card:hover .stat-label::after {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 0.75rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
 }
 
 .wide-grid .release-card {
@@ -1389,11 +1370,13 @@ a.stat-card:hover .stat-label::after {
 }
 
 /* Recommendations shelf counts */
-/* SHELF_MOBILE = 6 — hide cards beyond the 6th on small screens */
+/* SHELF_MOBILE = 6 — hide cards beyond the 6th on small screens. Targets the
+   <li> grid item, not .disc-card itself -- each card is now the sole child
+   of its own <li>, so nth-child on the card would always read position 1. */
 @media (max-width: 768px) {
     .disc-card-streaming { display: none; }
-    .rec-shelf .disc-card:nth-child(n+7),
-    #homeRecsSection .disc-card:nth-child(n+7) { display: none; }
+    .rec-shelf li:nth-child(n+7),
+    #homeRecsSection li:nth-child(n+7) { display: none; }
 }
 
 .disc-group {
@@ -1413,6 +1396,9 @@ a.stat-card:hover .stat-label::after {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
     gap: 0.75rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
 }
 
 .disc-grid[hidden] {
@@ -1547,6 +1533,9 @@ a.stat-card:hover .stat-label::after {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 0 1.5rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
 }
 
 @media (max-width: 768px) {
@@ -2211,6 +2200,7 @@ a.stat-card:hover .stat-label::after {
 }
 
 .image-card {
+    display: block;
     position: relative;
     aspect-ratio: 1;
     border-radius: 8px;
@@ -2663,39 +2653,39 @@ a.stat-card:hover .stat-label::after {
     min-width: 160px;
     max-width: 220px;
 }
-.ctt-header {
+.commit-tooltip-header {
     font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 2px;
 }
-.ctt-count {
+.commit-tooltip-count {
     color: var(--text-tertiary);
     font-size: 0.75rem;
     margin-bottom: 7px;
 }
-.ctt-genres {
+.commit-tooltip-genres {
     display: flex;
     flex-direction: column;
     gap: 3px;
 }
-.ctt-genre {
+.commit-tooltip-genre {
     display: flex;
     align-items: center;
     gap: 6px;
     font-size: 0.75rem;
     color: var(--text-secondary);
 }
-.ctt-dot {
+.commit-tooltip-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
 }
-.ctt-name {
+.commit-tooltip-name {
     flex: 1;
     color: var(--text-primary);
 }
-.ctt-pct {
+.commit-tooltip-pct {
     color: var(--text-tertiary);
     font-variant-numeric: tabular-nums;
 }
@@ -3106,7 +3096,7 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
 .lang-expand-card-wide { width: 96px; }
 
 /* Color dot used by _coloredRows() to tie a lang-row to a distinct category color */
-.segbar-legend-dot {
+.lang-legend-dot {
     display: inline-block;
     width: 9px;
     height: 9px;
@@ -3453,8 +3443,15 @@ footer a:hover {
 
 /* Responsive */
 @media (max-width: 768px) {
+    header {
+        margin-bottom: 1.5rem;
+    }
     header h1 {
-        font-size: 2rem;
+        font-size: 1.6rem;
+        margin-bottom: 0.3rem;
+    }
+    .subtitle {
+        font-size: 0.9rem;
     }
 
     .back-button {
@@ -3519,15 +3516,15 @@ footer a:hover {
         text-align: center;
     }
     /* Stats table: collapse pairs to single column */
-    .entity-header-grid .rst-pair {
+    .entity-header-grid .stats-table-pair {
         flex-direction: column;
     }
-    .entity-header-grid .rst-pair .rst-row:first-child {
+    .entity-header-grid .stats-table-pair .stats-table-row:first-child {
         border-right: none;
         border-bottom: 1px solid var(--border);
     }
     /* Genre pills: left-align on narrow screens (wrapping right-align gets messy) */
-    .entity-header-grid .rst-genres-row .rst-value {
+    .entity-header-grid .stats-table-genres-row .stats-table-value {
         justify-content: flex-start;
     }
     /* Pills: full-width horizontal row */

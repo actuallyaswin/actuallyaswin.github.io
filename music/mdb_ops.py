@@ -482,6 +482,7 @@ CREATE TABLE IF NOT EXISTS canonical_lists (
     short_name   TEXT,               -- "RS 500" — compact label for tight UI
     source_url   TEXT,
     total_count  INTEGER NOT NULL,
+    publication  TEXT,               -- groups lists on the Lists page, e.g. 'rollingstone', 'pitchfork', 'other'
     created_at   INTEGER,
     updated_at   INTEGER
 );
@@ -626,6 +627,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE release_soundtrack_meta ADD COLUMN series TEXT",
         "ALTER TABLE collection_items ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE collection_item_media ADD COLUMN image_url TEXT",
+        "ALTER TABLE canonical_lists ADD COLUMN publication TEXT",
     ]:
         try:
             conn.execute(ddl)

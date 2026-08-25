@@ -101,11 +101,11 @@ const ViewList = (() => {
             let html = '';
             for (const key of keys) {
                 html += `<h2 class="list-year-header">${escapeHtml(_groupLabel(key))}</h2>`;
-                html += `<div class="disc-grid">${buckets.get(key).map(_cardHtml).join('')}</div>`;
+                html += `<ul class="disc-grid">${buckets.get(key).map(e => `<li>${_cardHtml(e)}</li>`).join('')}</ul>`;
             }
             gridEl.innerHTML = html;
         } else {
-            gridEl.innerHTML = `<div class="disc-grid">${_sortedEntries().map(_cardHtml).join('')}</div>`;
+            gridEl.innerHTML = `<ul class="disc-grid">${_sortedEntries().map(e => `<li>${_cardHtml(e)}</li>`).join('')}</ul>`;
         }
     }
 
@@ -189,6 +189,13 @@ const ViewList = (() => {
 
         container.innerHTML = `
             <header class="header-long-title">
+                <nav class="genre-breadcrumb">
+                    <a href="?" class="bc-home"><i data-lucide="home"></i></a>
+                    <i data-lucide="chevron-right" class="bc-sep"></i>
+                    <a href="?view=lists" class="bc-link">Lists</a>
+                    <i data-lucide="chevron-right" class="bc-sep"></i>
+                    <span class="bc-current">${escapeHtml(lst.short_name || lst.name)}</span>
+                </nav>
                 <h1>${escapeHtml(lst.name)}</h1>
                 <p class="subtitle">${lst.heard} of ${lst.total} heard</p>
             </header>
@@ -222,7 +229,7 @@ const ViewList = (() => {
                 <section>
                     <div id="listGrid"></div>
                 </section>
-                <aside class="view-sidebar" id="listSidebar">
+                <aside class="view-sidebar">
                     <div class="sidebar-section">
                         <div class="sidebar-progress-card">
                             <div class="sidebar-progress-top">
@@ -238,6 +245,7 @@ const ViewList = (() => {
                         <dl class="nerds-list" style="border:none;border-radius:0">
                             ${lst.matched < lst.total ? `<div class="nerds-row"><dt>Not in library</dt><dd>${lst.total - lst.matched}</dd></div>` : ''}
                             <div class="nerds-row"><dt>Avg completion</dt><dd>${lst.avg_completion}%</dd></div>
+                            ${lst.mainstream_mean != null ? `<div class="nerds-row"><dt>Mainstream score</dt><dd>${Math.round(lst.mainstream_mean)}</dd></div>` : ''}
                         </dl>
                     </div>
                     ${sourceLink ? `<div class="sidebar-section">${sourceLink}</div>` : ''}
@@ -252,6 +260,7 @@ const ViewList = (() => {
         _wireControls();
         _updateControls();
         _renderGrid();
+        lucide.createIcons({ el: container });
     }
 
     function unmount() {}

@@ -33,9 +33,9 @@ const ViewGenre = (() => {
                 <div class="section-header">
                     <h2>Releases</h2>
                 </div>
-                <div id="releasesContainer" class="wide-grid">
-                    ${renderLoading("Loading releases...")}
-                </div>
+                <ul id="releasesContainer" class="wide-grid">
+                    <li>${renderLoading("Loading releases...")}</li>
+                </ul>
             </section>
 
             <footer>
@@ -191,12 +191,12 @@ const ViewGenre = (() => {
             const nameEl = document.getElementById('genreName');
             const name = (nameEl && nameEl.textContent !== 'Loading...' && nameEl.textContent !== 'Genre not found')
                 ? nameEl.textContent : 'this genre';
-            container.innerHTML = `<div class="empty-state">
+            container.innerHTML = `<li class="empty-state">
                 <i data-lucide="tags" class="app-error-icon"></i>
                 <div class="empty-state-title">No releases heard yet for ${escapeHtml(name)}</div>
                 <p class="empty-state-hint">This is a real genre in the taxonomy, but nothing tagged with it
                     is in your listening history yet.</p>
-            </div>`;
+            </li>`;
             return;
         }
 
@@ -210,7 +210,9 @@ const ViewGenre = (() => {
                 totalMinutes,
                 rounded: false
             });
-            container.appendChild(card);
+            const li = document.createElement('li');
+            li.appendChild(card);
+            container.appendChild(li);
         });
 
     }

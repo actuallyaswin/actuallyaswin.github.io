@@ -228,20 +228,6 @@ function renderGenreTags(rows) {
     ).join(', ');
 }
 
-function updateCountLabels(viewMode) {
-    const sel = document.getElementById('countFilter');
-    if (!sel) return;
-    Array.from(sel.options).forEach(opt => {
-        const count = parseInt(opt.value);
-        if (viewMode === 'collage') {
-            const n = COLLAGE_SIZES[count];
-            opt.textContent = `${n}×${n}`;
-        } else {
-            opt.textContent = count;
-        }
-    });
-}
-
 function setupToggleGroup(selector, onChange) {
     const sync = (active) => {
         document.querySelectorAll(selector).forEach(b => {
