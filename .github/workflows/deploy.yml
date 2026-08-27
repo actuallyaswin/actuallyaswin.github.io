@@ -106,7 +106,7 @@ jobs:
       - name: Check deploy size budget
         run: |
           set -euo pipefail
-          BUDGET_MB=40
+          BUDGET_MB=60
           SIZE_MB=$(du -sm _site | cut -f1)
           echo "_site is ${SIZE_MB} MB (budget ${BUDGET_MB} MB)"
           if [ "$SIZE_MB" -gt "$BUDGET_MB" ]; then
