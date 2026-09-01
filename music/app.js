@@ -7,6 +7,7 @@ const VIEWS = {
     'home':            () => ViewHome,
     'year':            () => ViewYear,
     'top':             () => ViewTop,
+    'collage':         () => ViewCollage,
     'artist':          () => ViewArtist,
     'compare':         () => ViewCompare,
     'release':         () => ViewRelease,
