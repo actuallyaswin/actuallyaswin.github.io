@@ -34,8 +34,7 @@ function _searchQuery(q) {
         const VIEW_SHORTCUTS = [
             { label: 'Browse',           view: 'browse',          icon: 'layout-grid' },
             { label: 'Lists',            view: 'lists',           icon: 'list-ordered' },
-            { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
-            { label: 'Trends',          view: 'trends',          icon: 'trending-up' },
+            { label: 'Discover',        view: 'discover',        icon: 'sparkles' },
             { label: 'History',         view: 'history',         icon: 'history' },
             { label: 'Concerts',        view: 'concerts',        icon: 'ticket' },
             { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },

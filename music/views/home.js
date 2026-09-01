@@ -115,7 +115,7 @@ const ViewHome = (() => {
             <section id="homeRecsSection" hidden>
                 <div class="section-header">
                     <h2>Recommendations</h2>
-                    <a href="?view=recommendations" class="home-see-all">See all →</a>
+                    <a href="?view=discover" class="home-see-all">See all →</a>
                 </div>
                 <ul class="disc-grid" id="homeRecsGrid"></ul>
             </section>

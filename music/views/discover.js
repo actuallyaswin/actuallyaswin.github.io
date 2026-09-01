@@ -1,10 +1,20 @@
-const ViewRecommendations = (() => {
+// Discover — merges what used to be two separate shelf-of-cards pages
+// (Recommendations, Trends) into one view with a tab toggle. Both share the
+// same shelfCard/shelfSection/shelfOnActivate rendering from
+// views/shelf-helpers.js; the only real difference is where the data comes
+// from — Recommendations runs ~13 live SQL queries every mount, Trends reads
+// precomputed results from stats_cache (computed offline in Python by
+// mdb.py's _stats_trends() during `stats refresh`). Both load eagerly on
+// mount and are toggled via CSS visibility rather than re-queried on tab
+// switch, since neither is expensive enough to justify lazy loading.
+const ViewDiscover = (() => {
     let _db   = null;
     let _ac = null;
     let _seed = 0;
-    let _shelvesEl = null;
+    let _recShelvesEl = null;
+    let _trendShelvesEl = null;
 
-    // ── Seed-based picker ──────────────────────────────────────────────────────
+    // ── Seed-based picker (Recommendations only) ────────────────────────────────
     function _pick(pool, n, shelfIdx = 0, exclude = new Set()) {
         if (!pool || !pool.length) return [];
         const eligible = pool.filter(r => !exclude.has(r[0]));
@@ -18,7 +28,7 @@ const ViewRecommendations = (() => {
     }
 
     // ── Row → card mapping — row is [id, title, art, artist, year, spotifyId] ──
-    function _cardsFrom(rows) {
+    function _recCardsFrom(rows) {
         return rows.map(r => (
             { id: r[0], title: r[1], art: r[2], artist: r[3], year: r[4], spotifyId: r[5] }
         ));
@@ -34,7 +44,7 @@ const ViewRecommendations = (() => {
     const ART   = `COALESCE(r.album_art_thumb_url, r.album_art_url)`;
     const COLS  = `r.id, r.title, ${ART}, a.name, r.release_year, r.spotify_id`;
 
-    // ── Shelf loaders ──────────────────────────────────────────────────────────
+    // ── Recommendations shelf loaders ───────────────────────────────────────────
 
     function _favoritesThisYear(now) {
         const since = now - 90 * 86400;
@@ -281,9 +291,7 @@ const ViewRecommendations = (() => {
         `);
     }
 
-    // ── Main loader ────────────────────────────────────────────────────────────
-
-    function _load() {
+    function _loadRecommendations() {
         const now = Math.floor(Date.now() / 1000);
         const dt  = new Date();
         const cy  = dt.getFullYear();
@@ -298,7 +306,6 @@ const ViewRecommendations = (() => {
             rows.forEach(r => seen.add(r[0]));
             return rows;
         }
-
 
         const favYear   = picked(_favoritesThisYear(now), SHELF_DESKTOP, 0);
 
@@ -341,9 +348,63 @@ const ViewRecommendations = (() => {
             ['Short-Form Favourites',      'Most-played EPs and singles.',                                              shortForm],
         ];
 
-        renderShelfPage(_shelvesEl, 'recSubtitle',
-            shelves.map(([title, desc, rows]) => [title, desc, _cardsFrom(rows)]),
+        renderShelfPage(_recShelvesEl, 'recSubtitle',
+            shelves.map(([title, desc, rows]) => [title, desc, _recCardsFrom(rows)]),
             'shelf', 'shelves');
+    }
+
+    // ── Trends shelf loaders ─────────────────────────────────────────────────────
+
+    function _cache(key) {
+        const res = _db.exec('SELECT value_json FROM stats_cache WHERE key = ?', [key])[0];
+        return res ? JSON.parse(res.values[0][0]) : [];
+    }
+
+    function _trendCardsFrom(key) {
+        return _cache(key).map(r => ({
+            id: r.release_id, title: r.title, art: r.art_url, artist: r.artist,
+            year: r.release_year, spotifyId: r.spotify_id,
+        }));
+    }
+
+    function _loadTrends() {
+        const shelves = [
+            [
+                'Hyper-Fixation Phases',
+                'Albums where at least 80% of all-time plays landed inside a single 14-day window.',
+                _trendCardsFrom('trendsHyperFixation'),
+            ],
+            [
+                'Burnout Trajectory',
+                'Albums with a burst of plays that dominated their total and were the last thing ever played on them.',
+                _trendCardsFrom('trendsBurnout'),
+            ],
+            [
+                'Sequential Album Loop',
+                'Albums played straight through in track order, start to finish, with no long gaps between tracks.',
+                _trendCardsFrom('trendsSequentialLoop'),
+            ],
+            [
+                'Post-Concert Spike',
+                "Albums that got a surge of plays in the week after Aswin saw that artist live.",
+                _trendCardsFrom('trendsPostConcertSpike'),
+            ],
+            [
+                'One-Hit Wonders',
+                "Artists where a single track accounts for at least 90% of all their plays.",
+                _trendCardsFrom('trendsOneHitWonder'),
+            ],
+        ];
+
+        renderShelfPage(_trendShelvesEl, 'trendSubtitle', shelves, 'trend');
+    }
+
+    // ── Tabs ─────────────────────────────────────────────────────────────────────
+
+    function _showTab(tab) {
+        const showRec = tab === 'recommendations';
+        document.getElementById('recPane').hidden = !showRec;
+        document.getElementById('trendPane').hidden = showRec;
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────
@@ -351,14 +412,40 @@ const ViewRecommendations = (() => {
     function mount(container, db) {
         _db   = db;
         _seed = _db.exec('SELECT COUNT(*) FROM listens')[0].values[0][0];
+        setPageTitle('Discover');
 
-        const { shelvesEl, ac } = shelfPageMount(container, {
-            title: 'Recommendations', shelvesId: 'recShelves', subtitleId: 'recSubtitle',
-        });
-        _shelvesEl = shelvesEl;
-        _ac = ac;
+        container.innerHTML = `
+            <header class="rec-header">
+                <h1>Discover</h1>
+                <div class="control-block" style="margin:0.5rem auto 0">
+                    <div class="sort-controls">
+                        <button class="sort-btn active" data-tab="recommendations">Recommendations</button>
+                        <button class="sort-btn" data-tab="trends">Trends</button>
+                    </div>
+                </div>
+            </header>
+            <div id="recPane">
+                <p class="subtitle" id="recSubtitle"></p>
+                <div id="recShelves" class="rec-shelves"></div>
+            </div>
+            <div id="trendPane" hidden>
+                <p class="subtitle" id="trendSubtitle"></p>
+                <div id="trendShelves" class="rec-shelves"></div>
+            </div>
+        `;
 
-        _load();
+        _ac = new AbortController();
+        _recShelvesEl = document.getElementById('recShelves');
+        _trendShelvesEl = document.getElementById('trendShelves');
+        _recShelvesEl.addEventListener('click', shelfOnActivate, { signal: _ac.signal });
+        _recShelvesEl.addEventListener('keydown', shelfOnActivate, { signal: _ac.signal });
+        _trendShelvesEl.addEventListener('click', shelfOnActivate, { signal: _ac.signal });
+        _trendShelvesEl.addEventListener('keydown', shelfOnActivate, { signal: _ac.signal });
+
+        setupToggleGroup('[data-tab]', btn => _showTab(btn.dataset.tab));
+
+        _loadRecommendations();
+        _loadTrends();
     }
 
     function unmount() {
