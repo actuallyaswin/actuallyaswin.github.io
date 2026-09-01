@@ -5,7 +5,6 @@ let _currentView = null;
 // against a local DB. Shipping it puts its PIN gate in every visitor's hands.
 const VIEWS = {
     'home':            () => ViewHome,
-    'year':            () => ViewYear,
     'top':             () => ViewTop,
     'collage':         () => ViewCollage,
     'artist':          () => ViewArtist,
@@ -138,7 +137,6 @@ window.addEventListener('popstate', e => {
         'artist':       'Loading artist…',
         'release':      'Loading release…',
         'genre':        'Loading genre…',
-        'year':         'Loading year…',
         'top':          'Loading…',
         'concerts':     'Loading concerts…',
     };

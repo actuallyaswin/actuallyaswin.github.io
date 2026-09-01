@@ -172,7 +172,7 @@ const ViewHome = (() => {
         let since = 'for years';
         if (years && years.values[0][0] !== null) {
             const [first, latest] = years.values[0];
-            since = `<a href="?view=year&year=${latest}">since ${first}</a>`;
+            since = `<a href="?view=top&type=artists&ly=${latest}">since ${first}</a>`;
         }
 
         let listeningTime = null;

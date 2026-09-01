@@ -11,6 +11,11 @@ const ViewTop = (() => {
     let viewMode = 'list';
     // albums/tracks only (existing Released filter)
     let releaseYear = 'all';
+    // all entity types -- 'all' or a specific calendar year, filtering by
+    // when a listen happened (listens.year) rather than release_year. Ported
+    // from the standalone Year view this replaced -- unlike releaseYear,
+    // this applies to Artists too.
+    let listenYear = 'all';
     // aoty_id as string, or 'all'
     let genreFilter = 'all';
     // albums only -- 'all' | 'album' | 'ep' | 'single' (releases.type)
@@ -32,6 +37,9 @@ const ViewTop = (() => {
     // -- same cache-then-render split browse.js uses for Genre/Platform.
     let _yearOptions = [{ value: 'all', label: 'All years' }];
     let _genreOptions = [{ value: 'all', label: 'All genres' }];
+    let _listenYearOptions = [{ value: 'all', label: 'All years' }];
+    let _minListenYear = null;
+    let _maxListenYear = null;
 
     const COUNT_OPTIONS = [10, 20, 50, 100].map(n => ({ value: n, label: String(n) }));
     // Same value set as browse.js's TYPE_OPTIONS / 'rtype' param, so a URL
@@ -87,6 +95,16 @@ const ViewTop = (() => {
         return `AND ${releaseIdExpr} IN (SELECT release_id FROM release_genres WHERE aoty_genre_id = ${gid})`;
     }
 
+    // "Listened In" year — filters by when a listen happened (l.year), not
+    // by any entity's own release/formed year. Available to every entity
+    // type, unlike releaseYear (albums/tracks only) — an artist has no
+    // single release year of its own to filter by.
+    function _listenYearSql() {
+        const ly = parseInt(listenYear);
+        if (listenYear === 'all' || isNaN(ly)) return '';
+        return `AND l.year = ${ly}`;
+    }
+
     // Each entry: { title, sortOptions, hasRange, hasYearFilter, query(),
     // cardHref(id), buildCardFields(row) }
     const ENTITY_CONFIG = {
@@ -128,7 +146,7 @@ const ViewTop = (() => {
                     LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role IN (${PRIMARY_ROLES_SQL})
                     LEFT JOIN tracks t ON ta.track_id = t.id ${genreClause}
                     LEFT JOIN listens l ON t.id = l.track_id ${tsFilter}
-                    WHERE a.hidden = 0
+                    WHERE a.hidden = 0 ${_listenYearSql()}
                     GROUP BY a.id
                     HAVING total_listens > 0
                     ORDER BY ${orderClause}
@@ -178,7 +196,7 @@ const ViewTop = (() => {
                     LEFT JOIN artists a ON a.id = r.primary_artist_id
                     LEFT JOIN tracks t ON t.release_id = r.id
                     LEFT JOIN listens l ON l.track_id = t.id
-                    WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) ${yearFilter} ${genreClause} ${formatClause}
+                    WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) ${yearFilter} ${genreClause} ${formatClause} ${_listenYearSql()}
                     GROUP BY r.id
                     HAVING total_listens > 0
                     ORDER BY ${orderClause}
@@ -233,7 +251,7 @@ const ViewTop = (() => {
                     FROM tracks t
                     LEFT JOIN releases r ON t.release_id = r.id
                     LEFT JOIN listens l ON t.id = l.track_id
-                    WHERE t.hidden = 0 ${yf} ${genreClause}
+                    WHERE t.hidden = 0 ${yf} ${genreClause} ${_listenYearSql()}
                     GROUP BY t.id
                     HAVING total_listens > 0
                     ORDER BY ${orderClause}
@@ -271,6 +289,10 @@ const ViewTop = (() => {
                 label: 'Genre', options: () => _genreOptions, getValue: () => genreFilter,
                 onPick: value => { genreFilter = value; _syncUrl(); _load(); },
             },
+            listenYear: {
+                label: 'Listened In', options: () => _listenYearOptions, getValue: () => listenYear,
+                onPick: value => { listenYear = value; _syncUrl(); _refreshListenYearNav(); _load(); },
+            },
             format: {
                 label: 'Format', options: FORMAT_OPTIONS, getValue: () => formatFilter,
                 onPick: value => { formatFilter = value; _syncUrl(); _load(); },
@@ -291,6 +313,7 @@ const ViewTop = (() => {
         if (params.count && [10,20,50,100].includes(+params.count)) countLimit = +params.count;
         if (params.display && ['list','tiles'].includes(params.display)) viewMode = params.display;
         if (params.year) releaseYear = params.year;
+        if (params.ly) listenYear = params.ly;
         if (params.genre) genreFilter = params.genre;
         if (['all', 'album', 'ep', 'single'].includes(params.rtype)) formatFilter = params.rtype;
 
@@ -299,6 +322,7 @@ const ViewTop = (() => {
         // stale (default "All ...") cache would show through until some
         // other action forced a re-render.
         if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
+        _populateListenYearFilter();
         if (ENTITY_CONFIG[entityType].hasGenreFilter) _populateGenreFilter();
         container.innerHTML = _renderShell();
         _ac = new AbortController();
@@ -321,6 +345,7 @@ const ViewTop = (() => {
             ${ENTITY_CONFIG[entityType]?.hasRange ? _rangeControlsHtml() : ''}
             ${_countControlsHtml()}
             ${ENTITY_CONFIG[entityType]?.hasYearFilter ? _yearFilterHtml() : ''}
+            ${_listenYearFilterHtml()}
             ${ENTITY_CONFIG[entityType]?.hasGenreFilter ? _genreFilterHtml() : ''}
             ${ENTITY_CONFIG[entityType]?.hasFormatFilter ? _formatFilterHtml() : ''}
             ${_displayControlsHtml()}
@@ -334,6 +359,10 @@ const ViewTop = (() => {
             <div id="topContainer" class="image-grid">
                 ${renderLoading()}
             </div>
+            <section class="year-section" id="listenYearGenresSection" style="display:none">
+                <h2 id="listenYearGenresTitle">Top Genres</h2>
+                <div id="listenYearGenres" class="genre-list"></div>
+            </section>
             <footer>
                 <p>Powered by <a href="https://github.com/sql-js/sql.js" target="_blank">sql.js</a></p>
             </footer>
@@ -396,6 +425,24 @@ const ViewTop = (() => {
             </div>`;
     }
 
+    // Applies to every entity type (unlike Released, which is albums/tracks
+    // only) — ported from views/year.js's prev/next arrows + <select>, now a
+    // dropdown + arrow pair to match this page's own filter styling.
+    function _listenYearFilterHtml() {
+        const ly = parseInt(listenYear);
+        const atMin = listenYear !== 'all' && !isNaN(ly) && ly <= _minListenYear;
+        const atMax = listenYear !== 'all' && !isNaN(ly) && ly >= _maxListenYear;
+        return `
+            <div class="control-block">
+                <span class="control-block-label">Listened In</span>
+                <div class="sort-controls">
+                    <button class="year-nav-arrow" id="listenYearPrev" aria-label="Previous year" title="Previous year"${listenYear === 'all' || atMin ? ' disabled' : ''}>←</button>
+                    ${dropdownHtml('listenYear', 'Listened In', _listenYearOptions, () => listenYear)}
+                    <button class="year-nav-arrow" id="listenYearNext" aria-label="Next year" title="Next year"${listenYear === 'all' || atMax ? ' disabled' : ''}>→</button>
+                </div>
+            </div>`;
+    }
+
     function _genreFilterHtml() {
         return `
             <div class="control-block">
@@ -432,6 +479,7 @@ const ViewTop = (() => {
         const p = new URLSearchParams({ view: 'top', type: entityType, sort: sortBy, count: countLimit, display: viewMode });
         if (ENTITY_CONFIG[entityType]?.hasRange) p.set('range', range);
         if (ENTITY_CONFIG[entityType]?.hasYearFilter) p.set('year', releaseYear);
+        if (listenYear !== 'all') p.set('ly', listenYear);
         if (ENTITY_CONFIG[entityType]?.hasGenreFilter) p.set('genre', genreFilter);
         if (ENTITY_CONFIG[entityType]?.hasFormatFilter) p.set('rtype', formatFilter);
         history.replaceState(Object.fromEntries(p), '', '?' + p.toString());
@@ -467,6 +515,23 @@ const ViewTop = (() => {
             });
             navigate({ view: 'collage' });
         });
+
+        document.getElementById('listenYearPrev')?.addEventListener('click', () => {
+            const ly = parseInt(listenYear);
+            if (isNaN(ly) || ly <= _minListenYear) return;
+            listenYear = String(ly - 1);
+            _syncUrl();
+            _refreshListenYearNav();
+            _load();
+        });
+        document.getElementById('listenYearNext')?.addEventListener('click', () => {
+            const ly = parseInt(listenYear);
+            if (isNaN(ly) || ly >= _maxListenYear) return;
+            listenYear = String(ly + 1);
+            _syncUrl();
+            _refreshListenYearNav();
+            _load();
+        });
     }
 
     function _rerenderForModeChange() {
@@ -480,6 +545,7 @@ const ViewTop = (() => {
             // Populate before rendering, same reason as mount() -- dropdownHtml()
             // bakes the trigger's label from the cache at render time.
             if (ENTITY_CONFIG[entityType].hasYearFilter) _populateYearFilter();
+            _populateListenYearFilter();
             if (ENTITY_CONFIG[entityType].hasGenreFilter) _populateGenreFilter();
             container.innerHTML = _renderShell();
             _setupControls();
@@ -507,6 +573,66 @@ const ViewTop = (() => {
             .concat(rows.map(({ id, name }) => ({ value: String(id), label: name })));
     }
 
+    // Ported from views/year.js's MIN_YEAR/MAX_YEAR — min/max only need
+    // computing once per page load, not once per mount.
+    function _populateListenYearFilter() {
+        if (_minListenYear === null) {
+            const res = _db.exec(`SELECT MIN(year), MAX(year) FROM listens WHERE year IS NOT NULL`)[0];
+            if (res && res.values[0][0] !== null) {
+                _minListenYear = res.values[0][0];
+                _maxListenYear = res.values[0][1];
+            } else {
+                _minListenYear = 1960;
+                _maxListenYear = new Date().getFullYear();
+            }
+        }
+        _listenYearOptions = [{ value: 'all', label: 'All years' }];
+        for (let y = _maxListenYear; y >= _minListenYear; y--) {
+            _listenYearOptions.push({ value: String(y), label: String(y) });
+        }
+    }
+
+    function _refreshListenYearNav() {
+        const container = document.getElementById('view-container');
+        if (container) refreshDropdownTrigger(container, 'listenYear', _listenYearOptions, () => listenYear);
+        const ly = parseInt(listenYear);
+        const prev = document.getElementById('listenYearPrev');
+        const next = document.getElementById('listenYearNext');
+        if (prev) prev.disabled = listenYear === 'all' || isNaN(ly) || ly <= _minListenYear;
+        if (next) next.disabled = listenYear === 'all' || isNaN(ly) || ly >= _maxListenYear;
+    }
+
+    // Genre breakdown for the selected listen year — ported from
+    // views/year.js's loadYearGenres(). Only meaningful once a specific
+    // year is picked (an "All years" breakdown is just the Genres view).
+    function _loadListenYearGenres() {
+        const section = document.getElementById('listenYearGenresSection');
+        const el = document.getElementById('listenYearGenres');
+        if (!section || !el) return;
+        const ly = parseInt(listenYear);
+        if (listenYear === 'all' || isNaN(ly)) { section.style.display = 'none'; return; }
+
+        const result = _db.exec(`
+            SELECT g.aoty_id, g.name, COUNT(*) as listen_count
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id
+            JOIN release_genres rg ON t.release_id = rg.release_id AND rg.is_primary = 1
+            JOIN genres g ON rg.aoty_genre_id = g.aoty_id
+            WHERE l.year = ${ly} AND t.hidden = 0
+            GROUP BY g.aoty_id
+            ORDER BY listen_count DESC
+            LIMIT 10
+        `)[0];
+
+        if (!result || result.values.length === 0) { section.style.display = 'none'; return; }
+        const title = document.getElementById('listenYearGenresTitle');
+        if (title) title.textContent = `Top Genres Listened In ${ly}`;
+        el.innerHTML = result.values.map(([id, name, count]) =>
+            `<a href="?view=genre&id=${id}" class="genre-tag">${escapeHtml(name)}</a> <span class="genre-year-count">(${formatNumber(count)})</span>`
+        ).join(', ');
+        section.style.display = '';
+    }
+
     function _load() {
         const result = ENTITY_CONFIG[entityType].query();
         cachedResults = result ? result.values.map(ENTITY_CONFIG[entityType].buildCardFields) : [];
@@ -515,6 +641,7 @@ const ViewTop = (() => {
         const subtitleEl = document.getElementById('topSubtitle');
         if (subtitleEl) subtitleEl.textContent = `${formatNumber(cachedResults.length)} ${entityType}`;
         _render();
+        _loadListenYearGenres();
     }
 
     function _render() {
