@@ -1,15 +1,14 @@
 // Discover — merges what used to be two separate shelf-of-cards pages
 // (Recommendations, Trends) into one view with a tab toggle. Both share the
-// same shelfCard/shelfSection/shelfOnActivate rendering from
-// views/shelf-helpers.js; the only real difference is where the data comes
-// from — Recommendations runs ~13 live SQL queries every mount, Trends reads
-// precomputed results from stats_cache (computed offline in Python by
-// mdb.py's _stats_trends() during `stats refresh`). Both load eagerly on
-// mount and are toggled via CSS visibility rather than re-queried on tab
-// switch, since neither is expensive enough to justify lazy loading.
+// same shelfCard/shelfSection rendering from views/shelf-helpers.js; the only
+// real difference is where the data comes from — Recommendations runs ~13
+// live SQL queries every mount, Trends reads precomputed results from
+// stats_cache (computed offline in Python by mdb.py's _stats_trends() during
+// `stats refresh`). Both load eagerly on mount and are toggled via CSS
+// visibility rather than re-queried on tab switch, since neither is
+// expensive enough to justify lazy loading.
 const ViewDiscover = (() => {
     let _db   = null;
-    let _ac = null;
     let _seed = 0;
     let _recShelvesEl = null;
     let _trendShelvesEl = null;
@@ -434,13 +433,8 @@ const ViewDiscover = (() => {
             </div>
         `;
 
-        _ac = new AbortController();
         _recShelvesEl = document.getElementById('recShelves');
         _trendShelvesEl = document.getElementById('trendShelves');
-        _recShelvesEl.addEventListener('click', shelfOnActivate, { signal: _ac.signal });
-        _recShelvesEl.addEventListener('keydown', shelfOnActivate, { signal: _ac.signal });
-        _trendShelvesEl.addEventListener('click', shelfOnActivate, { signal: _ac.signal });
-        _trendShelvesEl.addEventListener('keydown', shelfOnActivate, { signal: _ac.signal });
 
         setupToggleGroup('[data-tab]', btn => _showTab(btn.dataset.tab));
 
@@ -449,7 +443,6 @@ const ViewDiscover = (() => {
     }
 
     function unmount() {
-        if (_ac) { _ac.abort(); _ac = null; }
         _db = null;
     }
 
