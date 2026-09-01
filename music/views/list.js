@@ -4,7 +4,6 @@
 // view existing at all) a body-level modal has no way to close itself when
 // the SPA router navigates away from under it via a normal <a> click.
 const ViewList = (() => {
-    let _db = null;
     let _lst = null;
     // 'rank' (list's own order) | 'completion-asc' | 'completion-desc'
     let _sortMode = 'rank';
@@ -164,7 +163,6 @@ const ViewList = (() => {
     }
 
     function mount(container, db, params) {
-        _db = db;
         _sortMode = 'rank';
         _groupByYear = false;
         _lastRandomPick = null;

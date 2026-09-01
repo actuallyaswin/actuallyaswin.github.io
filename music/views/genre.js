@@ -21,11 +21,11 @@ const ViewGenre = (() => {
             <div class="stats-row">
                 <section id="genreArtistsSection" hidden>
                     <h2>Top Artists</h2>
-                    <div class="lang-list" id="genreArtistsList"></div>
+                    <div class="bar-list no-drill" id="genreArtistsList"></div>
                 </section>
                 <section id="genreTrendSection" hidden>
                     <h2>Listens by Year</h2>
-                    <div class="lang-list" id="genreTrendList"></div>
+                    <div class="bar-list no-drill" id="genreTrendList"></div>
                 </section>
             </div>
 
@@ -225,17 +225,16 @@ const ViewGenre = (() => {
             const opacity = (0.35 + 0.65 * (n / max)).toFixed(2);
             const labelHtml = formatLabel ? formatLabel(label) : escapeHtml(String(label));
             const codeHtml = href
-                ? `<a href="${href}" class="lang-code lang-code-link">${labelHtml}</a>`
-                : `<span class="lang-code">${labelHtml}</span>`;
+                ? `<a href="${href}" class="bar-code bar-code-link">${labelHtml}</a>`
+                : `<span class="bar-code">${labelHtml}</span>`;
             return `
-                <div class="lang-row lang-row-static">
+                <div class="bar-row bar-row-static">
                     ${codeHtml}
-                    <div class="lang-bar-track">
-                        <div class="lang-bar-fill" style="width:${pct}%;background:var(--primary);opacity:${opacity}"></div>
+                    <div class="bar-track">
+                        <div class="bar-fill" style="width:${pct}%;background:var(--primary);opacity:${opacity}"></div>
                     </div>
-                    <span class="lang-count">${formatNumber(n)}</span>
-                    <span class="lang-pct">${pct}%</span>
-                    <span></span>
+                    <span class="bar-count">${formatNumber(n)}</span>
+                    <span class="bar-pct">${pct}%</span>
                 </div>`;
         }).join('');
     }

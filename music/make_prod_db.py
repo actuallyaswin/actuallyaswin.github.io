@@ -44,7 +44,7 @@ def _strip(conn):
     # is the exception on artists -- views/artist.js and views/compare.js
     # query it live for the popularity gauge/metric row, so it stays.
     for col in ('bio', 'disambiguation', 'formed_year', 'disbanded_year', 'image_source',
-                'is_supergroup', 'mb_attempted', 'spotify_followers'):
+                'mb_attempted', 'spotify_followers'):
         conn.execute(f'ALTER TABLE artists DROP COLUMN {col}')
     for col in ('date_source', 'album_art_source', 'stat_tracks_heard', 'upc',
                 'album_art_height', 'album_art_width', 'album_art_thumb_height', 'album_art_thumb_width',

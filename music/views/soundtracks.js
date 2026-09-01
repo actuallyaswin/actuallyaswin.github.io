@@ -173,7 +173,7 @@ const ViewSoundtracks = (() => {
                     : _groupLabel(key);
                 headerInner = `${escapeHtml(label)} ${countHtml}`;
             }
-            const chevron = `<span class="lang-chevron${isOpen ? ' expanded' : ''}">▶</span>`;
+            const chevron = `<span class="bar-chevron${isOpen ? ' expanded' : ''}">▶</span>`;
             html += `<h2 class="list-year-header vgst-group-header vgst-group-header-clickable" data-vgst-key="${escapeHtml(storageKey)}">${headerInner}${chevron}</h2>`;
             html += `<ul class="disc-grid"${isOpen ? '' : ' hidden'}>${group.map(r => `<li>${_cardHtml(r)}</li>`).join('')}</ul>`;
         }
@@ -209,7 +209,7 @@ const ViewSoundtracks = (() => {
             const header = e.target.closest('.vgst-group-header-clickable');
             if (!header || !container.contains(header)) return;
             const panel = header.nextElementSibling;
-            const chevron = header.querySelector('.lang-chevron');
+            const chevron = header.querySelector('.bar-chevron');
             if (!panel || !chevron) return;
             const key = header.dataset.vgstKey;
             // opening if it was hidden

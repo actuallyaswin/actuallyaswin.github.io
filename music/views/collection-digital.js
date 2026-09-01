@@ -1,6 +1,10 @@
 const ViewCollectionDigital = (() => {
     let _db = null;
 
+    // Deterministic spine colour — fallback when no art / CORS blocked.
+    // Same formula and constants as collection-physical.js's copy; keep them
+    // in sync so the same release doesn't render a different spine color
+    // depending which collection view you're looking at.
     function _spineColor(seed) {
         let h = 0;
         for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
@@ -12,6 +16,8 @@ const ViewCollectionDigital = (() => {
         return Math.round(Math.max(14, Math.min(30, 14 + (runtime_min / 80) * 16)));
     }
 
+    // Same order as collection-physical.js's copy — kept in sync so genre
+    // sections don't reorder depending which collection view you're on.
     const GENRE_ORDER = [
         'Hip-Hop / Rap', 'Electronic', 'Rock / Alternative', 'Funk / Soul',
         'Jazz', 'Pop', 'Classical / Orchestral', 'Experimental', 'Other',
@@ -47,7 +53,6 @@ const ViewCollectionDigital = (() => {
     function _sortItems(items, sortBy) {
         const copy = [...items];
         if (sortBy === 'alpha')   return copy.sort((a, b) => (a.title || '').localeCompare(b.title));
-        if (sortBy === 'artist')  return copy.sort((a, b) => (a.artist || '').localeCompare(b.artist));
         if (sortBy === 'year')    return copy.sort((a, b) => (b.release_year || 0) - (a.release_year || 0));
         if (sortBy === 'listens') return copy.sort((a, b) => (b.listens || 0) - (a.listens || 0));
         if (sortBy === 'first')   return copy.sort((a, b) => (a.first_listen || 0) - (b.first_listen || 0));
@@ -68,14 +73,19 @@ const ViewCollectionDigital = (() => {
             sorted.forEach(r => {
                 const tr = document.createElement('tr');
                 tr.style.cursor = 'pointer';
+                tr.tabIndex = 0;
                 tr.innerHTML = `
                     <td>${escapeHtml(r.title || '')}</td>
                     <td style="color:var(--text-secondary)">${escapeHtml(r.artist || '')}</td>
                     <td style="color:var(--text-tertiary)">${r.release_year || '—'}</td>
                     <td class="sl-listens">${r.listens ? formatNumber(r.listens) : '—'}</td>
                 `;
-                tr.addEventListener('click', () => {
-                    window.open(`index.html${releaseHref(r.id, r.slug)}`, '_blank');
+                const openRelease = () => window.open(`index.html${releaseHref(r.id, r.slug)}`, '_blank');
+                tr.addEventListener('click', openRelease);
+                tr.addEventListener('keydown', e => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    openRelease();
                 });
                 tbody.appendChild(tr);
             });
@@ -231,6 +241,16 @@ const ViewCollectionDigital = (() => {
 
         const page     = document.getElementById('collDigitalPage');
         const releases = _loadReleases();
+
+        if (!releases.length) {
+            page.innerHTML = renderEmptyState(
+                'No digital collection yet',
+                'Releases show up here once they have at least one listen on file.',
+                'disc-3'
+            );
+            lucide.createIcons();
+            return;
+        }
 
         page.innerHTML = '';
 

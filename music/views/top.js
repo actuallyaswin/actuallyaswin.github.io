@@ -15,6 +15,8 @@ const ViewTop = (() => {
     let releaseYear = 'all';
     // aoty_id as string, or 'all'
     let genreFilter = 'all';
+    // albums only -- 'all' | 'album' | 'ep' | 'single' (releases.type)
+    let formatFilter = 'all';
     let cachedResults = [];
 
     // Collage-mode theme: 'quilt' (plain grid), 'captioned' (grid + bottom-
@@ -44,6 +46,14 @@ const ViewTop = (() => {
     let _genreOptions = [{ value: 'all', label: 'All genres' }];
 
     const COUNT_OPTIONS = [10, 20, 50, 100].map(n => ({ value: n, label: String(n) }));
+    // Same value set as browse.js's TYPE_OPTIONS / 'rtype' param, so a URL
+    // built by either view means the same thing.
+    const FORMAT_OPTIONS = [
+        { value: 'all',    label: 'All formats' },
+        { value: 'album',  label: 'Album' },
+        { value: 'ep',     label: 'EP' },
+        { value: 'single', label: 'Single' },
+    ];
     const RANGE_OPTIONS = [
         { value: 'this-week', label: 'This Week' }, { value: 'this-month', label: 'This Month' },
         { value: 'this-year', label: 'This Year' }, { value: 'week', label: 'Last Week' },
@@ -154,6 +164,7 @@ const ViewTop = (() => {
             hasRange: false,
             hasYearFilter: true,
             hasGenreFilter: true,
+            hasFormatFilter: true,
             query() {
                 let orderClause;
                 if (sortBy === 'minutes')          orderClause = 'total_minutes DESC';
@@ -163,6 +174,7 @@ const ViewTop = (() => {
                 const yearInt = parseInt(releaseYear);
                 const yearFilter = releaseYear !== 'all' && !isNaN(yearInt) ? `AND r.release_year = ${yearInt}` : '';
                 const genreClause = _genreFilterSql('r.id');
+                const formatClause = ['album', 'ep', 'single'].includes(formatFilter) ? `AND r.type = '${formatFilter}'` : '';
 
                 return _db.exec(`
                     SELECT
@@ -178,7 +190,7 @@ const ViewTop = (() => {
                     LEFT JOIN artists a ON a.id = r.primary_artist_id
                     LEFT JOIN tracks t ON t.release_id = r.id
                     LEFT JOIN listens l ON l.track_id = t.id
-                    WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) ${yearFilter} ${genreClause}
+                    WHERE r.hidden = 0 AND (a.id IS NULL OR a.hidden = 0) ${yearFilter} ${genreClause} ${formatClause}
                     GROUP BY r.id
                     HAVING total_listens > 0
                     ORDER BY ${orderClause}
@@ -271,6 +283,10 @@ const ViewTop = (() => {
                 label: 'Genre', options: () => _genreOptions, getValue: () => genreFilter,
                 onPick: value => { genreFilter = value; _syncUrl(); _load(); },
             },
+            format: {
+                label: 'Format', options: FORMAT_OPTIONS, getValue: () => formatFilter,
+                onPick: value => { formatFilter = value; _syncUrl(); _load(); },
+            },
             topsterCount: {
                 label: 'Count', options: TOPSTER_COUNT_OPTIONS, getValue: () => topsterCount,
                 onPick: value => {
@@ -304,6 +320,7 @@ const ViewTop = (() => {
         if (params.display && ['list','tiles','collage'].includes(params.display)) viewMode = params.display;
         if (params.year) releaseYear = params.year;
         if (params.genre) genreFilter = params.genre;
+        if (['all', 'album', 'ep', 'single'].includes(params.rtype)) formatFilter = params.rtype;
         if (params.grid && /^\d+x\d+$/.test(params.grid)) {
             const [rows, cols] = params.grid.split('x').map(Number);
             if (rows >= 1 && rows <= 10 && cols >= 1 && cols <= 10) gridShape = { rows, cols };
@@ -344,6 +361,7 @@ const ViewTop = (() => {
             ${viewMode !== 'collage' ? _countControlsHtml() : ''}
             ${ENTITY_CONFIG[entityType]?.hasYearFilter ? _yearFilterHtml() : ''}
             ${ENTITY_CONFIG[entityType]?.hasGenreFilter ? _genreFilterHtml() : ''}
+            ${ENTITY_CONFIG[entityType]?.hasFormatFilter ? _formatFilterHtml() : ''}
             ${_displayControlsHtml()}
         `;
         return `
@@ -522,6 +540,16 @@ const ViewTop = (() => {
             </div>`;
     }
 
+    function _formatFilterHtml() {
+        return `
+            <div class="control-block">
+                <span class="control-block-label">Format</span>
+                <div class="sort-controls">
+                    ${dropdownHtml('format', 'Format', FORMAT_OPTIONS, () => formatFilter)}
+                </div>
+            </div>`;
+    }
+
     function _displayControlsHtml() {
         return `
             <div class="control-block">
@@ -539,6 +567,7 @@ const ViewTop = (() => {
         if (ENTITY_CONFIG[entityType]?.hasRange) p.set('range', range);
         if (ENTITY_CONFIG[entityType]?.hasYearFilter) p.set('year', releaseYear);
         if (ENTITY_CONFIG[entityType]?.hasGenreFilter) p.set('genre', genreFilter);
+        if (ENTITY_CONFIG[entityType]?.hasFormatFilter) p.set('rtype', formatFilter);
         if (viewMode === 'collage') {
             p.set('theme', collageTheme);
             if (collageTheme === 'topster') p.set('topsterCount', topsterCount);
@@ -553,6 +582,7 @@ const ViewTop = (() => {
             sortBy = 'listens';
             releaseYear = 'all';
             genreFilter = 'all';
+            formatFilter = 'all';
             _syncUrl();
             // tear down tracks' virtualized-scroll listener/RAF before switching away
             unmount();
@@ -706,7 +736,8 @@ const ViewTop = (() => {
 
         if (cachedResults.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = renderLoading(`No ${entityType} found`);
+            const icon = entityType === 'artists' ? 'mic-2' : entityType === 'tracks' ? 'music' : 'disc-3';
+            container.innerHTML = `<li>${renderEmptyState(`No ${entityType} found`, 'Try a different filter, range, or year.', icon)}</li>`;
             return;
         }
 
@@ -745,6 +776,13 @@ const ViewTop = (() => {
                 const li = document.createElement('li');
                 if (i >= countLimit) li.style.display = 'none';
                 li.appendChild(card);
+                if (entityType === 'artists') {
+                    const compareLink = document.createElement('a');
+                    compareLink.className = 'row-compare-link';
+                    compareLink.href = `?view=compare&a=${encodeURIComponent(f.id)}`;
+                    compareLink.innerHTML = `<i data-lucide="git-compare"></i> Compare`;
+                    li.appendChild(compareLink);
+                }
                 listEl.appendChild(li);
             });
             _renderListSidebar();

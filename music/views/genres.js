@@ -223,17 +223,16 @@ const ViewGenres = (() => {
             const rows = sorted.map(g => {
                 const pct = ((g.plays / max) * 100).toFixed(1);
                 return `
-                    <div class="lang-row lang-row-static">
-                        <a href="?view=genre&id=${g.id}" class="lang-code lang-code-link">${escapeHtml(g.name)}</a>
-                        <div class="lang-bar-track">
-                            <div class="lang-bar-fill" style="width:${pct}%;background:var(--primary)"></div>
+                    <div class="bar-row bar-row-static">
+                        <a href="?view=genre&id=${g.id}" class="bar-code bar-code-link">${escapeHtml(g.name)}</a>
+                        <div class="bar-track">
+                            <div class="bar-fill" style="width:${pct}%;background:var(--primary)"></div>
                         </div>
-                        <span class="lang-count">${formatNumber(g.plays)}</span>
-                        <span class="lang-pct">${formatNumber(g.releases)} rel.</span>
-                        <span></span>
+                        <span class="bar-count">${formatNumber(g.plays)}</span>
+                        <span class="bar-pct">${formatNumber(g.releases)} rel.</span>
                     </div>`;
             }).join('');
-            container.innerHTML = `<div class="lang-list has-drilldown">${rows}</div>`;
+            container.innerHTML = `<div class="bar-list no-drill">${rows}</div>`;
             return;
         }
 

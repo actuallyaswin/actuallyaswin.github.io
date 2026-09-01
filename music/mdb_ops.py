@@ -628,12 +628,18 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE collection_items ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE collection_item_media ADD COLUMN image_url TEXT",
         "ALTER TABLE canonical_lists ADD COLUMN publication TEXT",
+        # is_supergroup was superseded by the more general secondary_type
+        # column (which also covers 'virtual'/'standup') and no view ever
+        # read it — make_prod_db.py was already stripping it from every
+        # published DB, so this just removes the dead column at the source.
+        "ALTER TABLE artists DROP COLUMN is_supergroup",
     ]:
         try:
             conn.execute(ddl)
         except sqlite3.OperationalError as e:
-            # Two outcomes are expected and benign:
-            #   "duplicate column name" — existing DB already migrated
+            # Three outcomes are expected and benign:
+            #   "duplicate column name" — existing DB already migrated (ADD)
+            #   "no such column"        — existing DB already migrated (DROP)
             #   "no such table"         — fresh DB; the column is in SCHEMA,
             #                             which executescript creates below
             # Everything else (locked, disk full, syntax error) must surface.
@@ -972,6 +978,106 @@ def add_release_alias(conn: sqlite3.Connection, release_id: str, alias: str) -> 
         ' VALUES (?,?,?)',
         [release_id, alias, normalize_text(alias)],
     )
+
+
+# ── Concerts (setlist.fm) ───────────────────────────────────────────────────────
+
+def get_or_create_artist_by_name(conn: sqlite3.Connection, name: str,
+                                  mbid: 'str | None' = None) -> str:
+    """Resolve an artist by MBID (if given) then name/alias, creating a hidden-free
+    stub row (no releases) if none matches. Used for concert-attendance imports,
+    where the performer may not otherwise exist in the catalog."""
+    row = None
+    if mbid:
+        row = conn.execute('SELECT id FROM artists WHERE mbid = ?', [mbid]).fetchone()
+    row = row or (
+        conn.execute('SELECT id FROM artists WHERE lower(name) = lower(?)', [name]).fetchone()
+        or conn.execute(
+            '''SELECT a.id FROM artists a JOIN artist_aliases al ON al.artist_id = a.id
+               WHERE lower(al.alias) = lower(?)''', [name],
+        ).fetchone()
+    )
+    if row:
+        return row[0]
+
+    artist_id = new_ulid()
+    existing_slugs = {r[0] for r in conn.execute('SELECT slug FROM artists WHERE slug IS NOT NULL')}
+    slug = unique_slug(latin_slug_base(name), existing_slugs)
+    conn.execute(
+        '''INSERT INTO artists (id, name, slug, mbid, hidden, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 0, strftime('%s','now'), strftime('%s','now'))''',
+        [artist_id, name, slug, mbid],
+    )
+    return artist_id
+
+
+def upsert_venue(conn: sqlite3.Connection, name: str, city: 'str | None',
+                  state: 'str | None', country: 'str | None', setlistfm_id: str) -> str:
+    """Resolve a venue by its setlist.fm ID, creating it if missing."""
+    row = conn.execute('SELECT id FROM venues WHERE setlistfm_id = ?', [setlistfm_id]).fetchone()
+    if row:
+        return row[0]
+
+    venue_id = new_ulid()
+    conn.execute(
+        '''INSERT INTO venues (id, name, city, state, country, setlistfm_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))''',
+        [venue_id, name, city, state, country, setlistfm_id],
+    )
+    return venue_id
+
+
+def upsert_concert_event(conn: sqlite3.Connection, venue_id: str, event_date: str) -> str:
+    """Resolve a concert_events row by (venue, date), creating it if missing.
+
+    is_festival/festival_name are left at their defaults (0/NULL) — setlist.fm
+    doesn't expose festival grouping, so that's set manually after import.
+    """
+    row = conn.execute(
+        'SELECT id FROM concert_events WHERE venue_id = ? AND event_date = ?', [venue_id, event_date]
+    ).fetchone()
+    if row:
+        return row[0]
+
+    event_id = new_ulid()
+    conn.execute(
+        '''INSERT INTO concert_events (id, event_date, venue_id, is_festival, festival_name, created_at, updated_at)
+           VALUES (?, ?, ?, 0, NULL, strftime('%s','now'), strftime('%s','now'))''',
+        [event_id, event_date, venue_id],
+    )
+    return event_id
+
+
+def upsert_concert_performance(conn: sqlite3.Connection, url: str, record: dict) -> str:
+    """Upsert one concert_performances row (+ its venue/event) from a parsed
+    setlist.fm record (see mdb_apis.parse_setlistfm_setlist). Idempotent on
+    setlistfm_url.
+
+    billing/set_order are left NULL — setlist.fm exposes no billing-order data,
+    and guessing "only performance so far at this event = headliner" is unsafe:
+    importing a second act's URL for the same event later would leave the
+    first row's guess stranded and possibly wrong (e.g. a support act imported
+    before its headliner). Set these manually after import instead.
+    """
+    existing = conn.execute(
+        'SELECT id FROM concert_performances WHERE setlistfm_url = ?', [url]
+    ).fetchone()
+    if existing:
+        return existing[0]
+
+    artist_id = get_or_create_artist_by_name(conn, record['artist_name'], record.get('artist_mbid'))
+    venue_id = upsert_venue(conn, record['venue_name'], record.get('city'), record.get('state'),
+                            record.get('country'), record['venue_setlistfm_id'])
+    event_id = upsert_concert_event(conn, venue_id, record['event_date'])
+
+    performance_id = new_ulid()
+    conn.execute(
+        '''INSERT INTO concert_performances
+           (id, event_id, artist_id, tour_name, showtime, setlistfm_url, notes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, NULL, ?, NULL, strftime('%s','now'), strftime('%s','now'))''',
+        [performance_id, event_id, artist_id, record.get('tour_name'), url],
+    )
+    return performance_id
 
 
 # ── Import helpers ─────────────────────────────────────────────────────────────

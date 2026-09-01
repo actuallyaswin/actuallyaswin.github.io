@@ -11,11 +11,8 @@ function setPageTitle(...parts) {
 const _PILL_SVG_EXT = `<svg class="pill-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
 
 function renderLinkPill(svc, href, name, sub) {
-    const icon = svc === 'aoty'
-        ? `<img src="images/links/aoty-icon.png" class="pill-aoty-img">`
-        : `<span class="pill-mask"></span>`;
     return `<a href="${href}" target="_blank" rel="noopener" class="release-link-pill pill-${svc}">` +
-        `<span class="pill-icon">${icon}</span>` +
+        `<span class="pill-icon"><span class="pill-mask"></span></span>` +
         `<span class="pill-text"><span class="pill-service-name">${name}</span>` +
         (sub ? `<span class="pill-sub">${sub}</span>` : '') +
         `</span>${_PILL_SVG_EXT}</a>`;
@@ -52,6 +49,16 @@ function formatTimeAgo(ts) {
 
 function renderLoading(text = 'Loading...') {
     return `<div class="loading">${escapeHtml(text)}</div>`;
+}
+
+// Genuine "zero rows found" state — visually distinct from renderLoading()
+// so an empty filter result doesn't look like a page stuck mid-load.
+function renderEmptyState(title, hint = '', icon = 'inbox') {
+    return `<div class="empty-state">
+        <i data-lucide="${escapeHtml(icon)}" class="app-error-icon"></i>
+        <div class="empty-state-title">${escapeHtml(title)}</div>
+        ${hint ? `<p class="empty-state-hint">${escapeHtml(hint)}</p>` : ''}
+    </div>`;
 }
 
 function formatNumber(num) {
@@ -142,7 +149,7 @@ function donutHtml(heard, total, { small = false, label = 'tracks' } = {}) {
 }
 
 // "How mainstream is this artist" bar for an inline dt/dd stats row —
-// same hand-rolled track/fill convention as .lang-bar-fill/.pub-list-card-fill
+// same hand-rolled track/fill convention as .bar-fill/.pub-list-card-fill
 // elsewhere in this app, rather than a native <meter> (rendering differs
 // enough across browsers' UA shadow parts that it wouldn't match the rest
 // of the app's bars). role="meter" + aria-value* keep the accessibility
@@ -506,4 +513,147 @@ function createImageCard({ href, imageUrl, title = null, subtitle = null,
             ${statsHtml}
         </div>`;
     return card;
+}
+
+// ── Stat-section bar rows / drill-downs ─────────────────────────────────────
+// Originally views/stats.js-only; moved here once views/concert-stats.js
+// needed the same breakdown-row/drill-down/stat-card rendering — both files
+// call these bare (no namespace), same as escapeHtml/artistHref/etc. above.
+
+// Drill-down rows/cards are precomputed (see mdb.py's _drill_artists/
+// _drill_albums, or mdb_concert_stats.py's _concert_drill_artists) —
+// opening a chevron only ever toggles CSS, no query runs. `kind` doubles as
+// both the href resolver ('artist'|'release' -> artistHref/releaseHref) and
+// the count-unit label — 'concert-artist' behaves like 'artist' for linking
+// but reads "shows" instead of "plays", since concert drills count nights
+// seen, not listens.
+function _drillPanel(rows, kind, id) {
+    if (!rows || !rows.length) return '';
+    const isArtist = kind === 'artist' || kind === 'concert-artist';
+    const unit = kind === 'concert-artist' ? 'show' : 'play';
+    const cards = rows.map(([rid, name, img, n, slug]) => {
+        const href = isArtist ? artistHref(rid, slug) : releaseHref(rid, slug);
+        const thumb = img || getFallbackImageUrl();
+        return `<a href="${href}" class="bar-expand-card">
+            <div class="bar-expand-thumb${isArtist ? ' rounded' : ''}" style="background-image:url('${cssUrl(thumb)}')"></div>
+            <div class="bar-expand-name">${escapeHtml(name)}</div>
+            <div class="bar-expand-count">${formatNumber(n)} ${unit}${n === 1 ? '' : 's'}</div>
+        </a>`;
+    }).join('');
+    return `<div class="bar-expand" id="${id}">${cards}</div>`;
+}
+
+let _expandSeq = 0;
+
+// Wraps a row's inner cells with a chevron + (optionally) a hidden
+// drill-down panel of top-4 artist/album cards. `drillRows` empty ⇒ a
+// dimmed, non-interactive chevron (for visual consistency) with no click
+// wiring. Uses event delegation (see _wireDrillDowns) rather than inline
+// onclick, matching the artist.js Pulse accordion.
+function _rowWithDrill(rowInnerHtml, drillRows, kind) {
+    const id = `bde${++_expandSeq}`;
+    const panelHtml = _drillPanel(drillRows, kind, id);
+    const clickable = panelHtml ? ' bar-row-clickable' : '';
+    const chevronClass = panelHtml ? 'bar-chevron' : 'bar-chevron disabled';
+    const dataAttr = panelHtml ? ` data-drill-id="${id}"` : '';
+    return `<div class="bar-row${clickable}"${dataAttr}>
+            ${rowInnerHtml}
+            <span class="${chevronClass}">▶</span>
+        </div>
+        ${panelHtml}`;
+}
+
+// No-chevron variant for sections where drilling in wouldn't surface
+// anything new (Top Labels, Album Completion, Mainstream Score by year) —
+// avoids faking a disabled chevron cell just to pad out a fixed column
+// count. Callers using this must pair it with .bar-list.no-drill, which
+// declares one fewer grid column than the has-drilldown default.
+function _rowNoDrill(rowInnerHtml) {
+    return `<div class="bar-row">${rowInnerHtml}</div>`;
+}
+
+// Event delegation for every drill-down row on the page — attached once per
+// render() call on the container, rather than one listener per row.
+function _wireDrillDowns(container) {
+    container.addEventListener('click', e => {
+        const row = e.target.closest('.bar-row-clickable');
+        if (!row || !container.contains(row)) return;
+        const panel = document.getElementById(row.dataset.drillId);
+        const chevron = row.querySelector('.bar-chevron');
+        if (!panel || !chevron) return;
+        const isOpen = panel.classList.toggle('open');
+        chevron.classList.toggle('expanded', isOpen);
+    });
+}
+
+// ── Bar row renderers ───────────────────────────────────────────────────────
+// Both take the cached items array of { label, n, drill } where `drill` is
+// the eagerly-precomputed top-4 array (or [], for a zero-count row). They
+// differ only in bar styling; _rowWithDrill handles the shared chevron/panel
+// markup. `kindFor(items)` lets a caller tag a whole items array with which
+// drill kind ('artist'|'release') its rows link to (stats.js attaches this
+// via items._kind; concert-stats.js's items are always artist-kind so it
+// just passes a `() => 'artist'` constant). Pass `noDrill: true` for
+// sections with no drill data at all — renders via _rowNoDrill/.bar-list.no-drill
+// instead of a dimmed disabled chevron.
+
+const CATEGORY_COLORS = ['#87ae73', '#c9a227', '#67a1fd', '#c97ba5', '#9aa0a6', '#e0685f'];
+
+// Many-category breakdowns (language, era, country, release type, labels):
+// opacity-graded bars in one shared color. `formatLabel` optionally renders
+// custom markup for the label cell (e.g. a flag icon) instead of escaped text.
+function _breakdownRows(items, formatLabel, kindFor, noDrill) {
+    const total = items.reduce((s, it) => s + it.n, 0);
+    const max   = Math.max(...items.map(it => it.n), 1);
+    return items.map(({ label, n, drill }) => {
+        const pct     = total ? ((n / total) * 100).toFixed(1) : '0.0';
+        const opacity = (0.35 + 0.65 * (n / max)).toFixed(2);
+        const labelHtml = formatLabel ? formatLabel(label) : escapeHtml(String(label));
+        const rowHtml = `
+            <span class="bar-code">${labelHtml}</span>
+            <div class="bar-track">
+                <div class="bar-fill" style="width:${pct}%;background:var(--primary);opacity:${opacity}"></div>
+            </div>
+            <span class="bar-count">${formatNumber(n)}</span>
+            <span class="bar-pct">${pct}%</span>`;
+        return noDrill ? _rowNoDrill(rowHtml)
+            : _rowWithDrill(rowHtml, drill, drill?.length ? (kindFor ? kindFor(items) : null) : null);
+    }).join('');
+}
+
+// Low-cardinality breakdowns (2-6 values: gender, artist type, explicit,
+// popularity tier, billing role): one color per row, each bar sized to its
+// own share.
+function _coloredRows(items, kindFor, noDrill) {
+    const total = items.reduce((s, it) => s + it.n, 0);
+    return items.map(({ label, n, drill }, i) => {
+        const pct   = total ? ((n / total) * 100).toFixed(1) : '0.0';
+        const color = CATEGORY_COLORS[i % CATEGORY_COLORS.length];
+        const rowHtml = `
+            <span class="bar-code">
+                <span class="bar-legend-dot" style="background:${color}"></span>
+                ${escapeHtml(String(label))}
+            </span>
+            <div class="bar-track">
+                <div class="bar-fill" style="width:${pct}%;background:${color}"></div>
+            </div>
+            <span class="bar-count">${formatNumber(n)}</span>
+            <span class="bar-pct">${pct}%</span>`;
+        return noDrill ? _rowNoDrill(rowHtml)
+            : _rowWithDrill(rowHtml, drill, drill?.length ? (kindFor ? kindFor(items) : null) : null);
+    }).join('');
+}
+
+
+// Renders [label, value] pairs as big-number stat-card tiles, for sections
+// that are a handful of headline numbers rather than a distribution.
+// `extraClass` lets a caller force a specific column count (e.g. an even
+// 4-wide grid for an 8-card section) instead of the default auto-fit flow.
+function _statCards(items, extraClass) {
+    const cards = items.map(([label, value]) => `
+        <div class="stat-card">
+            <div class="stat-value">${escapeHtml(String(value))}</div>
+            <div class="stat-label">${escapeHtml(label)}</div>
+        </div>`).join('');
+    return `<div class="stats${extraClass ? ' ' + extraClass : ''}">${cards}</div>`;
 }

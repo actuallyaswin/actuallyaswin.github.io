@@ -13,12 +13,14 @@ const VIEWS = {
     'genre':           () => ViewGenre,
     'genres':          () => ViewGenres,
     'recommendations': () => ViewRecommendations,
+    'trends':          () => ViewTrends,
     'history':         () => ViewHistory,
     'stats':           () => ViewStats,
     'list':            () => ViewList,
     'lists':           () => ViewLists,
     'soundtracks':     () => ViewSoundtracks,
     'browse':          () => ViewBrowse,
+    'concerts':        () => ViewConcerts,
 };
 
 function getParams() {
@@ -139,6 +141,7 @@ window.addEventListener('popstate', e => {
         'genre':        'Loading genre…',
         'year':         'Loading year…',
         'top':          'Loading…',
+        'concerts':     'Loading concerts…',
     };
     const label = VIEW_LOADING[params.view] || 'Loading…';
     container.innerHTML = `

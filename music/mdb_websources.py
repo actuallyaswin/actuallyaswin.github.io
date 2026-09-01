@@ -65,18 +65,22 @@ def _clean_aoty_title(title: str) -> str:
 
 
 def _aoty_get(url: str, **kw):
-    _aoty_lim.wait()
     # This environment's urllib3/brotli combo can't decode AOTY's br-encoded
     # responses (BrotliDecoderDecompressStream failure) — identity sidesteps it.
     headers = {'User-Agent': AOTY_UA, 'Accept-Encoding': 'identity'}
-    r = requests.get(url, headers=headers, timeout=15, **kw)
-    if r.status_code == 403:
-        log.warning('AOTY returned 403 (rate limited or blocked) — waiting %.0fs', AOTY_RETRY)
-        time.sleep(AOTY_RETRY)
+    last_exc = None
+    for attempt in range(4):
         _aoty_lim.wait()
         r = requests.get(url, headers=headers, timeout=15, **kw)
-    r.raise_for_status()
-    return r
+        if r.status_code not in (403, 429):
+            r.raise_for_status()
+            return r
+        wait_s = AOTY_RETRY * (2 ** attempt)
+        log.warning('AOTY returned %d (rate limited or blocked) — waiting %.0fs (attempt %d/4)',
+                    r.status_code, wait_s, attempt + 1)
+        time.sleep(wait_s)
+        last_exc = requests.HTTPError(f'{r.status_code} after retries', response=r)
+    raise last_exc
 
 
 def find_aoty_url(release_name: str, artist_name: str) -> 'str | None':
@@ -102,6 +106,62 @@ def find_aoty_url(release_name: str, artist_name: str) -> 'str | None':
 
     best = max(candidates, key=_score)
     return 'https://www.albumoftheyear.org' + best['href']
+
+
+def find_aoty_artist_url(artist_name: str, known_album_titles: 'list[str]' = ()) -> 'str | None':
+    """Search AOTY for an artist page, disambiguating same-name collisions
+    (e.g. "Future" the rapper vs. a dozen unrelated same-named acts) by
+    checking each candidate's own discography page for a title overlap with
+    albums we already have on file for this artist.
+
+    Falls back to the first search result when there's exactly one candidate,
+    or when no candidate's discography matches any known title (a plausible
+    outcome for an artist with no albums imported yet — still better than no
+    link at all, so the top result is used rather than giving up).
+    """
+    try:
+        r = _aoty_get(AOTY_SEARCH, params={'q': artist_name, 'type': 'artists'})
+    except Exception as e:
+        log.warning('AOTY artist search failed (treated as no match): %s', e)
+        return None
+    soup = BeautifulSoup(r.text, 'html.parser')
+
+    seen, candidates = set(), []
+    for a in soup.find_all('a', href=re.compile(r'^/artist/\d+-')):
+        href = a['href']
+        if href in seen:
+            continue
+        text = a.get_text(strip=True)
+        if not text:
+            continue
+        seen.add(href)
+        candidates.append((href, text))
+    if not candidates:
+        return None
+
+    target = artist_name.strip().lower()
+    exact  = [c for c in candidates if c[1].strip().lower() == target]
+    pool   = exact or candidates
+    if len(pool) == 1 or not known_album_titles:
+        return 'https://www.albumoftheyear.org' + pool[0][0]
+
+    known_norm = {_clean_aoty_title(t).lower() for t in known_album_titles if t}
+    for href, _name in pool[:6]:
+        try:
+            page_r = _aoty_get('https://www.albumoftheyear.org' + href)
+        except Exception:
+            continue
+        page_soup = BeautifulSoup(page_r.text, 'html.parser')
+        titles = {
+            _clean_aoty_title(el.get_text(strip=True)).lower()
+            for el in page_soup.find_all('div', class_='albumTitle')
+        }
+        if known_norm & titles:
+            return 'https://www.albumoftheyear.org' + href
+
+    # No discography overlap found among candidates — fall back to the
+    # first result rather than leaving the artist unlinked.
+    return 'https://www.albumoftheyear.org' + pool[0][0]
 
 
 def _empty_aoty() -> dict:
@@ -345,6 +405,85 @@ def _date_from_cell(cell_html: str) -> 'str | None':
     if m: return f'{m.group(2)}-{MONTHS[m.group(1).lower()]}'
     m = re.search(r'\b(\d{4}-\d{2})\b', cell_html)
     return m.group(1) if m else None
+
+
+_MUSIC_DESCRIPTION_RE = re.compile(
+    r'\b(singers?|rappers?|musicians?|bands?|groups?|DJs?|composers?|'
+    r'producers?|songwriters?|duos?|orchestras?|ensembles?|record label)\b',
+    re.IGNORECASE)
+_NON_ARTIST_DESCRIPTION_RE = re.compile(
+    r'\b(albums?|songs?|EP|single|mixtape|soundtrack|tour|film|movie|'
+    r'TV series|television series|novel|video ?game|disambiguation)\b',
+    re.IGNORECASE)
+
+
+def _wiki_page_is_artist(page_id: int, title: str, artist_name: str) -> bool:
+    """Guard against confidently linking a same-named but wrong Wikipedia
+    article — not just a non-music topic, but also an album/song/tour page
+    for the *right* artist (e.g. searching "Future" surfacing the album
+    "Future (Future album)" instead of his own "Future (rapper)" page), or a
+    music page for the *wrong* artist entirely (searching "Kitten" surfacing
+    "Atomic Kitten", an unrelated act that happens to also be a music group).
+
+    Uses Wikipedia's short `description` pageprop (e.g. "American rapper",
+    "2017 studio album by Future") rather than category scraping — categories
+    on album pages often still mention the artist/label and false-positive on
+    naive keyword checks, but the short description is written specifically
+    to state what kind of thing the page is. Word-boundary regex avoids
+    "song" inside "songwriter" wrongly triggering the album/song exclusion."""
+    # The resolved title must equal the searched name (aside from a trailing
+    # disambiguation suffix) — plain containment would still let "Atomic
+    # Kitten" pass for a search on "Kitten".
+    bare_title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip().lower()
+    if bare_title != artist_name.strip().lower():
+        return False
+
+    api_url = ('https://en.wikipedia.org/w/api.php?'
+               + urllib.parse.urlencode({
+                   'action': 'query', 'pageids': page_id,
+                   'prop': 'description', 'format': 'json',
+               }))
+    try:
+        d = _http_get_json(api_url, headers={'User-Agent': MB_UA}, lim=_wiki_lim, timeout=10)
+    except Exception as e:
+        log.warning('Wikipedia description check failed: %s', e)
+        return False
+    pages = d.get('query', {}).get('pages', {})
+    desc  = pages.get(str(page_id), {}).get('description') or ''
+    if not desc:
+        return False
+    if _NON_ARTIST_DESCRIPTION_RE.search(desc):
+        return False
+    return bool(_MUSIC_DESCRIPTION_RE.search(desc))
+
+
+def find_wikipedia_artist_page(artist_name: str) -> 'int | None':
+    """Search Wikipedia for an artist's own page, appending disambiguating
+    terms since a bare name search on a common word (e.g. "Future", "Kitten")
+    surfaces unrelated topics — or that same artist's own album/song pages —
+    first. Returns a validated page ID, or None.
+
+    Tries the plain search first (works fine for distinctively-named artists,
+    and avoids an extra round-trip), then the "musician"-qualified search as
+    a fallback specifically for ambiguous/common names.
+    """
+    for query in (artist_name, f'{artist_name} musician'):
+        api_url = ('https://en.wikipedia.org/w/api.php?'
+                   + urllib.parse.urlencode({
+                       'action': 'query', 'list': 'search', 'srsearch': query,
+                       'format': 'json', 'srlimit': 5,
+                   }))
+        try:
+            d = _http_get_json(api_url, headers={'User-Agent': MB_UA}, lim=_wiki_lim, timeout=10)
+        except Exception as e:
+            log.warning('Wikipedia artist search failed: %s', e)
+            continue
+        for hit in d.get('query', {}).get('search', []):
+            page_id = hit.get('pageid')
+            title   = hit.get('title', '')
+            if page_id and _wiki_page_is_artist(page_id, title, artist_name):
+                return page_id
+    return None
 
 
 def fetch_wikipedia_date(wiki_url: 'str | None' = None,

@@ -26,6 +26,7 @@ __all__ = [
     'mb_canonical_score', 'mb_release_reasons',
     'mb_rg_from_wiki_url',
     'GeniusClient', '_get_genius_client', 'GeniusTrack',
+    'SetlistFmClient', '_get_setlistfm_client', 'setlistfm_id_from_url', 'parse_setlistfm_setlist',
     'DiscogsClient',
     'SourceNotFound', 'SourceDataUnavailable', 'SourceRateLimited',
 ]
@@ -2112,6 +2113,113 @@ class GeniusTrack:
                 # lang_code not in lingua's IsoCode639_1 enum (e.g. 'bm', 'sco')
                 pass
         return None
+
+
+# ── Setlist.fm ─────────────────────────────────────────────────────────────────
+
+SETLISTFM_BASE = 'https://api.setlist.fm/rest/1.0'
+# Non-commercial tier: 2 req/sec, 1440/day. Stay comfortably under 2/sec.
+SETLISTFM_INTERVAL = 1.0
+_setlistfm_lim = RateLimiter(SETLISTFM_INTERVAL, service='setlistfm')
+
+_SETLISTFM_URL_ID_RE = re.compile(r'-([0-9a-f]+)\.html$')
+
+
+def setlistfm_id_from_url(url: str) -> str:
+    """Extract the setlist ID from a setlist.fm concert page URL."""
+    m = _SETLISTFM_URL_ID_RE.search(url)
+    if not m:
+        raise ValueError(f'Cannot parse setlist.fm ID from: {url!r}')
+    return m.group(1)
+
+
+class SetlistFmClient:
+    """Read-only setlist.fm REST API client (non-commercial tier)."""
+
+    # The non-commercial tier returns a bare 403 (not 429) once it's unhappy
+    # with request pacing, indistinguishable from a real permission error
+    # except by retrying — a genuinely bad key fails identically every time.
+    _FORBIDDEN_RETRY_ATTEMPTS = 5
+    _FORBIDDEN_RETRY_BACKOFF = 2.0
+
+    def __init__(self, api_key: str) -> None:
+        self._key = api_key
+
+    def _get(self, path: str, params: 'dict | None' = None) -> dict:
+        url = f'{SETLISTFM_BASE}{path}'
+        if params:
+            url += '?' + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+        headers = {'x-api-key': self._key, 'Accept': 'application/json'}
+        for attempt in range(self._FORBIDDEN_RETRY_ATTEMPTS + 1):
+            try:
+                return _http_get_json(url, headers=headers, lim=_setlistfm_lim, timeout=15,
+                                       retry_attempts=3, retry_backoff=1.5)
+            except urllib.error.HTTPError as e:
+                if e.code != 403 or attempt == self._FORBIDDEN_RETRY_ATTEMPTS:
+                    raise
+                time.sleep(self._FORBIDDEN_RETRY_BACKOFF * (attempt + 1))
+
+    def get_setlist(self, setlist_id: str) -> dict:
+        """GET /setlist/{id} — full setlist detail including artist/venue/tour."""
+        return self._get(f'/setlist/{setlist_id}')
+
+    def search_setlists(self, artist_name: 'str | None' = None, venue_name: 'str | None' = None,
+                         date: 'str | None' = None, year: 'int | None' = None) -> 'list[dict]':
+        """GET /search/setlists — returns [] on no matches (API 404s for a
+        zero-result search rather than returning an empty list itself).
+        `date` is setlist.fm's own DD-MM-YYYY format, not ISO."""
+        try:
+            data = self._get('/search/setlists', {
+                'artistName': artist_name, 'venueName': venue_name, 'date': date, 'year': year,
+            })
+        except SourceNotFound:
+            return []
+        return data.get('setlist', [])
+
+
+
+_setlistfm_client_singleton: 'SetlistFmClient | None' = None
+
+
+
+def _get_setlistfm_client() -> SetlistFmClient:
+    """Return a module-level SetlistFmClient, lazily initialised from env/.env."""
+    global _setlistfm_client_singleton
+    if _setlistfm_client_singleton is None:
+        from mdb_ops import load_dotenv
+        load_dotenv()
+        key = os.environ.get('SETLISTFM_API_KEY')
+        if not key:
+            raise RuntimeError('SETLISTFM_API_KEY not set')
+        _setlistfm_client_singleton = SetlistFmClient(key)
+    return _setlistfm_client_singleton
+
+
+def parse_setlistfm_setlist(data: dict) -> dict:
+    """Flatten a setlist.fm API setlist object into the fields needed to upsert
+    a concert_performances row (see mdb_ops.upsert_concert_performance)."""
+    artist = data['artist']
+    venue = data['venue']
+    city = venue.get('city') or {}
+    country = city.get('country') or {}
+    tour = data.get('tour') or {}
+
+    day, month, year = data['eventDate'].split('-')
+    event_date = f'{year}-{month}-{day}'
+
+    return {
+        'setlist_id': data['id'],
+        'artist_name': artist['name'],
+        'artist_mbid': artist.get('mbid'),
+        'venue_name': venue['name'],
+        'venue_setlistfm_id': venue['id'],
+        'city': city.get('name'),
+        'state': city.get('stateCode') or city.get('state'),
+        'country': country.get('name'),
+        'event_date': event_date,
+        'tour_name': tour.get('name'),
+        'url': data.get('url'),
+    }
 
 
 # ── Discogs ────────────────────────────────────────────────────────────────────

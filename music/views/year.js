@@ -289,7 +289,7 @@ const ViewYear = (() => {
 
         if (cachedReleases.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = `<li>${renderLoading('No releases found')}</li>`;
+            container.innerHTML = `<li>${renderEmptyState('No releases found', 'Try a different filter or year.', 'disc-3')}</li>`;
             return;
         }
 
@@ -353,7 +353,7 @@ const ViewYear = (() => {
 
         if (cachedArtists.length === 0) {
             container.className = 'image-grid';
-            container.innerHTML = `<li>${renderLoading('No artists found')}</li>`;
+            container.innerHTML = `<li>${renderEmptyState('No artists found', 'Try a different filter or year.', 'mic-2')}</li>`;
             return;
         }
 
@@ -386,6 +386,11 @@ const ViewYear = (() => {
                 const li = document.createElement('li');
                 if (i >= countLimit) li.style.display = 'none';
                 li.appendChild(card);
+                const compareLink = document.createElement('a');
+                compareLink.className = 'row-compare-link';
+                compareLink.href = `?view=compare&a=${encodeURIComponent(id)}`;
+                compareLink.innerHTML = `<i data-lucide="git-compare"></i> Compare`;
+                li.appendChild(compareLink);
                 container.appendChild(li);
             });
         } else {

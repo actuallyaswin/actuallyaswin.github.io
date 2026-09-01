@@ -1,9 +1,7 @@
 const ViewArtist = (() => {
     let _db = null;
     let _artistId = null;
-    let _currentChart = null;
-    let _chartData = { monthly: null, yearly: null, monthlyRaw: null };
-    let _chartState = { granularity: 'monthly', type: 'distribution' };
+    let _chartData = { monthlyRaw: null };
     // 'date' | 'listens'
     let _discSort = 'date';
     // 'grid' | 'list'
@@ -13,16 +11,9 @@ const ViewArtist = (() => {
     let _artistName = null;
     let _hasListens = false;
 
-    const CHART_ENABLED = false;
-    // Experimental: small release-art markers on the Timeline's year rows.
-    // Flagged off by default — flip to true to preview, revert if it doesn't
-    // earn its keep.
-    const TIMELINE_RELEASE_MARKERS = false;
-
     function mount(container, db, params) {
         _db = db;
-        _currentChart = null;
-        _chartData = { monthly: null, yearly: null, monthlyRaw: null };
+        _chartData = { monthlyRaw: null };
         _discData = { own: null, collabs: null };
         _artistName = null;
         _hasListens = false;
@@ -36,8 +27,7 @@ const ViewArtist = (() => {
             navigate({ view: 'home' });
             return;
         }
-        const safeKey = String(key).replace(/'/g, "''");
-        const resolved = db.exec(`SELECT id, slug FROM artists WHERE slug = '${safeKey}' OR id = '${safeKey}' LIMIT 1`)[0];
+        const resolved = db.exec('SELECT id, slug FROM artists WHERE slug = ? OR id = ? LIMIT 1', [key, key])[0];
         if (resolved) {
             const [realId, slug] = resolved.values[0];
             _artistId = realId;
@@ -123,10 +113,6 @@ const ViewArtist = (() => {
     }
 
     function unmount() {
-        if (_currentChart) {
-            _currentChart.destroy();
-            _currentChart = null;
-        }
         if (_themeObserver) {
             _themeObserver.disconnect();
             _themeObserver = null;
@@ -134,8 +120,6 @@ const ViewArtist = (() => {
     }
 
     function loadArtistInfo() {
-        const safeId = _artistId.replace(/'/g, "''");
-
         const result = _db.exec(`
             SELECT
                 a.name,
@@ -153,8 +137,8 @@ const ViewArtist = (() => {
                 a.stat_drift_days,
                 a.spotify_popularity
             FROM artists a
-            WHERE a.id = '${safeId}' AND (a.hidden IS NULL OR a.hidden = 0)
-        `)[0];
+            WHERE a.id = ? AND (a.hidden IS NULL OR a.hidden = 0)
+        `, [_artistId])[0];
 
         if (!result || result.values.length === 0) {
             const el = document.getElementById('artistName');
@@ -174,8 +158,8 @@ const ViewArtist = (() => {
             const linksResult = _db.exec(`
                 SELECT service, link_value
                 FROM external_links
-                WHERE entity_type = 0 AND entity_id = '${safeId}'
-            `)[0];
+                WHERE entity_type = 0 AND entity_id = ?
+            `, [_artistId])[0];
             if (linksResult) linksResult.values.forEach(([svc, val]) => extLinks.set(svc, val));
         } catch (_) {}
         const wikiPageId = extLinks.get(0) || null;
@@ -183,9 +167,9 @@ const ViewArtist = (() => {
         // Aliases
         const aliasResult = _db.exec(`
             SELECT alias, alias_type, language FROM artist_aliases
-            WHERE artist_id = '${safeId}'
+            WHERE artist_id = ?
             ORDER BY sort_order, alias_type
-        `)[0];
+        `, [_artistId])[0];
         const aliases = aliasResult ? aliasResult.values : [];
         const nativeScript    = aliases.find(([, t]) => t === 'native_script');
         const transliteration = aliases.find(([, t, l]) => t === 'transliteration' && l === 'en');
@@ -273,9 +257,9 @@ const ViewArtist = (() => {
         const membersResult = _db.exec(`
             SELECT a.id, a.name, a.slug FROM artist_members am
             JOIN artists a ON a.id = am.member_artist_id
-            WHERE am.group_artist_id = '${safeId}'
+            WHERE am.group_artist_id = ?
             ORDER BY am.sort_order, a.name
-        `)[0];
+        `, [_artistId])[0];
         if (membersResult?.values.length) {
             _appendFullRow('Members',
                 membersResult.values.map(([mid, mname, mslug]) =>
@@ -286,9 +270,9 @@ const ViewArtist = (() => {
         const memberOfResult = _db.exec(`
             SELECT a.id, a.name, a.slug FROM artist_members am
             JOIN artists a ON a.id = am.group_artist_id
-            WHERE am.member_artist_id = '${safeId}'
+            WHERE am.member_artist_id = ?
             ORDER BY a.name
-        `)[0];
+        `, [_artistId])[0];
         if (memberOfResult?.values.length) {
             _appendFullRow('Member of',
                 memberOfResult.values.map(([gid, gname, gslug]) =>
@@ -301,13 +285,13 @@ const ViewArtist = (() => {
             SELECT DISTINCT a.id, a.name, a.slug
             FROM artist_relations ar
             JOIN artists a ON a.id = (
-                CASE WHEN ar.from_artist_id = '${safeId}' THEN ar.to_artist_id ELSE ar.from_artist_id END
+                CASE WHEN ar.from_artist_id = ? THEN ar.to_artist_id ELSE ar.from_artist_id END
             )
             WHERE ar.relation_type = 'collaboration'
-              AND ('${safeId}' IN (ar.from_artist_id, ar.to_artist_id))
+              AND (? IN (ar.from_artist_id, ar.to_artist_id))
               AND a.hidden = 0
             ORDER BY a.name
-        `)[0];
+        `, [_artistId, _artistId])[0];
         if (collabResult?.values.length) {
             _appendFullRow('Collaborators',
                 collabResult.values.map(([cid, cname, cslug]) =>
@@ -325,12 +309,12 @@ const ViewArtist = (() => {
                 FROM track_artists ta
                 JOIN tracks t ON ta.track_id = t.id
                 JOIN releases r ON r.id = t.release_id AND r.hidden = 0
-                WHERE ta.artist_id = '${safeId}' AND ta.role IN (${PRIMARY_ROLES_SQL}) AND t.hidden = 0
+                WHERE ta.artist_id = ? AND ta.role IN (${PRIMARY_ROLES_SQL}) AND t.hidden = 0
             )
             GROUP BY g.aoty_id
             ORDER BY freq DESC
             LIMIT 8
-        `)[0];
+        `, [_artistId])[0];
         if (genreResult?.values.length) {
             _appendFullRow('Genre',
                 genreResult.values.map(([gid, gname]) =>
@@ -361,8 +345,6 @@ const ViewArtist = (() => {
     }
 
     function loadDiscography() {
-        const safeId = _artistId.replace(/'/g, "''");
-
         const ownResult = _db.exec(`
             SELECT
                 r.id,
@@ -378,8 +360,8 @@ const ViewArtist = (() => {
                 r.slug,
                 ${OWNED_MEDIUM_SQL} as owned_medium
             FROM releases r
-            WHERE r.primary_artist_id = '${safeId}'
-            AND r.hidden = 0        `)[0];
+            WHERE r.primary_artist_id = ?
+            AND r.hidden = 0        `, [_artistId])[0];
 
         const collabResult = _db.exec(`
             SELECT
@@ -397,9 +379,9 @@ const ViewArtist = (() => {
                 ${OWNED_MEDIUM_SQL} as owned_medium
             FROM releases r
             JOIN release_artists ra ON ra.release_id = r.id
-            WHERE ra.artist_id = '${safeId}' AND ra.role = 'main'
-            AND r.primary_artist_id != '${safeId}'
-            AND r.hidden = 0        `)[0];
+            WHERE ra.artist_id = ? AND ra.role = 'main'
+            AND r.primary_artist_id != ?
+            AND r.hidden = 0        `, [_artistId, _artistId])[0];
 
         // Group edit/length variants (radio edit, extended mix, ...) of the
         // same recording per release — hearing any one counts as heard.
@@ -409,15 +391,15 @@ const ViewArtist = (() => {
         ];
         const completionByRelease = new Map();
         if (releaseIds.length > 0) {
-            const idList = releaseIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+            const placeholders = releaseIds.map(() => '?').join(',');
             const trackRowsResult = _db.exec(`
                 SELECT t.release_id, t.title,
                        EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id) as heard
                 FROM tracks t
-                WHERE t.release_id IN (${idList}) AND t.hidden = 0
+                WHERE t.release_id IN (${placeholders}) AND t.hidden = 0
                   AND t.variant_section IS NULL
                   AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
-            `)[0];
+            `, releaseIds)[0];
             if (trackRowsResult) {
                 const groupsByRelease = new Map();
                 trackRowsResult.values.forEach(([releaseId, trackTitle, heard]) => {
@@ -607,7 +589,6 @@ const ViewArtist = (() => {
     }
 
     function loadRecentPlays() {
-        const safeId = _artistId.replace(/'/g, "''");
         const result = _db.exec(`
             SELECT
                 t.title,
@@ -622,56 +603,24 @@ const ViewArtist = (() => {
             WHERE (
                 t.id IN (
                     SELECT DISTINCT track_id FROM track_artists
-                    WHERE artist_id = '${safeId}' AND role IN (${PRIMARY_ROLES_SQL})
+                    WHERE artist_id = ? AND role IN (${PRIMARY_ROLES_SQL})
                 )
-                OR r.primary_artist_id = '${safeId}'
+                OR r.primary_artist_id = ?
             )
             AND t.hidden = 0
             ORDER BY l.timestamp DESC
             LIMIT 40
-        `)[0];
+        `, [_artistId, _artistId])[0];
 
         const section = document.getElementById('recentPlaysSection');
         const list = document.getElementById('recentPlaysList');
         if (!section || !list || !result || result.values.length === 0) return;
 
-        // Collapse consecutive plays from the same release into one row —
-        // otherwise an album played straight through reads as a stuck/glitched
-        // list rather than genuine recent activity.
-        const groups = [];
-        result.values.forEach(([trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, releaseSlug]) => {
-            const last = groups[groups.length - 1];
-            const key = releaseId || `track:${trackTitle}`;
-            if (last && last.key === key) {
-                last.count += 1;
-                last.tracks.push(trackTitle);
-            } else {
-                groups.push({ key, trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, releaseSlug, count: 1, tracks: [trackTitle] });
-            }
-        });
+        const plays = result.values.map(([trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, releaseSlug]) =>
+            ({ trackTitle, albumArtUrl, releaseTitle, timestamp, releaseId, releaseSlug }));
+        const groups = groupConsecutivePlays(plays);
 
-        list.innerHTML = groups.slice(0, 10).map(g => {
-            const imgSrc = g.albumArtUrl || getFallbackImageUrl();
-            const dateStr = formatTimeAgo(g.timestamp);
-            const nameHtml = g.count > 1
-                ? `${g.count} tracks from ${escapeHtml(g.releaseTitle || 'this release')}`
-                : escapeHtml(g.trackTitle);
-            const subtitle = (g.releaseTitle && g.count === 1)
-                ? `<i data-lucide="disc-album" style="width: 12px; height: 12px;"></i> ${escapeHtml(g.releaseTitle)}`
-                : null;
-            const tag = g.releaseId ? 'a' : 'div';
-            const hrefAttr = g.releaseId ? ` href="${releaseHref(g.releaseId, g.releaseSlug)}"` : '';
-            return `
-                <${tag} class="recent-play-row"${hrefAttr}>
-                    <div class="recent-play-thumb" style="background-image: url('${cssUrl(imgSrc)}')"></div>
-                    <div class="recent-play-info">
-                        <div class="recent-play-name">${nameHtml}</div>
-                        ${subtitle ? `<div class="recent-play-album">${subtitle}</div>` : ''}
-                    </div>
-                    <span class="recent-play-date">${dateStr}</span>
-                </${tag}>
-            `;
-        }).join('');
+        list.innerHTML = groups.slice(0, 10).map(g => renderRecentPlayRow(g)).join('');
 
         section.removeAttribute('hidden');
     }
@@ -680,11 +629,10 @@ const ViewArtist = (() => {
     // from `artist_year_medals` (`mdb.py stats refresh`). Neither is computed
     // here — the peak-year ranking is a dataset-wide scan.
     function loadArtistBadges() {
-        const safeId = _artistId.replace(/'/g, "''");
         const badgesEl = document.getElementById('artistBadges');
         if (!badgesEl) return;
 
-        const certResult = _db.exec(`SELECT cert, secondary_type FROM artists WHERE id = '${safeId}'`)[0];
+        const certResult = _db.exec('SELECT cert, secondary_type FROM artists WHERE id = ?', [_artistId])[0];
         const certTier = certResult ? certResult.values[0][0] : null;
         const secondaryType = certResult ? certResult.values[0][1] : null;
 
@@ -708,9 +656,9 @@ const ViewArtist = (() => {
         // Peak years → compact stats row instead of badge tower.
         const medalResult = _db.exec(`
             SELECT year, rank FROM artist_year_medals
-            WHERE artist_id = '${safeId}'
+            WHERE artist_id = ?
             ORDER BY rank, year ASC
-        `)[0];
+        `, [_artistId])[0];
 
         if (medalResult?.values.length) {
             const tierClass = { 1: 'gold', 2: 'silver', 3: 'bronze' };
@@ -738,99 +686,26 @@ const ViewArtist = (() => {
         }
     }
 
-    function renderPulse(yearlyValues) {
-        const pulseEl = document.getElementById('pulseSection');
-        const rowsEl = document.getElementById('pulseRows');
-        if (!pulseEl || !rowsEl || !yearlyValues || yearlyValues.length === 0) return;
-
-        const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        const max = Math.max(...yearlyValues.map(([, count]) => count));
-
-        const monthlyByYear = new Map();
-        if (_chartData.monthlyRaw) {
-            _chartData.monthlyRaw.forEach(([year, month, count]) => {
-                if (!monthlyByYear.has(year)) monthlyByYear.set(year, new Map());
-                monthlyByYear.get(year).set(month, count);
-            });
-        }
-
-        rowsEl.innerHTML = yearlyValues.map(([year, count]) => {
-            const pct = Math.round((count / max) * 100);
-            return `
-                <div class="pulse-row" data-year="${year}">
-                    <span class="pulse-year">${year}</span>
-                    <span class="pulse-count">${formatNumber(count)}</span>
-                    <div class="pulse-bar-track">
-                        <div class="pulse-bar-fill" style="width: ${pct}%"></div>
-                    </div>
-                    <span class="pulse-chevron">▶</span>
-                </div>
-                <div class="pulse-monthly" id="pulse-monthly-${year}" style="display:none"></div>
-            `;
-        }).join('');
-
-        rowsEl.addEventListener('click', e => {
-            const row = e.target.closest('.pulse-row');
-            if (!row) return;
-            const year = parseInt(row.dataset.year);
-            const monthlyEl = document.getElementById(`pulse-monthly-${year}`);
-            if (!monthlyEl) return;
-
-            const isExpanded = row.classList.contains('expanded');
-            if (isExpanded) {
-                monthlyEl.style.display = 'none';
-                row.classList.remove('expanded');
-                return;
-            }
-
-            if (!monthlyEl.innerHTML) {
-                const monthMap = monthlyByYear.get(year) || new Map();
-                const monthMax = Math.max(...[...monthMap.values()], 1);
-                monthlyEl.innerHTML = Array.from({ length: 12 }, (_, i) => {
-                    const m = i + 1;
-                    const c = monthMap.get(m) || 0;
-                    const p = Math.round((c / monthMax) * 100);
-                    return `
-                        <div class="pulse-month-row">
-                            <span class="pulse-month-name">${monthNames[i]}</span>
-                            <span class="pulse-month-count">${c > 0 ? formatNumber(c) : ''}</span>
-                            <div class="pulse-month-bar-track">
-                                <div class="pulse-month-bar-fill" style="width: ${p}%"></div>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-            }
-
-            monthlyEl.style.display = '';
-            row.classList.add('expanded');
-        });
-
-        pulseEl.removeAttribute('hidden');
-    }
-
     function loadListeningHistory() {
-        const safeId = _artistId.replace(/'/g, "''");
-
         const monthlyResult = _db.exec(`
             SELECT l.year, l.month, COUNT(*) as listen_count
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             JOIN track_artists ta ON t.id = ta.track_id AND ta.role IN (${PRIMARY_ROLES_SQL})
-            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
+            WHERE ta.artist_id = ? AND t.hidden = 0
             GROUP BY l.year, l.month
             ORDER BY l.year, l.month
-        `)[0];
+        `, [_artistId])[0];
 
         const yearlyResult = _db.exec(`
             SELECT l.year, COUNT(*) as listen_count
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
             JOIN track_artists ta ON t.id = ta.track_id AND ta.role IN (${PRIMARY_ROLES_SQL})
-            WHERE ta.artist_id = '${safeId}' AND t.hidden = 0
+            WHERE ta.artist_id = ? AND t.hidden = 0
             GROUP BY l.year
             ORDER BY l.year
-        `)[0];
+        `, [_artistId])[0];
 
         if ((!monthlyResult || monthlyResult.values.length === 0) &&
             (!yearlyResult || yearlyResult.values.length === 0)) {
@@ -838,45 +713,12 @@ const ViewArtist = (() => {
         }
 
         if (monthlyResult && monthlyResult.values.length > 0) {
-            _chartData.monthly    = buildMonthlyChartData(monthlyResult.values);
             _chartData.monthlyRaw = monthlyResult.values;
         }
 
         if (yearlyResult && yearlyResult.values.length > 0) {
-            _chartData.yearly = buildYearlyChartData(yearlyResult.values);
-            renderPulse(yearlyResult.values);
+            renderPulse(yearlyResult.values, _chartData.monthlyRaw);
         }
-    }
-
-    function buildMonthlyChartData(values) {
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        const years = values.map(([year]) => year);
-        const minYear = Math.min(...years);
-        const maxYear = Math.max(...years);
-        const dataMap = new Map();
-        values.forEach(([year, month, count]) => dataMap.set(`${year}-${month}`, count));
-        const labels = [], data = [];
-        for (let year = minYear; year <= maxYear; year++) {
-            for (let month = 1; month <= 12; month++) {
-                labels.push(`${monthNames[month - 1]} ${year}`);
-                data.push(dataMap.get(`${year}-${month}`) || 0);
-            }
-        }
-        return { labels, data };
-    }
-
-    function buildYearlyChartData(values) {
-        const years = values.map(([year]) => year);
-        const minYear = Math.min(...years);
-        const maxYear = Math.max(...years);
-        const dataMap = new Map();
-        values.forEach(([year, count]) => dataMap.set(year, count));
-        const labels = [], data = [];
-        for (let year = minYear; year <= maxYear; year++) {
-            labels.push(year.toString());
-            data.push(dataMap.get(year) || 0);
-        }
-        return { labels, data };
     }
 
     return { mount, unmount };

@@ -2,6 +2,7 @@ const ViewRecommendations = (() => {
     let _db   = null;
     let _ac = null;
     let _seed = 0;
+    let _shelvesEl = null;
 
     // ── Seed-based picker ──────────────────────────────────────────────────────
     function _pick(pool, n, shelfIdx = 0, exclude = new Set()) {
@@ -16,47 +17,16 @@ const ViewRecommendations = (() => {
         return out;
     }
 
-    // ── Card HTML ──────────────────────────────────────────────────────────────
-    // Uses <div role="link"> so a nested <a> for the Spotify icon is valid HTML.
-    function _card(id, title, artist, art, year, spotifyId) {
-        const img = art
-            ? `<div class="disc-card-img" style="background-image:url('${cssUrl(art)}')"></div>`
-            : `<div class="disc-card-img" style="background:var(--bg-tertiary)"></div>`;
-        const sub = [artist, year].filter(Boolean).join(' · ');
-        const streaming = SHOW_STREAMING_LINKS && spotifyId
-            ? `<a class="disc-card-streaming" href="https://open.spotify.com/album/${spotifyId}"
-                  target="_blank" rel="noopener" title="Open on Spotify">
-                  <span class="disc-card-streaming-icon"></span>
-               </a>`
-            : '';
-        // id is DB-derived; carry it in a data attribute and handle activation
-        // with a delegated listener rather than interpolating it into inline JS.
-        return `<div class="disc-card" role="link" tabindex="0" data-release-id="${escapeHtml(id)}">
-            ${img}
-            <div class="disc-card-meta">
-                <div class="disc-card-info">
-                    <div class="disc-card-title">${escapeHtml(title || '')}</div>
-                    <div class="disc-card-sub">${escapeHtml(sub)}</div>
-                </div>
-                ${streaming}
-            </div></div>`;
-    }
-
-    // ── Shelf HTML — hidden if fewer than 2 results ────────────────────────────
-    function _shelf(title, desc, rows) {
-        if (rows.length < 2) return '';
-        return `<section class="rec-shelf">
-            <div class="rec-shelf-header">
-                <h2>${escapeHtml(title)}</h2>
-                <p class="rec-desc">${escapeHtml(desc)}</p>
-            </div>
-            <ul class="disc-grid">${rows.map(r => `<li>${_card(r[0], r[1], r[3], r[2], r[4], r[5])}</li>`).join('')}</ul>
-        </section>`;
+    // ── Row → card mapping — row is [id, title, art, artist, year, spotifyId] ──
+    function _cardsFrom(rows) {
+        return rows.map(r => (
+            { id: r[0], title: r[1], art: r[2], artist: r[3], year: r[4], spotifyId: r[5] }
+        ));
     }
 
     // ── SQL helper ─────────────────────────────────────────────────────────────
-    function _q(sql) {
-        const res = _db.exec(sql)[0];
+    function _q(sql, params) {
+        const res = _db.exec(sql, params)[0];
         return res ? res.values : [];
     }
 
@@ -248,7 +218,7 @@ const ViewRecommendations = (() => {
             GROUP BY r.primary_artist_id ORDER BY plays DESC LIMIT 1
         `);
         if (!artistRow.length) return { rows: [], name: '' };
-        const aid  = artistRow[0][0].replace(/'/g, "''");
+        const aid  = artistRow[0][0];
         const name = artistRow[0][1] || '';
         const rows = _q(`
             SELECT ${COLS}, COUNT(l.id) plays
@@ -256,9 +226,9 @@ const ViewRecommendations = (() => {
             LEFT JOIN artists a ON a.id = r.primary_artist_id
             LEFT JOIN tracks t ON t.release_id = r.id AND t.hidden = 0 AND t.variant_section IS NULL
             LEFT JOIN listens l ON l.track_id = t.id
-            WHERE r.primary_artist_id = '${aid}' AND r.hidden = 0
+            WHERE r.primary_artist_id = ? AND r.hidden = 0
             GROUP BY r.id ORDER BY plays ASC LIMIT 20
-        `);
+        `, [aid]);
         return { rows, name };
     }
 
@@ -314,7 +284,6 @@ const ViewRecommendations = (() => {
     // ── Main loader ────────────────────────────────────────────────────────────
 
     function _load() {
-        const el  = document.getElementById('recShelves');
         const now = Math.floor(Date.now() / 1000);
         const dt  = new Date();
         const cy  = dt.getFullYear();
@@ -372,43 +341,22 @@ const ViewRecommendations = (() => {
             ['Short-Form Favourites',      'Most-played EPs and singles.',                                              shortForm],
         ];
 
-        el.innerHTML = shelves.map(([title, desc, rows]) => _shelf(title, desc, rows)).join('');
-        const rendered = shelves.filter(([, , rows]) => rows.length >= 2).length;
-        const subtitleEl = document.getElementById('recSubtitle');
-        if (subtitleEl) subtitleEl.textContent = `${rendered} shelf${rendered === 1 ? '' : 'ves'}`;
+        renderShelfPage(_shelvesEl, 'recSubtitle',
+            shelves.map(([title, desc, rows]) => [title, desc, _cardsFrom(rows)]),
+            'shelf', 'shelves');
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────
 
-    // Delegated activation for the role="link" cards, replacing the inline
-    // onclick/onkeydown that interpolated a DB-derived id into JS.
-    function _onActivate(e) {
-        if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
-        const card = e.target.closest('.disc-card[data-release-id]');
-        if (!card) return;
-        // Let the nested Spotify anchor win.
-        if (e.target.closest('a')) return;
-        e.preventDefault();
-        navigate({ view: 'release', id: card.dataset.releaseId });
-    }
-
     function mount(container, db) {
         _db   = db;
         _seed = _db.exec('SELECT COUNT(*) FROM listens')[0].values[0][0];
-        setPageTitle('Recommendations');
 
-        container.innerHTML = `
-            <header class="rec-header">
-                <h1>Recommendations</h1>
-                <p class="subtitle" id="recSubtitle"></p>
-            </header>
-            <div id="recShelves" class="rec-shelves"></div>
-        `;
-
-        _ac = new AbortController();
-        const shelves = document.getElementById('recShelves');
-        shelves.addEventListener('click', _onActivate, { signal: _ac.signal });
-        shelves.addEventListener('keydown', _onActivate, { signal: _ac.signal });
+        const { shelvesEl, ac } = shelfPageMount(container, {
+            title: 'Recommendations', shelvesId: 'recShelves', subtitleId: 'recSubtitle',
+        });
+        _shelvesEl = shelvesEl;
+        _ac = ac;
 
         _load();
     }

@@ -124,13 +124,14 @@ const ViewBrowse = (() => {
     }
 
     // 'all' | 'film' | 'tv_series' | 'video_game' | 'video_game:<platform>' —
-    // see soundtrackFilter's declaration for the encoding.
+    // see soundtrackFilter's declaration for the encoding. Values are
+    // validated against this exact shape at parse time (mount()), so by the
+    // time this runs sourceType/platform are provably quote-free.
     function _soundtrackClause() {
         if (soundtrackFilter === 'all') return '';
         const [sourceType, platform] = soundtrackFilter.split(':');
-        const safeType = sourceType.replace(/'/g, "''");
-        const platformPart = platform ? ` AND sm.platform = '${platform.replace(/'/g, "''")}'` : '';
-        return `AND EXISTS (SELECT 1 FROM release_soundtrack_meta sm WHERE sm.release_id = r.id AND sm.source_type = '${safeType}'${platformPart})`;
+        const platformPart = platform ? ` AND sm.platform = '${platform}'` : '';
+        return `AND EXISTS (SELECT 1 FROM release_soundtrack_meta sm WHERE sm.release_id = r.id AND sm.source_type = '${sourceType}'${platformPart})`;
     }
 
     function _loadAlbums() {
@@ -873,7 +874,8 @@ const ViewBrowse = (() => {
         year = params.year && /^\d{4}$/.test(params.year) ? parseInt(params.year, 10) : null;
         genreFilter = params.genre || 'all';
         typeFilter = ['all', 'album', 'ep', 'single'].includes(params.rtype) ? params.rtype : 'all';
-        soundtrackFilter = params.soundtrack || 'all';
+        soundtrackFilter = /^(all|film|tv_series|video_game)(:[a-z0-9]+)?$/.test(params.soundtrack || '')
+            ? params.soundtrack : 'all';
         status = ['all', 'heard', 'unheard'].includes(params.status) ? params.status : 'all';
         ownedFilter = ['all', 'owned', 'unowned'].includes(params.owned) ? params.owned : 'all';
         viewMode = ['list', 'poster-sm', 'poster-lg'].includes(params.display) ? params.display : 'poster-lg';

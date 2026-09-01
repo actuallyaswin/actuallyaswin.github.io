@@ -64,3 +64,7 @@ _site/
 
 # Local automation script, not part of the published site
 music/run_rs500_batch.sh
+
+# Cached raw Wikipedia tracklist fetches, keyed by release slug — avoids
+# re-hitting Wikipedia for the same album across sessions/subagents.
+music/.wiki_cache/

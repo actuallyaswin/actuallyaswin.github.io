@@ -99,11 +99,10 @@ const ViewCompare = (() => {
             return;
         }
 
-        const safeId = artistId.replace(/'/g, "''");
         const row = _db.exec(`
             SELECT name, COALESCE(image_thumb_url, image_url), cert, slug
-            FROM artists WHERE id = '${safeId}'
-        `)[0];
+            FROM artists WHERE id = ?
+        `, [artistId])[0];
 
         if (!row || row.values.length === 0) {
             el.innerHTML = `<div class="compare-picker-empty">Artist not found</div>`;
@@ -140,19 +139,22 @@ const ViewCompare = (() => {
             const q = input.value.trim();
             if (q.length < 2) { resultsEl.innerHTML = ''; resultsEl.hidden = true; return; }
             debounce = setTimeout(() => {
-                const safe = q.replace(/'/g, "''");
                 const otherId = which === 'A' ? _idB : _idA;
-                const excludeClause = otherId ? `AND a.id != '${otherId.replace(/'/g, "''")}'` : '';
+                const excludeClause = otherId ? 'AND a.id != ?' : '';
+                const likeContains = `%${q.toLowerCase()}%`;
+                const likePrefix = `${q.toLowerCase()}%`;
+                const bindings = otherId ? [otherId, likeContains, likeContains, likePrefix]
+                                          : [likeContains, likeContains, likePrefix];
                 const rows = _db.exec(`
                     SELECT a.id, a.name, COALESCE(a.image_thumb_url, a.image_url)
                     FROM artists a
                     WHERE (a.hidden IS NULL OR a.hidden = 0) ${excludeClause}
-                      AND (lower(a.name) LIKE lower('%${safe}%')
+                      AND (lower(a.name) LIKE ?
                         OR EXISTS (SELECT 1 FROM artist_aliases aa
-                                   WHERE aa.artist_id = a.id AND lower(aa.alias) LIKE lower('%${safe}%')))
-                    ORDER BY (lower(a.name) LIKE lower('${safe}%')) DESC, a.stat_total_plays DESC
+                                   WHERE aa.artist_id = a.id AND lower(aa.alias) LIKE ?))
+                    ORDER BY (lower(a.name) LIKE ?) DESC, a.stat_total_plays DESC
                     LIMIT 8
-                `)[0];
+                `, bindings)[0];
                 if (!rows || rows.values.length === 0) {
                     resultsEl.innerHTML = `<div class="compare-picker-empty">No matches</div>`;
                     resultsEl.hidden = false;
@@ -259,11 +261,10 @@ const ViewCompare = (() => {
     }
 
     function _artistStats(artistId) {
-        const safeId = artistId.replace(/'/g, "''");
         const row = _db.exec(`
             SELECT stat_total_plays, stat_unique_tracks, stat_total_releases, stat_first_listen_ts, spotify_popularity
-            FROM artists WHERE id = '${safeId}'
-        `)[0];
+            FROM artists WHERE id = ?
+        `, [artistId])[0];
         const [totalPlays, uniqueTracks, totalReleases, firstTs, popularity] = row ? row.values[0] : [0, 0, 0, null, null];
 
         const minutesRow = _db.exec(`
@@ -271,8 +272,8 @@ const ViewCompare = (() => {
             FROM listens l
             JOIN tracks t ON t.id = l.track_id AND t.hidden = 0
             JOIN track_artists ta ON ta.track_id = t.id AND ta.role IN (${PRIMARY_ROLES_SQL})
-            WHERE ta.artist_id = '${safeId}'
-        `)[0];
+            WHERE ta.artist_id = ?
+        `, [artistId])[0];
         const totalMinutes = minutesRow ? (minutesRow.values[0][0] || 0) : 0;
 
         return {
@@ -320,30 +321,28 @@ const ViewCompare = (() => {
     }
 
     function _monthlyListens(artistId) {
-        const safeId = artistId.replace(/'/g, "''");
         const result = _db.exec(`
             SELECT l.year, l.month, COUNT(*) as n
             FROM listens l
             JOIN tracks t ON t.id = l.track_id AND t.hidden = 0
             JOIN track_artists ta ON ta.track_id = t.id AND ta.role IN (${PRIMARY_ROLES_SQL})
-            WHERE ta.artist_id = '${safeId}'
+            WHERE ta.artist_id = ?
             GROUP BY l.year, l.month ORDER BY l.year, l.month
-        `)[0];
+        `, [artistId])[0];
         const map = new Map();
         (result ? result.values : []).forEach(([year, month, n]) => map.set(`${year}-${month}`, n));
         return map;
     }
 
     function _yearlyListens(artistId) {
-        const safeId = artistId.replace(/'/g, "''");
         const result = _db.exec(`
             SELECT l.year, COUNT(*) as n
             FROM listens l
             JOIN tracks t ON t.id = l.track_id AND t.hidden = 0
             JOIN track_artists ta ON ta.track_id = t.id AND ta.role IN (${PRIMARY_ROLES_SQL})
-            WHERE ta.artist_id = '${safeId}'
+            WHERE ta.artist_id = ?
             GROUP BY l.year ORDER BY l.year
-        `)[0];
+        `, [artistId])[0];
         const map = new Map();
         (result ? result.values : []).forEach(([year, n]) => map.set(String(year), n));
         return map;
@@ -354,14 +353,13 @@ const ViewCompare = (() => {
     // Bucketed by month or by year depending on the active granularity so
     // multiple same-year releases can be grouped into one stack.
     function _releasesByBucket(artistId, granularity) {
-        const safeId = artistId.replace(/'/g, "''");
         const result = _db.exec(`
             SELECT r.id, r.title, r.release_date, COALESCE(r.album_art_thumb_url, r.album_art_url)
             FROM releases r
-            WHERE r.primary_artist_id = '${safeId}' AND r.hidden = 0
+            WHERE r.primary_artist_id = ? AND r.hidden = 0
               AND r.type IN ('album', 'ep') AND r.release_date IS NOT NULL
             ORDER BY r.release_date
-        `)[0];
+        `, [artistId])[0];
         const map = new Map();
         (result ? result.values : []).forEach(([id, title, date, art]) => {
             const [y, m] = date.split('-');
@@ -608,19 +606,18 @@ const ViewCompare = (() => {
     function renderTopTracks(artistId, containerId) {
         const el = document.getElementById(containerId);
         if (!el) return;
-        const safeId = artistId.replace(/'/g, "''");
         const result = _db.exec(`
             SELECT t.title, r.id, COUNT(l.id) as n, r.slug
             FROM track_artists ta
             JOIN tracks t ON t.id = ta.track_id AND t.hidden = 0
             JOIN releases r ON r.id = t.release_id AND r.hidden = 0
             LEFT JOIN listens l ON l.track_id = t.id
-            WHERE ta.artist_id = '${safeId}' AND ta.role IN (${PRIMARY_ROLES_SQL})
+            WHERE ta.artist_id = ? AND ta.role IN (${PRIMARY_ROLES_SQL})
             GROUP BY t.id
             HAVING n > 0
             ORDER BY n DESC
             LIMIT 8
-        `)[0];
+        `, [artistId])[0];
 
         if (!result || result.values.length === 0) {
             el.innerHTML = `<p class="compare-empty-inline">No listens yet.</p>`;
@@ -648,7 +645,6 @@ const ViewCompare = (() => {
         if (!section || !tagsEl) return;
 
         const genresFor = artistId => {
-            const safeId = artistId.replace(/'/g, "''");
             const result = _db.exec(`
                 SELECT DISTINCT g.aoty_id, g.name
                 FROM release_genres rg
@@ -658,9 +654,9 @@ const ViewCompare = (() => {
                     FROM track_artists ta
                     JOIN tracks t ON ta.track_id = t.id
                     JOIN releases r ON r.id = t.release_id AND r.hidden = 0
-                    WHERE ta.artist_id = '${safeId}' AND ta.role IN (${PRIMARY_ROLES_SQL}) AND t.hidden = 0
+                    WHERE ta.artist_id = ? AND ta.role IN (${PRIMARY_ROLES_SQL}) AND t.hidden = 0
                 )
-            `)[0];
+            `, [artistId])[0];
             const map = new Map();
             (result ? result.values : []).forEach(([id, name]) => map.set(id, name));
             return map;

@@ -126,8 +126,7 @@ const ViewRelease = (() => {
             navigate({ view: 'home' });
             return;
         }
-        const safeKey = String(key).replace(/'/g, "''");
-        const resolved = db.exec(`SELECT id, slug FROM releases WHERE slug = '${safeKey}' OR id = '${safeKey}' LIMIT 1`)[0];
+        const resolved = db.exec('SELECT id, slug FROM releases WHERE slug = ? OR id = ? LIMIT 1', [key, key])[0];
         if (resolved) {
             const [realId, slug] = resolved.values[0];
             _releaseId = realId;
@@ -237,8 +236,6 @@ const ViewRelease = (() => {
     }
 
     function loadReleaseInfo() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const result = _db.exec(`
             SELECT
                 r.title,
@@ -265,8 +262,8 @@ const ViewRelease = (() => {
                 r.stat_drift_days,
                 r.apple_music_id
             FROM releases r
-            WHERE r.id = '${safeId}'
-        `)[0];
+            WHERE r.id = ?
+        `, [_releaseId])[0];
 
         if (!result || result.values.length === 0) {
             const el = document.getElementById('releaseName');
@@ -288,10 +285,10 @@ const ViewRelease = (() => {
             SELECT t.title,
                    EXISTS (SELECT 1 FROM listens l WHERE l.track_id = t.id) as heard
             FROM tracks t
-            WHERE t.release_id = '${safeId}' AND t.hidden = 0
+            WHERE t.release_id = ? AND t.hidden = 0
               AND t.variant_section IS NULL
               AND (t.duration_ms IS NULL OR t.duration_ms >= 30000)
-        `)[0];
+        `, [_releaseId])[0];
         const songGroups = new Map();
         if (trackRowsResult) {
             trackRowsResult.values.forEach(([trackTitle, heard]) => {
@@ -308,8 +305,8 @@ const ViewRelease = (() => {
             const linksResult = _db.exec(`
                 SELECT service, link_value
                 FROM external_links
-                WHERE entity_type = 1 AND entity_id = '${safeId}'
-            `)[0];
+                WHERE entity_type = 1 AND entity_id = ?
+            `, [_releaseId])[0];
             if (linksResult) linksResult.values.forEach(([svc, val]) => extLinks.set(svc, val));
         } catch (_) {}
         // EL_SVC_WIKIPEDIA
@@ -321,8 +318,8 @@ const ViewRelease = (() => {
                 const smResult = _db.exec(`
                     SELECT source_type, series, platform, industry_region, original_language
                     FROM release_soundtrack_meta
-                    WHERE release_id = '${safeId}'
-                `)[0];
+                    WHERE release_id = ?
+                `, [_releaseId])[0];
                 if (smResult && smResult.values.length) {
                     let sourceType;
                     [sourceType, vgSeries, vgPlatform, vgRegion, vgLanguage] = smResult.values[0];
@@ -348,9 +345,9 @@ const ViewRelease = (() => {
                 a.id = r.primary_artist_id
                 OR a.id IN (SELECT artist_id FROM release_artists WHERE release_id = r.id AND role = 'main')
             )
-            WHERE r.id = '${safeId}' AND a.id IS NOT NULL
+            WHERE r.id = ? AND a.id IS NOT NULL
             ORDER BY (r.primary_artist_id = a.id) DESC, a.name
-        `)[0];
+        `, [_releaseId])[0];
         const artistSlugById = new Map();
         if (artistResult) artistResult.values.forEach(([, id, slug]) => artistSlugById.set(id, slug));
 
@@ -358,12 +355,12 @@ const ViewRelease = (() => {
         const isNonLatin = s => /[^ -]/.test(s);
         const titleAliasResult = _db.exec(`
             SELECT alias FROM release_aliases
-            WHERE release_id = '${safeId}'
-              AND alias_norm != lower('${(title || '').replace(/'/g, "''")}')
+            WHERE release_id = ?
+              AND alias_norm != lower(?)
               AND language IS NOT NULL
               AND alias_type IN ('transliteration', 'unicode', 'native_script', 'translation')
             ORDER BY is_definitive DESC LIMIT 1
-        `)[0];
+        `, [_releaseId, title || ''])[0];
         const titleAlias = titleAliasResult && titleAliasResult.values[0]?.[0];
 
         const { base: baseTitle, eti: etiPart } = _splitEti(title);
@@ -473,13 +470,13 @@ const ViewRelease = (() => {
         const ownedResult = _db.exec(`
             SELECT ci.id, ci.catalog_number, ci.media_condition, ci.sleeve_condition
             FROM collection_items ci
-            WHERE ci.release_id = '${safeId}'
+            WHERE ci.release_id = ?
             UNION
             SELECT ci.id, ci.catalog_number, ci.media_condition, ci.sleeve_condition
             FROM collection_item_releases cir
             JOIN collection_items ci ON ci.id = cir.collection_item_id
-            WHERE cir.release_id = '${safeId}'
-        `)[0];
+            WHERE cir.release_id = ?
+        `, [_releaseId, _releaseId])[0];
         const ownedCopies = ownedResult ? ownedResult.values.map(([id, catalogNumber, mediaCondition, sleeveCondition]) =>
             ({ id, catalogNumber, mediaCondition, sleeveCondition, media: [] })) : [];
         if (ownedCopies.length > 0) {
@@ -600,9 +597,9 @@ const ViewRelease = (() => {
             SELECT g.aoty_id, g.name, rg.is_primary
             FROM release_genres rg
             JOIN genres g ON rg.aoty_genre_id = g.aoty_id
-            WHERE rg.release_id = '${safeId}'
+            WHERE rg.release_id = ?
             ORDER BY rg.is_primary DESC, g.name
-        `)[0];
+        `, [_releaseId])[0];
 
         const genresEl = document.getElementById('releaseGenres');
         if (genreResult && genreResult.values.length > 0) {
@@ -628,11 +625,11 @@ const ViewRelease = (() => {
             const varSpotResult = _db.exec(`
                 SELECT service_id, variant_label
                 FROM release_service_links
-                WHERE release_id = '${safeId}'
+                WHERE release_id = ?
                   AND service = 2
                   AND variant_label IS NOT NULL
                 ORDER BY id
-            `)[0];
+            `, [_releaseId])[0];
             const variantSpotify = varSpotResult ? varSpotResult.values : [];
 
             const resolvedAotyUrl = aotyUrl || (aotyId ? `https://www.albumoftheyear.org/album/${aotyId}/` : null);
@@ -746,14 +743,13 @@ const ViewRelease = (() => {
     }
 
     function loadReleaseAliases() {
-        const safeId = _releaseId.replace(/'/g, "''");
         const result = _db.exec(`
             SELECT alias, is_definitive, language
             FROM release_aliases
-            WHERE release_id = '${safeId}'
+            WHERE release_id = ?
               AND alias_type IN ('transliteration', 'unicode', 'native_script', 'translation')
             ORDER BY is_definitive DESC, alias
-        `)[0];
+        `, [_releaseId])[0];
 
         const el = document.getElementById('releaseAka');
         if (!el || !result || result.values.length === 0) return;
@@ -954,21 +950,21 @@ const ViewRelease = (() => {
     }
 
     // Same recording (by ISRC) appearing on other non-hidden releases — surfaced as "Also on"
-    function _computeAlsoOnByTrack(safeId, tracks) {
+    function _computeAlsoOnByTrack(releaseId, tracks) {
         const alsoOnByTrack = new Map();
         const isrcs = [...new Set(tracks.map(t => t.isrc).filter(Boolean))];
         if (isrcs.length === 0) return alsoOnByTrack;
 
-        const safeIsrcs = isrcs.map(i => `'${i.replace(/'/g, "''")}'`).join(',');
+        const isrcPlaceholders = isrcs.map(() => '?').join(',');
         const alsoOnResult = _db.exec(`
             SELECT t.isrc, t.id, r.id, r.title, r.slug
             FROM tracks t
             JOIN releases r ON r.id = t.release_id
-            WHERE t.isrc IN (${safeIsrcs})
+            WHERE t.isrc IN (${isrcPlaceholders})
               AND t.hidden = 0 AND r.hidden = 0
-              AND t.release_id != '${safeId}'
+              AND t.release_id != ?
             ORDER BY r.release_date, r.title
-        `)[0];
+        `, [...isrcs, releaseId])[0];
         if (alsoOnResult) {
             const byIsrc = new Map();
             alsoOnResult.values.forEach(([isrc, otherTrackId, otherReleaseId, otherReleaseTitle, otherReleaseSlug]) => {
@@ -985,17 +981,15 @@ const ViewRelease = (() => {
     // ── Main tracklist ──────────────────────────────────────────────────────────
 
     function loadTracks() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const result = _db.exec(`
             SELECT t.title, t.id, t.track_number, t.disc_number, t.duration_ms, t.isrc,
                    COUNT(l.id) as play_count, t.tempo_bpm, t.audio_features, t.mix_name
             FROM tracks t
             LEFT JOIN listens l ON l.track_id = t.id
-            WHERE t.release_id = '${safeId}' AND t.hidden = 0 AND t.variant_section IS NULL
+            WHERE t.release_id = ? AND t.hidden = 0 AND t.variant_section IS NULL
             GROUP BY t.id
             ORDER BY t.disc_number, t.track_number, t.title
-        `)[0];
+        `, [_releaseId])[0];
 
         const container = document.getElementById('trackList');
         if (!container) return;
@@ -1012,12 +1006,12 @@ const ViewRelease = (() => {
                 FROM track_artists ta
                 JOIN artists a ON a.id = ta.artist_id
                 WHERE ta.track_id IN (
-                    SELECT id FROM tracks WHERE release_id = '${safeId}' AND hidden = 0
+                    SELECT id FROM tracks WHERE release_id = ? AND hidden = 0
                 )
                 ORDER BY ta.track_id,
                          CASE ta.role WHEN 'main' THEN 0 WHEN 'performer' THEN 1 WHEN 'featured' THEN 2 ELSE 3 END,
                          a.name
-            `)[0];
+            `, [_releaseId])[0];
 
             if (taResult) {
                 taResult.values.forEach(([trackId, artistId, artistName, role, slug]) => {
@@ -1048,11 +1042,11 @@ const ViewRelease = (() => {
                 SELECT ta.track_id, ta.alias, ta.alias_type
                 FROM track_aliases ta
                 WHERE ta.track_id IN (
-                    SELECT id FROM tracks WHERE release_id = '${safeId}' AND hidden = 0
+                    SELECT id FROM tracks WHERE release_id = ? AND hidden = 0
                 )
                 AND ta.alias_type IN ('transliteration', 'unicode', 'native_script', 'translation')
                 ORDER BY ta.track_id
-            `)[0];
+            `, [_releaseId])[0];
             if (aliasResult) {
                 aliasResult.values.forEach(([trackId, alias, aliasType]) => {
                     if (!aliasesByTrack.has(trackId)) aliasesByTrack.set(trackId, {});
@@ -1064,7 +1058,7 @@ const ViewRelease = (() => {
             }
         }
 
-        const alsoOnByTrack = _computeAlsoOnByTrack(safeId, tracks);
+        const alsoOnByTrack = _computeAlsoOnByTrack(_releaseId, tracks);
 
         _renderTracklist(container, tracks, true, { artistsByTrack, primaryArtistId: _primaryArtistId, artistsWithReleases: _artistsWithReleases, aliasesByTrack, alsoOnByTrack });
     }
@@ -1072,19 +1066,17 @@ const ViewRelease = (() => {
     // ── Release variants ────────────────────────────────────────────────────────
 
     function loadVariants() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         // Fetch distinct variant sections ordered by their first track number
         const sectionsResult = _db.exec(`
             SELECT variant_section
             FROM (
                 SELECT t.variant_section, MIN(t.track_number) AS min_tn
                 FROM tracks t
-                WHERE t.release_id = '${safeId}' AND t.variant_section IS NOT NULL AND t.hidden = 0
+                WHERE t.release_id = ? AND t.variant_section IS NOT NULL AND t.hidden = 0
                 GROUP BY t.variant_section
             )
             ORDER BY min_tn
-        `)[0];
+        `, [_releaseId])[0];
 
         const section = document.getElementById('variantsSection');
         if (!section) return;
@@ -1105,9 +1097,9 @@ const ViewRelease = (() => {
             FROM track_artists ta
             JOIN tracks t ON t.id = ta.track_id
             JOIN artists a ON a.id = ta.artist_id
-            WHERE t.release_id = '${safeId}' AND ta.role IN ('featured', 'main', 'performer')
+            WHERE t.release_id = ? AND ta.role IN ('featured', 'main', 'performer')
             ORDER BY a.name
-        `)[0];
+        `, [_releaseId])[0];
         const featuredByTrack = new Map();
         const artistsByTrack = new Map();
         (featResult ? featResult.values : []).forEach(([trackId, artistId, name, role, slug]) => {
@@ -1125,8 +1117,8 @@ const ViewRelease = (() => {
         const canonResult = _db.exec(`
             SELECT t.id, t.title, t.isrc, t.duration_ms
             FROM tracks t
-            WHERE t.release_id = '${safeId}' AND t.hidden = 0 AND t.variant_section IS NULL
-        `)[0];
+            WHERE t.release_id = ? AND t.hidden = 0 AND t.variant_section IS NULL
+        `, [_releaseId])[0];
         const canonTracks = (canonResult ? canonResult.values : [])
             .map(([id, title, isrc, durationMs]) => ({ id, title, isrc, durationMs }));
         const shownIsrcs = new Set(canonTracks.map(t => t.isrc).filter(Boolean));
@@ -1160,19 +1152,17 @@ const ViewRelease = (() => {
         };
 
         for (const [variantSection] of sectionsResult.values) {
-            const safeSection = variantSection.replace(/'/g, "''");
-
             const vtResult = _db.exec(`
                 SELECT t.title, t.id, t.track_number, t.disc_number, t.duration_ms, t.isrc,
                        COUNT(l.id) as play_count
                 FROM tracks t
                 LEFT JOIN listens l ON l.track_id = t.id
-                WHERE t.release_id = '${safeId}'
-                  AND t.variant_section = '${safeSection}'
+                WHERE t.release_id = ?
+                  AND t.variant_section = ?
                   AND t.hidden = 0
                 GROUP BY t.id
                 ORDER BY t.disc_number, t.track_number, t.title
-            `)[0];
+            `, [_releaseId, variantSection])[0];
 
             const allTracks = (vtResult ? vtResult.values : []).map(
                 ([title, id, trackNumber, discNumber, durationMs, isrc, playCount]) =>
@@ -1194,9 +1184,9 @@ const ViewRelease = (() => {
             // Service indicator: check release_service_links for a Spotify entry for this section
             const svcResult = _db.exec(`
                 SELECT service FROM release_service_links
-                WHERE release_id = '${safeId}' AND variant_label = '${safeSection}'
+                WHERE release_id = ? AND variant_label = ?
                 LIMIT 1
-            `)[0];
+            `, [_releaseId, variantSection])[0];
             const svcNum = svcResult?.values[0]?.[0];
             const svcIconClass = svcNum === 2 ? 'variant-service-icon-spotify' : null;
             const serviceIndicator = svcIconClass
@@ -1215,7 +1205,7 @@ const ViewRelease = (() => {
             section.appendChild(wrap);
 
             const trackContainer = document.getElementById(`vt-vs-${encodeURIComponent(variantSection)}`);
-            const alsoOnByTrack = _computeAlsoOnByTrack(safeId, tracksToShow);
+            const alsoOnByTrack = _computeAlsoOnByTrack(_releaseId, tracksToShow);
             const renderOpts = { alsoOnByTrack, artistsByTrack, primaryArtistId: _primaryArtistId, artistsWithReleases: _artistsWithReleases };
             if (HIDE_DUPES) {
                 _renderTracklist(trackContainer, exclusive, true, renderOpts);
@@ -1228,11 +1218,9 @@ const ViewRelease = (() => {
     // ── About this album (Apple Music editorial note) ───────────────────────────
 
     function loadEditorialNotes() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const result = _db.exec(`
-            SELECT editorial_note FROM releases WHERE id = '${safeId}'
-        `)[0];
+            SELECT editorial_note FROM releases WHERE id = ?
+        `, [_releaseId])[0];
 
         const note = result && result.values[0] && result.values[0][0];
         const section = document.getElementById('editorialSection');
@@ -1273,11 +1261,9 @@ const ViewRelease = (() => {
     // ── From the artist (Bandcamp liner notes) ───────────────────────────────────
 
     function loadArtistNotes() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const result = _db.exec(`
-            SELECT artist_note FROM releases WHERE id = '${safeId}'
-        `)[0];
+            SELECT artist_note FROM releases WHERE id = ?
+        `, [_releaseId])[0];
 
         const note = result && result.values[0] && result.values[0][0];
         const section = document.getElementById('artistNoteSection');
@@ -1318,8 +1304,6 @@ const ViewRelease = (() => {
     // ── Compilation sources ─────────────────────────────────────────────────────
 
     function loadSources() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const result = _db.exec(`
             SELECT
                 rs.source_id,
@@ -1336,9 +1320,9 @@ const ViewRelease = (() => {
                  WHERE t.release_id = rs.source_id AND t.hidden = 0)  AS total_minutes
             FROM release_sources rs
             JOIN releases r ON r.id = rs.source_id
-            WHERE rs.compilation_id = '${safeId}'
+            WHERE rs.compilation_id = ?
             ORDER BY rs.disc_number
-        `)[0];
+        `, [_releaseId])[0];
 
         if (!result || result.values.length === 0) return;
 
@@ -1375,15 +1359,13 @@ const ViewRelease = (() => {
 
     // When this release is itself a variant, show a "This is a remaster of X" note.
     function loadCanonicalBacklink() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const result = _db.exec(`
             SELECT rv.canonical_id, r.title, rv.variant_type, r.slug
             FROM release_variants rv
             JOIN releases r ON r.id = rv.canonical_id
-            WHERE rv.variant_id = '${safeId}'
+            WHERE rv.variant_id = ?
             LIMIT 1
-        `)[0];
+        `, [_releaseId])[0];
 
         if (!result || result.values.length === 0) return;
 
@@ -1402,15 +1384,13 @@ const ViewRelease = (() => {
     // Row appended after Genre in the stats table (same stats-table-genres-row pattern) —
     // shows every canonical list (RS500, NME AOTY, etc.) this release appears on.
     function loadListRankings() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const result = _db.exec(`
             SELECT cl.id, cl.short_name, cl.name, cle.rank, cle.position_label
             FROM canonical_list_entries cle
             JOIN canonical_lists cl ON cl.id = cle.list_id
-            WHERE cle.release_id = '${safeId}'
+            WHERE cle.release_id = ?
             ORDER BY cle.rank
-        `)[0];
+        `, [_releaseId])[0];
 
         if (!result || result.values.length === 0) return;
 
@@ -1431,25 +1411,23 @@ const ViewRelease = (() => {
     // ── Listening history ───────────────────────────────────────────────────────
 
     function loadListeningHistory() {
-        const safeId = _releaseId.replace(/'/g, "''");
-
         const monthlyResult = _db.exec(`
             SELECT l.year, l.month, COUNT(*) as listen_count
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
-            WHERE t.release_id = '${safeId}' AND t.hidden = 0
+            WHERE t.release_id = ? AND t.hidden = 0
             GROUP BY l.year, l.month
             ORDER BY l.year, l.month
-        `)[0];
+        `, [_releaseId])[0];
 
         const yearlyResult = _db.exec(`
             SELECT l.year, COUNT(*) as listen_count
             FROM listens l
             JOIN tracks t ON l.track_id = t.id
-            WHERE t.release_id = '${safeId}' AND t.hidden = 0
+            WHERE t.release_id = ? AND t.hidden = 0
             GROUP BY l.year
             ORDER BY l.year
-        `)[0];
+        `, [_releaseId])[0];
 
         if ((!monthlyResult || monthlyResult.values.length === 0) &&
             (!yearlyResult  || yearlyResult.values.length  === 0)) {
@@ -1467,79 +1445,10 @@ const ViewRelease = (() => {
 
         if (yearlyResult && yearlyResult.values.length > 0) {
             _chartData.yearly = buildYearlyChartData(yearlyResult.values);
-            renderPulse(yearlyResult.values);
+            renderPulse(yearlyResult.values, _chartData.monthlyRaw);
         }
 
         if (CHART_ENABLED) renderChart();
-    }
-
-    function renderPulse(yearlyValues) {
-        const pulseEl = document.getElementById('pulseSection');
-        const rowsEl  = document.getElementById('pulseRows');
-        if (!pulseEl || !rowsEl || !yearlyValues || yearlyValues.length === 0) return;
-
-        const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        const max = Math.max(...yearlyValues.map(([, count]) => count));
-
-        const monthlyByYear = new Map();
-        if (_chartData.monthlyRaw) {
-            _chartData.monthlyRaw.forEach(([year, month, count]) => {
-                if (!monthlyByYear.has(year)) monthlyByYear.set(year, new Map());
-                monthlyByYear.get(year).set(month, count);
-            });
-        }
-
-        rowsEl.innerHTML = yearlyValues.map(([year, count]) => {
-            const pct = Math.round((count / max) * 100);
-            return `
-                <div class="pulse-row" data-year="${year}">
-                    <span class="pulse-year">${year}</span>
-                    <span class="pulse-count">${formatNumber(count)}</span>
-                    <div class="pulse-bar-track">
-                        <div class="pulse-bar-fill" style="width: ${pct}%"></div>
-                    </div>
-                    <span class="pulse-chevron">▶</span>
-                </div>
-                <div class="pulse-monthly" id="pulse-monthly-${year}" style="display:none"></div>
-            `;
-        }).join('');
-
-        rowsEl.addEventListener('click', e => {
-            const row = e.target.closest('.pulse-row');
-            if (!row) return;
-            const year      = parseInt(row.dataset.year);
-            const monthlyEl = document.getElementById(`pulse-monthly-${year}`);
-            if (!monthlyEl) return;
-
-            const isExpanded = row.classList.contains('expanded');
-            if (isExpanded) {
-                monthlyEl.style.display = 'none';
-                row.classList.remove('expanded');
-                return;
-            }
-
-            if (!monthlyEl.innerHTML) {
-                const monthMap = monthlyByYear.get(year) || new Map();
-                const monthMax = Math.max(...[...monthMap.values()], 1);
-                monthlyEl.innerHTML = Array.from({ length: 12 }, (_, i) => {
-                    const m = i + 1;
-                    const c = monthMap.get(m) || 0;
-                    const p = Math.round((c / monthMax) * 100);
-                    return `
-                        <div class="pulse-month-row">
-                            <span class="pulse-month-name">${monthNames[i]}</span>
-                            <span class="pulse-month-count">${c > 0 ? formatNumber(c) : ''}</span>
-                            <div class="pulse-month-bar-track">
-                                <div class="pulse-month-bar-fill" style="width: ${p}%"></div>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-            }
-
-            monthlyEl.style.display = '';
-            row.classList.add('expanded');
-        });
     }
 
     function buildMonthlyChartData(values) {

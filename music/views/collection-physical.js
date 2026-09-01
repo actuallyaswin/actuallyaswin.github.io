@@ -1,11 +1,14 @@
 const ViewCollectionPhysical = (() => {
     let _db = null;
 
-    // Deterministic spine colour — fallback when no art / CORS blocked
+    // Deterministic spine colour — fallback when no art / CORS blocked.
+    // Same formula and constants as collection-digital.js's copy; keep them
+    // in sync so the same release doesn't render a different spine color
+    // depending which collection view you're looking at.
     function _spineColor(seed) {
         let h = 0;
         for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-        return `hsl(${h % 360},30%,22%)`;
+        return `hsl(${h % 360},28%,24%)`;
     }
 
     // Spine width from runtime (minutes). No data → 20px default.
@@ -54,8 +57,10 @@ const ViewCollectionPhysical = (() => {
         'vinyl - blues/classical':       'Classical / Orchestral',
     };
 
+    // Same order as collection-digital.js's copy — kept in sync so genre
+    // sections don't reorder depending which collection view you're on.
     const GENRE_ORDER = [
-        'Hip-Hop / Rap', 'Rock / Alternative', 'Funk / Soul', 'Electronic',
+        'Hip-Hop / Rap', 'Electronic', 'Rock / Alternative', 'Funk / Soul',
         'Jazz', 'Pop', 'Classical / Orchestral', 'Experimental', 'Other',
     ];
 
@@ -102,6 +107,7 @@ const ViewCollectionPhysical = (() => {
             sorted.forEach(item => {
                 const tr = document.createElement('tr');
                 tr.style.cursor = 'pointer';
+                tr.tabIndex = 0;
                 tr.innerHTML = `
                     <td>${escapeHtml(item.title)}</td>
                     <td style="color:var(--text-secondary)">${escapeHtml(item.artist)}</td>
@@ -110,6 +116,11 @@ const ViewCollectionPhysical = (() => {
                     <td class="sl-listens">${item.listens ? formatNumber(item.listens) : '—'}</td>
                 `;
                 tr.addEventListener('click', () => _openDrawer(item));
+                tr.addEventListener('keydown', e => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    _openDrawer(item);
+                });
                 tbody.appendChild(tr);
             });
             container.appendChild(tbl);
@@ -347,10 +358,13 @@ const ViewCollectionPhysical = (() => {
         const items = _loadItems();
 
         if (!items.length) {
-            page.innerHTML = `<p style="color:var(--text-secondary);margin-top:2rem">
-                No collection items found.
-                Run <code>python mdb.py collection import &lt;csv&gt;</code> to import your Discogs collection.
-            </p>`;
+            page.innerHTML = `<div class="empty-state">
+                <i data-lucide="disc-3" class="app-error-icon"></i>
+                <div class="empty-state-title">No physical collection yet</div>
+                <p class="empty-state-hint">Run <code>python mdb.py collection import &lt;csv&gt;</code>
+                    to import your Discogs collection.</p>
+            </div>`;
+            lucide.createIcons();
             return;
         }
 

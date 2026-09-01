@@ -111,6 +111,8 @@ from mdb_websources import (
     scrape_aoty_genre_relations,
     _has_aoty,
     fetch_date_candidates,
+    find_aoty_artist_url,
+    find_wikipedia_artist_page,
 )
 from mdb_cli import (
     _fmt_dur, _trunc,
@@ -119,6 +121,7 @@ from mdb_cli import (
     cmd_track_variants,
     cmd_enrich_soundtracks,
 )
+from mdb_concert_stats import compute_concert_stats
 
 try:
     import requests
@@ -2675,6 +2678,116 @@ def cmd_enrich_aoty(args):
     console.rule(style='dim')
     console.print(f'  [dim]Updated: {updated} · Skipped: {skipped} · Marked not-found: {marked}[/dim]')
 
+# ── cmd: enrich artist-links ─────────────────────────────────────────────────
+
+def cmd_enrich_artist_links(args):
+    """Backfill artists.aoty_id/aoty_url and a Wikipedia external_links row
+    for artists that have neither, ordered by Spotify popularity (most
+    prominent artists first) so a partial/interrupted run covers the artists
+    most likely to be looked up.
+
+    Both lookups are pure name searches (no MBID/UPC to key off, unlike the
+    release-level enrich commands) so false positives are the main risk —
+    see find_aoty_artist_url()'s discography cross-check and
+    find_wikipedia_artist_page()'s description-based validation in
+    mdb_websources.py for how each guards against same-name collisions.
+    """
+    updated_aoty = updated_wiki = skipped = 0
+    with managed_db(args.db or DB_PATH) as conn:
+        artist_clause = ''
+        params: list = []
+        if args.artist:
+            row = resolve_artist(conn, args.artist)
+            if not row:
+                console.print(f'[red]Artist not found:[/red] {args.artist}')
+                return
+            artist_clause = 'AND a.id = ?'
+            params.append(row['id'])
+
+        missing_clause = '' if args.force else '''
+            AND (a.aoty_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM external_links el
+                WHERE el.entity_type = ? AND el.entity_id = a.id AND el.service = ?
+            ))
+        '''
+        if not args.force:
+            params = [EL_ARTIST, EL_SVC_WIKIPEDIA] + params
+
+        rows = conn.execute(f'''
+            SELECT a.id, a.name, a.aoty_id,
+                   EXISTS (
+                       SELECT 1 FROM external_links el
+                       WHERE el.entity_type = {EL_ARTIST} AND el.entity_id = a.id AND el.service = {EL_SVC_WIKIPEDIA}
+                   ) AS has_wiki
+            FROM artists a
+            WHERE a.hidden = 0 AND a.spotify_popularity IS NOT NULL {artist_clause} {missing_clause}
+            ORDER BY a.spotify_popularity DESC, a.name
+        ''', params).fetchall()
+
+        queue = _paginate(rows, args)
+        console.print(f'[dim]{len(rows)} artists missing AOTY/Wikipedia links, processing {len(queue)}[/dim]\n')
+
+        for i, row in enumerate(queue):
+            aid, name, aoty_id, has_wiki = row['id'], row['name'], row['aoty_id'], row['has_wiki']
+            aliases = [r[0] for r in conn.execute(
+                'SELECT alias FROM artist_aliases WHERE artist_id = ?', (aid,)
+            ).fetchall()]
+            parts = [f'[{i+1}/{len(queue)}]', name]
+
+            if not aoty_id or args.force:
+                known_titles = [r[0] for r in conn.execute('''
+                    SELECT title FROM releases WHERE primary_artist_id = ? AND hidden = 0
+                ''', (aid,)).fetchall()]
+                try:
+                    aoty_url = find_aoty_artist_url(name, known_titles)
+                except Exception as e:
+                    console.print(f'  [yellow]AOTY search failed for {name}: {e}[/yellow]')
+                    aoty_url = None
+                if aoty_url:
+                    m = re.search(r'/artist/(\d+)-', aoty_url)
+                    if m:
+                        try:
+                            conn.execute(
+                                'UPDATE artists SET aoty_id = ?, aoty_url = ? WHERE id = ?',
+                                (int(m.group(1)), aoty_url, aid)
+                            )
+                            conn.commit()
+                            parts.append('[green]AOTY ✓[/green]')
+                            updated_aoty += 1
+                        except sqlite3.IntegrityError:
+                            # aoty_id already claimed by a different artist row — a
+                            # same-name collision our disambiguation missed; skip
+                            # rather than corrupt the other artist's link.
+                            parts.append('[yellow]AOTY id conflict[/yellow]')
+                else:
+                    parts.append('[dim]AOTY —[/dim]')
+
+            if not has_wiki or args.force:
+                page_id = None
+                for candidate_name in [name] + aliases:
+                    try:
+                        page_id = find_wikipedia_artist_page(candidate_name)
+                    except Exception as e:
+                        console.print(f'  [yellow]Wikipedia search failed for {candidate_name}: {e}[/yellow]')
+                        page_id = None
+                    if page_id:
+                        break
+                if page_id:
+                    upsert_external_link(conn, EL_ARTIST, aid, EL_SVC_WIKIPEDIA, str(page_id))
+                    conn.commit()
+                    parts.append('[green]wiki ✓[/green]')
+                    updated_wiki += 1
+                else:
+                    parts.append('[dim]wiki —[/dim]')
+
+            if len(parts) == 2:
+                skipped += 1
+            console.print('  '.join(parts))
+
+    console.rule(style='dim')
+    console.print(f'  [dim]AOTY linked: {updated_aoty} · Wikipedia linked: {updated_wiki} · '
+                  f'Skipped (already had both): {skipped}[/dim]')
+
 # ── cmd: enrich dates ─────────────────────────────────────────────────────────
 
 def cmd_enrich_dates(args):
@@ -2883,7 +2996,7 @@ def cmd_enrich_tracks(args):
 def cmd_enrich_deezer_links(args):
     """Backfill Deezer external links for releases that have a UPC but no Deezer link.
 
-    UPC is re-fetched from Spotify (batch 50/call) or MusicBrainz (barcode field).
+    UPC is re-fetched from Spotify (batch 20/call) or MusicBrainz (barcode field).
     """
     load_dotenv()
 
@@ -2929,8 +3042,11 @@ def cmd_enrich_deezer_links(args):
             csc = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
             if cid and csc:
                 client = SpotifyClient(cid, csc)
-                for chunk_start in range(0, len(sp_rows), 50):
-                    chunk = sp_rows[chunk_start:chunk_start + 50]
+                # Spotify's /albums endpoint caps out at 20 ids per call — passing
+                # more (the API docs' own examples show up to 20) fails the whole
+                # batch with a 400, not a partial result.
+                for chunk_start in range(0, len(sp_rows), 20):
+                    chunk = sp_rows[chunk_start:chunk_start + 20]
                     ids   = [sid for _, sid in chunk]
                     try:
                         data   = client.get(f'/albums?ids={",".join(ids)}')
@@ -2947,7 +3063,7 @@ def cmd_enrich_deezer_links(args):
                                     conn.execute('UPDATE releases SET upc=? WHERE id=? AND upc IS NULL',
                                                  (n, rel_id))
                     except Exception as e:
-                        console.print(f'  [dim yellow]Spotify batch {chunk_start//50+1} failed: {e}[/dim yellow]')
+                        console.print(f'  [dim yellow]Spotify batch {chunk_start//20+1} failed: {e}[/dim yellow]')
             else:
                 console.print('  [dim yellow]No Spotify credentials — skipping Spotify UPC fetch[/dim yellow]')
 
@@ -3072,7 +3188,7 @@ def cmd_enrich_descriptions(args):
 def cmd_enrich_apple_links(args):
     """Backfill Apple Music IDs for releases that have a UPC but no apple_music_id.
 
-    UPC is re-fetched from Spotify (batch 50/call) or MusicBrainz (barcode field),
+    UPC is re-fetched from Spotify (batch 20/call) or MusicBrainz (barcode field),
     same as deezer-links. Unlike Deezer, iTunes matches on padded or unpadded UPC.
     """
     load_dotenv()
@@ -3115,8 +3231,10 @@ def cmd_enrich_apple_links(args):
             csc = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
             if cid and csc:
                 client = SpotifyClient(cid, csc)
-                for chunk_start in range(0, len(sp_rows), 50):
-                    chunk = sp_rows[chunk_start:chunk_start + 50]
+                # Spotify's /albums endpoint caps out at 20 ids per call — passing
+                # more fails the whole batch with a 400, not a partial result.
+                for chunk_start in range(0, len(sp_rows), 20):
+                    chunk = sp_rows[chunk_start:chunk_start + 20]
                     ids   = [sid for _, sid in chunk]
                     try:
                         data   = client.get(f'/albums?ids={",".join(ids)}')
@@ -3133,7 +3251,7 @@ def cmd_enrich_apple_links(args):
                                     conn.execute('UPDATE releases SET upc=? WHERE id=? AND upc IS NULL',
                                                  (n, rel_id))
                     except Exception as e:
-                        console.print(f'  [dim yellow]Spotify batch {chunk_start//50+1} failed: {e}[/dim yellow]')
+                        console.print(f'  [dim yellow]Spotify batch {chunk_start//20+1} failed: {e}[/dim yellow]')
             else:
                 console.print('  [dim yellow]No Spotify credentials — skipping Spotify UPC fetch[/dim yellow]')
 
@@ -5160,6 +5278,21 @@ def cmd_artist_merge(args):
         if dup_ra or dup_ta:
             console.print(f'  [dim]Removed {dup_ra} duplicate release_artists, {dup_ta} duplicate track_artists[/dim]')
 
+        # concert_performances has no UNIQUE(event_id, artist_id) constraint (only
+        # setlistfm_url is unique), so a merge can't collide there, but TO could
+        # still already have a performance at the same event as FROM (e.g. both
+        # stub rows independently imported from the same setlist.fm show) — drop
+        # FROM's row in that case rather than leaving two performances for one
+        # artist at one event.
+        dup_cp = conn.execute('''
+            DELETE FROM concert_performances
+            WHERE artist_id = ?
+            AND event_id IN (SELECT event_id FROM concert_performances WHERE artist_id = ?)
+        ''', [from_id, to_id]).rowcount
+        if dup_cp:
+            console.print(f'  [dim]Removed {dup_cp} duplicate concert_performances[/dim]')
+        conn.execute('UPDATE concert_performances SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
+
         # Repoint FK references
         conn.execute('UPDATE release_artists SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
         conn.execute('UPDATE track_artists   SET artist_id = ? WHERE artist_id = ?', [to_id, from_id])
@@ -6901,8 +7034,8 @@ def _stats_certified(conn, cache, vlog):
     t0 = time.perf_counter()
     cert_order = {'diamond': 0, 'platinum': 1, 'gold': 2}
     cert_rows = sorted(
-        conn.execute("SELECT id, name, cert, slug FROM artists WHERE cert IS NOT NULL").fetchall(),
-        key=lambda r: cert_order.get(r['cert'], 99))
+        conn.execute("SELECT id, name, cert, slug, stat_total_plays FROM artists WHERE cert IS NOT NULL").fetchall(),
+        key=lambda r: (cert_order.get(r['cert'], 99), -(r['stat_total_plays'] or 0)))
     cache['cert'] = [{'id': r['id'], 'name': r['name'], 'cert': r['cert'], 'slug': r['slug']} for r in cert_rows]
     vlog('cert', cache['cert'], t0)
 
@@ -7015,6 +7148,24 @@ def _stats_nerd(conn, cache, vlog):
         )
         SELECT MAX(rank) as cutover FROM ranked WHERE play_count >= rank
     ''').fetchone()
+    listened_row = conn.execute('''
+        SELECT
+            (SELECT COUNT(DISTINCT ta.artist_id)
+             FROM listens l
+             JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+             JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'main'
+             JOIN artists a ON a.id = ta.artist_id AND a.hidden = 0
+            ) as listened_artists,
+            (SELECT COUNT(DISTINCT t.release_id)
+             FROM listens l
+             JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+             JOIN releases r ON r.id = t.release_id AND r.hidden = 0
+            ) as listened_releases,
+            (SELECT COUNT(DISTINCT l.track_id)
+             FROM listens l
+             JOIN tracks t ON l.track_id = t.id AND t.hidden = 0
+            ) as listened_tracks
+    ''').fetchone()
 
     active = days_row['active_days'] or 0
     total_days = days_row['total_days'] or 0
@@ -7034,6 +7185,9 @@ def _stats_nerd(conn, cache, vlog):
         'every_year_total_years': ey_rows[0]['total_yrs'] if ey_rows else 0,
         'eddington': edd_row['eddington'] if edd_row else 0,
         'artist_cutover': cutover_row['cutover'] if cutover_row else 0,
+        'listened_artists': listened_row['listened_artists'] or 0,
+        'listened_releases': listened_row['listened_releases'] or 0,
+        'listened_tracks': listened_row['listened_tracks'] or 0,
     }
     vlog('nerd', [cache['nerd']], t0)
 
@@ -7158,6 +7312,285 @@ def _stats_canonical_lists(conn, cache, vlog):
         })
     cache['canonicalLists'] = canon_lists
     vlog('canonicalLists', canon_lists, t0)
+
+
+def _release_meta(conn, ids):
+    """id -> sqlite3.Row of title/year/slug/spotify_id/art/artist_name, for
+    attaching display metadata to a list of release ids found by a trend."""
+    if not ids:
+        return {}
+    placeholders = ','.join('?' * len(ids))
+    return {m['id']: m for m in conn.execute(f'''
+        SELECT r.id, r.title, r.release_year, r.slug, r.spotify_id,
+               COALESCE(r.album_art_thumb_url, r.album_art_url) as art_url,
+               a.name as artist_name
+        FROM releases r
+        LEFT JOIN artists a ON a.id = r.primary_artist_id
+        WHERE r.id IN ({placeholders})
+    ''', ids).fetchall()}
+
+
+def _with_release_meta(conn, hits):
+    """Attach _release_meta fields to each hit dict (keyed by 'release_id'),
+    dropping hits for releases meta lookup didn't return (shouldn't happen,
+    but hidden/deleted releases between query and lookup are possible).
+    A hit's own 'artist' (e.g. one-hit-wonders' actual credited artist, which
+    can differ from the release's primary artist on a multi-artist release)
+    wins over the release's primary artist."""
+    meta = _release_meta(conn, [h['release_id'] for h in hits])
+    return [
+        {**h, 'title': meta[h['release_id']]['title'],
+         'artist': h.get('artist') or meta[h['release_id']]['artist_name'],
+         'art_url': meta[h['release_id']]['art_url'], 'release_year': meta[h['release_id']]['release_year'],
+         'slug': meta[h['release_id']]['slug'], 'spotify_id': meta[h['release_id']]['spotify_id']}
+        for h in hits if h['release_id'] in meta
+    ]
+
+
+def _trend_hyperfixation_and_burnout(conn, now):
+    """Two shelves from one pass over per-release listen timestamps:
+    hyper-fixation (a short burst that dominates all-time plays) and
+    burnout (a burst that was the LAST thing that ever happened to the
+    release — dominates plays, then total silence since)."""
+    rows = conn.execute('''
+        SELECT r.id as release_id, l.timestamp
+        FROM listens l
+        JOIN tracks t ON l.track_id = t.id
+        JOIN releases r ON r.id = t.release_id
+        WHERE t.hidden = 0 AND t.variant_section IS NULL AND r.hidden = 0
+        ORDER BY r.id, l.timestamp
+    ''').fetchall()
+
+    by_release = {}
+    for r in rows:
+        by_release.setdefault(r['release_id'], []).append(r['timestamp'])
+
+    def _best_window(ts_list, window_secs):
+        best_count = best_start = best_end = 0
+        lo = 0
+        for hi in range(len(ts_list)):
+            while ts_list[hi] - ts_list[lo] > window_secs:
+                lo += 1
+            count = hi - lo + 1
+            if count > best_count:
+                best_count, best_start, best_end = count, ts_list[lo], ts_list[hi]
+        return best_count, best_start, best_end
+
+    HF_WINDOW, HF_MIN_PLAYS, HF_MIN_FRACTION = 14 * 86400, 15, 0.8
+    BO_WINDOW, BO_MIN_PLAYS, BO_MIN_FRACTION = 30 * 86400, 20, 0.6
+    BO_SILENCE_SECS, BO_GRACE_SECS = 120 * 86400, 7 * 86400
+
+    hyperfixation, burnout = [], []
+    for release_id, ts_list in by_release.items():
+        total = len(ts_list)
+        if total < HF_MIN_PLAYS:
+            continue
+        hf_count, hf_start, hf_end = _best_window(ts_list, HF_WINDOW)
+        hf_fraction = hf_count / total
+        if hf_fraction >= HF_MIN_FRACTION:
+            hyperfixation.append({
+                'release_id': release_id, 'window_plays': hf_count, 'total_plays': total,
+                'fraction': round(hf_fraction, 3), 'window_start': hf_start, 'window_end': hf_end,
+            })
+
+        if total < BO_MIN_PLAYS:
+            continue
+        bo_count, bo_start, bo_end = _best_window(ts_list, BO_WINDOW)
+        bo_fraction = bo_count / total
+        last_ts = ts_list[-1]
+        if (bo_fraction >= BO_MIN_FRACTION and now - last_ts >= BO_SILENCE_SECS
+                and last_ts - bo_end <= BO_GRACE_SECS):
+            burnout.append({
+                'release_id': release_id, 'window_plays': bo_count, 'total_plays': total,
+                'fraction': round(bo_fraction, 3), 'window_start': bo_start, 'window_end': bo_end,
+                'silence_days': (now - last_ts) // 86400,
+            })
+
+    hyperfixation.sort(key=lambda h: (-h['window_plays'], -h['fraction']))
+    burnout.sort(key=lambda h: (-h['window_plays'], -h['fraction']))
+    return (_with_release_meta(conn, hyperfixation[:30]),
+            _with_release_meta(conn, burnout[:30]))
+
+
+def _trend_one_hit_wonders(conn):
+    """Artists where a single track accounts for most of their plays —
+    plain SQL, no session logic needed."""
+    rows = conn.execute('''
+        WITH track_plays AS (
+            SELECT ta.artist_id, t.id as track_id, t.release_id, COUNT(l.id) as plays
+            FROM listens l
+            JOIN tracks t ON l.track_id = t.id AND t.hidden = 0 AND t.variant_section IS NULL
+            JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+            GROUP BY ta.artist_id, t.id
+        ),
+        artist_totals AS (
+            SELECT artist_id, SUM(plays) as total_plays, MAX(plays) as max_track_plays
+            FROM track_plays GROUP BY artist_id
+            HAVING SUM(plays) >= 15
+        )
+        SELECT tp.artist_id, a.name as artist_name, tp.release_id, tp.plays as track_plays, at.total_plays
+        FROM track_plays tp
+        JOIN artist_totals at ON at.artist_id = tp.artist_id AND at.max_track_plays = tp.plays
+        LEFT JOIN artists a ON a.id = tp.artist_id
+        WHERE CAST(tp.plays AS REAL) / at.total_plays >= 0.9
+        ORDER BY tp.plays DESC LIMIT 30
+    ''').fetchall()
+    hits = [
+        {'release_id': r['release_id'], 'window_plays': r['track_plays'], 'total_plays': r['total_plays'],
+         'fraction': round(r['track_plays'] / r['total_plays'], 3), 'artist': r['artist_name']}
+        for r in rows
+    ]
+    return _with_release_meta(conn, hits)
+
+
+def _trend_sequential_loop(conn):
+    """Releases played track-1-through-end in order, with no gap longer
+    than LOOP_MAX_GAP between consecutive tracks — a genuine start-to-finish
+    sitting rather than shuffled/partial listening."""
+    LOOP_MAX_GAP = 15 * 60
+
+    track_rows = conn.execute('''
+        SELECT t.id as track_id, t.release_id,
+               ROW_NUMBER() OVER (PARTITION BY t.release_id ORDER BY t.disc_number, t.track_number) as seq,
+               COUNT(*) OVER (PARTITION BY t.release_id) as track_count
+        FROM tracks t
+        WHERE t.hidden = 0 AND t.variant_section IS NULL
+    ''').fetchall()
+    track_meta = {r['track_id']: (r['release_id'], r['seq'], r['track_count']) for r in track_rows}
+
+    listen_rows = conn.execute('''
+        SELECT l.track_id, l.timestamp
+        FROM listens l
+        JOIN tracks t ON t.id = l.track_id AND t.hidden = 0 AND t.variant_section IS NULL
+        JOIN releases r ON r.id = t.release_id AND r.hidden = 0
+        ORDER BY t.release_id, l.timestamp
+    ''').fetchall()
+
+    by_release = {}
+    for r in listen_rows:
+        meta = track_meta.get(r['track_id'])
+        if not meta:
+            continue
+        release_id, seq, track_count = meta
+        if track_count < 4:  # need a real tracklist for "loop" to mean anything
+            continue
+        by_release.setdefault(release_id, []).append((r['timestamp'], seq, track_count))
+
+    hits = []
+    for release_id, events in by_release.items():
+        events.sort()
+        track_count = events[0][2]
+        run_start_ts = None
+        expected_seq = None
+        for i, (ts, seq, _tc) in enumerate(events):
+            if expected_seq is None:
+                if seq == 1:
+                    run_start_ts, expected_seq = ts, 2
+                continue
+            if seq == expected_seq and ts - events[i - 1][0] <= LOOP_MAX_GAP:
+                if expected_seq == track_count:
+                    hits.append({
+                        'release_id': release_id, 'loop_start': run_start_ts, 'loop_end': ts,
+                        'track_count': track_count,
+                    })
+                    break
+                expected_seq += 1
+            elif seq == 1:
+                run_start_ts, expected_seq = ts, 2
+            else:
+                run_start_ts = expected_seq = None
+
+    hits.sort(key=lambda h: -h['loop_end'])
+    return _with_release_meta(conn, hits[:30])
+
+
+def _trend_post_concert_spike(conn, now):
+    """Listens to an artist spiking in the week after seeing them live,
+    versus that artist's baseline rate in the 90 days before the show."""
+    listen_rows = conn.execute('''
+        SELECT ta.artist_id, l.timestamp
+        FROM listens l
+        JOIN tracks t ON l.track_id = t.id AND t.hidden = 0 AND t.variant_section IS NULL
+        JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+        ORDER BY ta.artist_id, l.timestamp
+    ''').fetchall()
+    by_artist = {}
+    for r in listen_rows:
+        by_artist.setdefault(r['artist_id'], []).append(r['timestamp'])
+
+    concerts = conn.execute('''
+        SELECT cp.artist_id, ce.event_date
+        FROM concert_performances cp
+        JOIN concert_events ce ON ce.id = cp.event_id
+    ''').fetchall()
+
+    SPIKE_SECS, BASELINE_SECS = 7 * 86400, 90 * 86400
+    MIN_SPIKE_PLAYS, MIN_RATIO = 5, 3.0
+
+    hits = []
+    for c in concerts:
+        ts_list = by_artist.get(c['artist_id'])
+        if not ts_list:
+            continue
+        try:
+            event_ts = int(datetime.strptime(c['event_date'], '%Y-%m-%d').timestamp())
+        except ValueError:
+            continue
+        if event_ts > now:
+            continue
+        spike_plays = sum(1 for ts in ts_list if event_ts <= ts < event_ts + SPIKE_SECS)
+        baseline_plays = sum(1 for ts in ts_list if event_ts - BASELINE_SECS <= ts < event_ts)
+        baseline_rate = baseline_plays / (BASELINE_SECS / SPIKE_SECS)  # expected plays per 7-day week
+        if spike_plays >= MIN_SPIKE_PLAYS and spike_plays >= MIN_RATIO * max(baseline_rate, 1):
+            # Best-played release for that artist during the spike window
+            top_release = conn.execute('''
+                SELECT t.release_id, COUNT(*) as plays
+                FROM listens l
+                JOIN tracks t ON l.track_id = t.id AND t.hidden = 0 AND t.variant_section IS NULL
+                JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'main'
+                JOIN releases r ON r.id = t.release_id AND r.hidden = 0
+                WHERE ta.artist_id = ? AND l.timestamp >= ? AND l.timestamp < ?
+                GROUP BY t.release_id ORDER BY plays DESC LIMIT 1
+            ''', [c['artist_id'], event_ts, event_ts + SPIKE_SECS]).fetchone()
+            if top_release:
+                hits.append({
+                    'release_id': top_release['release_id'], 'window_plays': spike_plays,
+                    'total_plays': baseline_plays, 'fraction': round(baseline_rate, 2),
+                    'event_date': c['event_date'],
+                })
+
+    hits.sort(key=lambda h: -h['window_plays'])
+    # One card per release — same album can headline multiple qualifying shows
+    seen_releases = set()
+    deduped = []
+    for h in hits:
+        if h['release_id'] in seen_releases:
+            continue
+        seen_releases.add(h['release_id'])
+        deduped.append(h)
+    return _with_release_meta(conn, deduped[:30])
+
+
+def _stats_trends(conn, cache, vlog):
+    """Behavioral listening-pattern shelves for views/trends.js. Computed in
+    Python (session/window clustering over raw timestamps) rather than SQL
+    since gap-and-island logic reads far more clearly as a sliding window
+    over a sorted list than as a recursive CTE."""
+    t0 = time.perf_counter()
+    now = int(time.time())
+
+    hyperfixation, burnout = _trend_hyperfixation_and_burnout(conn, now)
+    cache['trendsHyperFixation']   = hyperfixation
+    cache['trendsBurnout']         = burnout
+    cache['trendsOneHitWonder']    = _trend_one_hit_wonders(conn)
+    cache['trendsSequentialLoop']  = _trend_sequential_loop(conn)
+    cache['trendsPostConcertSpike'] = _trend_post_concert_spike(conn, now)
+
+    vlog('trendsHyperFixation', cache['trendsHyperFixation'], t0)
+    vlog('trendsBurnout', cache['trendsBurnout'], t0)
+    vlog('trendsOneHitWonder', cache['trendsOneHitWonder'], t0)
+    vlog('trendsSequentialLoop', cache['trendsSequentialLoop'], t0)
+    vlog('trendsPostConcertSpike', cache['trendsPostConcertSpike'], t0)
 
 
 def _stats_write_cache(conn, cache):
@@ -7394,6 +7827,8 @@ def cmd_stats_refresh(args):
         _stats_nerd(conn, cache, _vlog)
         _stats_genres_index(conn, cache, _vlog)
         _stats_canonical_lists(conn, cache, _vlog)
+        _stats_trends(conn, cache, _vlog)
+        compute_concert_stats(conn, cache, _vlog)
         _stats_write_cache(conn, cache)
 
         _refresh_track_stats(conn, _vlog)
@@ -9209,6 +9644,13 @@ def main():
                                   help='Also fetch Spotify photo/followers/popularity for artists missing them '
                                        '(one command instead of the manual search+curl+UPDATE loop)')
     p_artists_enrich.set_defaults(func=cmd_enrich_artists)
+
+    p_artist_links = es.add_parser('artist-links',
+        help='Backfill artist-page AOTY and Wikipedia links, ordered by Spotify popularity')
+    _add_filter_args(p_artist_links)
+    p_artist_links.add_argument('--force', action='store_true',
+                                help='Re-search even for artists that already have both links')
+    p_artist_links.set_defaults(func=cmd_enrich_artist_links)
 
     p_art = es.add_parser('art', help='Fill in or replace album art (CAA → Spotify → manual URL)')
     _add_filter_args(p_art)

@@ -697,7 +697,7 @@ header h1 {
 .pill-rym             .pill-mask { -webkit-mask-image: url('images/links/rym.svg');             mask-image: url('images/links/rym.svg'); }
 .pill-residentadvisor .pill-mask { -webkit-mask-image: url('images/links/residentadvisor.png'); mask-image: url('images/links/residentadvisor.png'); }
 .pill-traxsource      .pill-mask { -webkit-mask-image: url('images/links/traxsource.svg');      mask-image: url('images/links/traxsource.svg'); }
-.pill-aoty-img    { width: 16px; height: 16px; object-fit: contain; border-radius: 2px; position: relative; z-index: 1; }
+.pill-aoty            .pill-mask { -webkit-mask-image: url('images/links/aoty.svg');            mask-image: url('images/links/aoty.svg'); }
 
 .pill-text {
     display: flex; flex-direction: column; min-width: 0; flex: 1;
@@ -817,6 +817,27 @@ header h1 {
 .artist-compare-link:hover { color: var(--primary); }
 .artist-compare-link svg { width: 0.875rem; height: 0.875rem; }
 
+/* Compare entry point on Top/Year Artists list rows — same visual language
+   as .artist-compare-link, positioned over the row rather than inline. */
+.wide-grid li { position: relative; }
+.row-compare-link {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text-tertiary);
+    background: var(--bg-secondary);
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 0.75rem;
+    z-index: 1;
+}
+.row-compare-link:hover { color: var(--primary); }
+.row-compare-link svg { width: 0.8rem; height: 0.8rem; }
+
 .bc-home {
     color: var(--text-tertiary);
     display: flex;
@@ -924,6 +945,28 @@ header h1 {
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 1rem;
     margin-bottom: 3rem;
+}
+
+/* Forces an even column count (e.g. 4x2 for an 8-card section) instead of
+   auto-fit's flow, which can leave a short, off-center last row. Compound
+   selector (.stats.stats--quarters) so it reliably outranks the generic
+   .stats mobile override elsewhere in this file regardless of source order. */
+.stats.stats--quarters { grid-template-columns: repeat(4, 1fr); }
+/* Breakpoints match Tailwind's md(768)/sm(640) scale, same as the rest of
+   the Stats page's layout system (.insights-flex, .bar-columns). */
+@media (max-width: 768px) {
+    .stats.stats--quarters { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+    .stats.stats--quarters { grid-template-columns: 1fr; }
+}
+/* Plain (non-quarters) .stats only had a 2-column floor down to the
+   smallest phones (via the max-width:768px block elsewhere in this file) --
+   add a true 1-column stage below sm so longer label/value pairs (e.g.
+   Stats for Nerds' "Total listening time" / "Artist cutover point") aren't
+   squeezed into ~150px-wide cards on a phone. */
+@media (max-width: 640px) {
+    .stats:not(.stats--quarters) { grid-template-columns: 1fr; }
 }
 
 .stat-card {
@@ -2429,9 +2472,9 @@ a.stat-card:hover .stat-label::after {
     border-radius: 50%;
     border: 1.5px solid rgba(0,0,0,0.35);
 }
-.release-cert-dot-gold     { background: #c9a227; }
-.release-cert-dot-platinum { background: #aab4be; }
-.release-cert-dot-diamond  { background: #67a1fd; }
+.release-cert-dot-gold     { background: var(--cert-gold); }
+.release-cert-dot-platinum { background: var(--cert-platinum); }
+.release-cert-dot-diamond  { background: var(--cert-diamond); }
 
 /* Pulse Section */
 .pulse-section h2 {
@@ -2722,21 +2765,38 @@ a.stat-card:hover .stat-label::after {
 }
 
 /* Insights groups (Stats page) — a cluster of related stat-section cards.
-   Two grid variants: halves (2-up, for sections with many rows — language,
-   era, country, recency) and thirds (3-up, for compact sections — bar
-   charts, stat cards, segmented bars). Both auto-wrap extra items onto new
-   rows and collapse to one column on narrow screens. */
+   .insights-group is a thematic cluster (margin/spacing between unrelated
+   topics); .insights-flex is a flex-wrap row of width-tagged sections
+   inside one cluster. Sections declare their own width (.w-full/.w-half/
+   .w-third) rather than the parent dictating a fixed column count — this
+   is what makes the Stats page's LAYOUT array (views/stats.js) trivial to
+   reorder or resize: moving an entry moves its section, changing its width
+   field changes its size, with no grid-template-columns math to update.
+   Caveat inherent to flex-wrap: widths within one row should sum to (or
+   divide) 100% for a clean row (e.g. two halves, or three thirds) — mixing
+   e.g. a half with a third leaves a gap that wraps the third to a new row.
+   That's a content-authoring responsibility (documented in stats.js's
+   LAYOUT), not something the CSS enforces. */
 .insights-group { margin: 2.5rem 0; }
-.insights-grid { display: grid; gap: 2rem; align-items: start; }
-.insights-grid > .stat-section { min-width: 0; margin-bottom: 0; }
-.insights-grid--halves { grid-template-columns: 1fr 1fr; }
-.insights-grid--thirds { grid-template-columns: repeat(3, 1fr); }
-@media (max-width: 900px) {
-    .insights-grid--thirds { grid-template-columns: 1fr 1fr; }
-}
-@media (max-width: 600px) {
-    .insights-grid--halves,
-    .insights-grid--thirds { grid-template-columns: 1fr; }
+.insights-flex { display: flex; flex-wrap: wrap; gap: 2rem; align-items: start; }
+.insights-flex > * { min-width: 0; margin-bottom: 0; }
+/* flow-root, not just margin-bottom:0 -- .stat-section itself has no
+   border/padding, so without a BFC boundary a descendant's own trailing
+   margin (e.g. .stats/.stat-card grids carry their own margin-bottom: 3rem)
+   collapses straight through it and gets trapped as extra height inside the
+   flex item, which is what caused the leftover whitespace under sections
+   even after zeroing .stat-section's own margin. */
+.insights-flex .stat-section { margin-bottom: 0; display: flow-root; }
+.insights-flex > .w-full  { flex: 1 1 100%; }
+.insights-flex > .w-half  { flex: 1 1 calc(50% - 1rem); }
+.insights-flex > .w-third { flex: 1 1 calc(33.333% - 1.334rem); }
+/* Single stacking breakpoint at Tailwind's `md` (768px) for both -- no
+   intermediate thirds-become-halves stage, since 3 items forced into 2
+   columns always orphans one item alone in a half-width row; going
+   straight from 3-up to a full single-column stack avoids that entirely. */
+@media (max-width: 768px) {
+    .insights-flex > .w-half,
+    .insights-flex > .w-third { flex: 1 1 100%; }
 }
 
 /* Recent Plays */
@@ -2896,6 +2956,83 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
 .history-source-lastfm  { background: rgba(210,0,80,0.15); color: #d20050; }
 .history-source-spotify { background: rgba(30,215,96,0.15); color: var(--svc-spotify); }
 
+/* Concerts view */
+.concert-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.4rem 0.25rem;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+.concert-row:hover { background: var(--bg-secondary); }
+.concert-date {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    flex-shrink: 0;
+    line-height: 1.15;
+}
+.concert-date-month { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; color: var(--text-tertiary); letter-spacing: 0.03em; }
+.concert-date-day   { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+.concert-date-year  { font-size: 0.62rem; color: var(--text-tertiary); }
+.concert-thumb {
+    width: 40px;
+    height: 40px;
+    border-radius: 5px;
+    background-size: cover;
+    background-position: center;
+    background-color: var(--border);
+    flex-shrink: 0;
+}
+.concert-info { flex: 1; min-width: 0; }
+.concert-byline {
+    font-size: 0.8rem;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.concert-byline a { color: inherit; text-decoration: none; }
+.concert-byline a:hover { text-decoration: underline; }
+.concert-guest-note { color: var(--text-tertiary); }
+.concert-venue {
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.concert-festival-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    background: var(--shadow-primary);
+    color: var(--primary-dark);
+    flex-shrink: 0;
+    max-width: 160px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.concert-external-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+}
+.concert-external-link:hover { background: var(--bg-tertiary); color: var(--text); }
+.concert-external-link svg { width: 14px; height: 14px; }
+.concert-venue-sub { color: var(--text-tertiary); flex-shrink: 0; white-space: nowrap; }
+
 /* Stats view */
 .stat-section { margin-bottom: 3rem; }
 .stat-section h3 { font-size: 1.15rem; margin-bottom: 0.2rem; }
@@ -3012,8 +3149,18 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
 }
 
 
-/* Language breakdown */
-.lang-list {
+/* Bar-row system: three shapes sharing one cell vocabulary
+   (.bar-code/.bar-track/.bar-fill/.bar-count/.bar-pct).
+     .bar-list  .bar-row        single column, chevron + drill-down panel
+     .bar-list.no-drill .bar-row  single column, no chevron (4 cells, not 5)
+     .bar-columns .bar-row-flow    N-column CSS flow, no chevron
+   .bar-list is one shared CSS grid (rows are display:contents) so every
+   row's bar track aligns off the same computed column widths. .bar-row-flow
+   is the opposite: each row is its OWN grid so it can be an independent box
+   for column-count to distribute -- which is why its cell columns are fixed
+   widths (9.5rem/1fr/4.5rem/3rem) rather than max-content; unlike .bar-list,
+   there's no shared parent to compute one width for every row. */
+.bar-list {
     display: grid;
     grid-template-columns: max-content 1fr max-content max-content max-content;
     column-gap: 0.5rem;
@@ -3022,16 +3169,38 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     margin-top: 0.75rem;
     max-width: 480px;
 }
-.lang-list.has-drilldown { max-width: 100%; }
-.lang-row { display: contents; }
-.lang-code { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
-.lang-bar-track { height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden; }
-.lang-bar-fill  { height: 100%; min-width: 3px; border-radius: 3px; transition: width 0.3s ease; }
-.lang-count { font-size: 0.7rem; color: var(--text-secondary); text-align: right; font-variant-numeric: tabular-nums; }
-.lang-pct   { font-size: 0.7rem; color: var(--text-tertiary); text-align: right; font-variant-numeric: tabular-nums; }
+.bar-list.has-drilldown { max-width: 100%; }
+.bar-list.no-drill { grid-template-columns: max-content 1fr max-content max-content; max-width: 100%; }
+.bar-row { display: contents; }
+
+.bar-columns {
+    column-count: 2;
+    column-gap: 2rem;
+    margin-top: 0.75rem;
+}
+@media (max-width: 768px) {
+    .bar-columns { column-count: 1; }
+}
+.bar-row-flow {
+    display: grid;
+    grid-template-columns: 9.5rem 1fr 4.5rem 3rem;
+    column-gap: 0.5rem;
+    align-items: center;
+    padding: 0.2rem 0;
+    text-decoration: none;
+    color: inherit;
+    break-inside: avoid;
+}
+.bar-row-flow:hover .bar-code { color: var(--primary); }
+.bar-row-flow .bar-code { overflow: hidden; text-overflow: ellipsis; }
+.bar-code { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.bar-track { height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden; }
+.bar-fill  { height: 100%; min-width: 3px; border-radius: 3px; transition: width 0.3s ease; }
+.bar-count { font-size: 0.7rem; color: var(--text-secondary); text-align: right; font-variant-numeric: tabular-nums; }
+.bar-pct   { font-size: 0.7rem; color: var(--text-tertiary); text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Drill-down chevron + expand panel, reusing artist.js's pulse-chevron rotate */
-.lang-chevron {
+.bar-chevron {
     color: var(--text-tertiary);
     font-size: 0.6rem;
     text-align: center;
@@ -3039,20 +3208,20 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     user-select: none;
     cursor: pointer;
 }
-.lang-row-clickable { cursor: pointer; }
-.lang-row-clickable:hover .lang-code,
-.lang-row-clickable:hover .lang-chevron { color: var(--primary); }
-.lang-chevron.expanded { transform: rotate(90deg); }
-.lang-chevron.disabled { opacity: 0.25; cursor: default; }
-.lang-expand {
+.bar-row-clickable { cursor: pointer; }
+.bar-row-clickable:hover .bar-code,
+.bar-row-clickable:hover .bar-chevron { color: var(--primary); }
+.bar-chevron.expanded { transform: rotate(90deg); }
+.bar-chevron.disabled { opacity: 0.25; cursor: default; }
+.bar-expand {
     grid-column: 1 / -1;
     display: none;
     gap: 0.6rem;
     flex-wrap: wrap;
     padding: 0.3rem 0 0.6rem 0;
 }
-.lang-expand.open { display: flex; }
-.lang-expand-card {
+.bar-expand.open { display: flex; }
+.bar-expand-card {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -3061,7 +3230,7 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     text-decoration: none;
     color: inherit;
 }
-.lang-expand-thumb {
+.bar-expand-thumb {
     width: 72px;
     height: 72px;
     border-radius: 6px;
@@ -3070,8 +3239,8 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     background-color: var(--bg-tertiary);
     flex-shrink: 0;
 }
-.lang-expand-thumb.rounded { border-radius: 50%; }
-.lang-expand-name {
+.bar-expand-thumb.rounded { border-radius: 50%; }
+.bar-expand-name {
     font-size: 0.68rem;
     text-align: center;
     line-height: 1.25;
@@ -3082,21 +3251,21 @@ a.sidebar-row-name:hover { color: var(--primary); text-decoration: underline; }
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
 }
-.lang-expand-card:hover .lang-expand-name { color: var(--primary); }
-.lang-expand-count { font-size: 0.62rem; color: var(--text-tertiary); }
+.bar-expand-card:hover .bar-expand-name { color: var(--primary); }
+.bar-expand-count { font-size: 0.62rem; color: var(--text-tertiary); }
 
-/* Static (non-accordion) lang rows — Album Completion links each row title */
-.lang-row-static { cursor: default; }
-.lang-code-link { text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
-.lang-row-static:hover .lang-code-link { color: var(--primary); }
+/* Static (non-accordion) rows -- Album Completion links each row title */
+.bar-row-static { cursor: default; }
+.bar-code-link { text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
+.bar-row-static:hover .bar-code-link { color: var(--primary); }
 
 /* Always-visible card grid (Most Relistened Tracks) reuses the expand panel
    look but is shown inline rather than toggled open by a chevron. */
-.lang-expand-static { display: flex; margin-top: 0.75rem; }
-.lang-expand-card-wide { width: 96px; }
+.bar-expand-static { display: flex; margin-top: 0.75rem; }
+.bar-expand-card-wide { width: 96px; }
 
-/* Color dot used by _coloredRows() to tie a lang-row to a distinct category color */
-.lang-legend-dot {
+/* Color dot used by _coloredRows() to tie a bar-row to a distinct category color */
+.bar-legend-dot {
     display: inline-block;
     width: 9px;
     height: 9px;
@@ -3373,6 +3542,14 @@ a.recent-play-row {
     max-width: 32ch;
 }
 
+/* When an .empty-state stands in for zero grid items, span every column
+   instead of being squeezed into a single cell. grid-column applies to the
+   <li> itself (the actual grid item), not the .empty-state div it wraps. */
+.image-grid > li:only-child,
+.disc-grid > li:only-child {
+    grid-column: 1 / -1;
+}
+
 /* Back Button */
 .back-button {
     display: inline-block;
@@ -3471,7 +3648,6 @@ footer a:hover {
     .stats {
         grid-template-columns: repeat(2, 1fr);
     }
-
     .entity-header {
         padding: 1.25rem;
     }
@@ -4078,7 +4254,7 @@ footer a:hover {
 }
 .vgst-group-header-clickable { cursor: pointer; }
 .vgst-group-header-clickable:hover { color: var(--primary); }
-.vgst-group-header-clickable:hover .lang-chevron { color: var(--primary); }
+.vgst-group-header-clickable:hover .bar-chevron { color: var(--primary); }
 .vgst-group-icon {
     display: inline-flex;
     align-items: center;
@@ -4581,6 +4757,12 @@ footer a:hover {
 .mainstream-hist-wrap {
     height: 180px;
     margin-top: 1rem;
+}
+/* Taller variant for horizontal bar charts with more categories than the
+   histogram's 10 fixed buckets (e.g. Top Labels' ~12 labels) — 180px would
+   cram each bar under 15px tall. */
+.mainstream-hist-wrap.tall {
+    height: 280px;
 }
 
 .mainstream-spotlight-grid {

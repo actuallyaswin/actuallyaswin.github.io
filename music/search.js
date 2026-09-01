@@ -35,13 +35,15 @@ function _searchQuery(q) {
             { label: 'Browse',           view: 'browse',          icon: 'layout-grid' },
             { label: 'Lists',            view: 'lists',           icon: 'list-ordered' },
             { label: 'Recommendations', view: 'recommendations', icon: 'sparkles' },
+            { label: 'Trends',          view: 'trends',          icon: 'trending-up' },
             { label: 'History',         view: 'history',         icon: 'history' },
+            { label: 'Concerts',        view: 'concerts',        icon: 'ticket' },
             { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },
             { label: 'Genres',          view: 'genres',          icon: 'tags' },
             { label: 'Soundtracks',     view: 'soundtracks',     icon: 'gamepad-2' },
             { label: 'Compare Artists', view: 'compare',         icon: 'git-compare' },
-            { label: 'Top Albums',      view: 'top', params: '&type=albums',  icon: 'disc-album' },
-            { label: 'Top Artists',     view: 'top', params: '&type=artists', icon: 'mic-vocal' },
+            { label: 'Top Albums',      view: 'top', params: '&type=albums',  icon: 'disc-3' },
+            { label: 'Top Artists',     view: 'top', params: '&type=artists', icon: 'mic-2' },
             { label: 'Top Tracks',      view: 'top', params: '&type=tracks',  icon: 'music' },
         ];
         const matchedViews = VIEW_SHORTCUTS.filter(v =>

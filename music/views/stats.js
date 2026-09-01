@@ -1,10 +1,11 @@
 const ViewStats = (() => {
     let _db = null;
-    // Chart.js instance for the popularity histogram -- created after
-    // _render()'s innerHTML assignment (the canvas doesn't exist until
-    // then), destroyed on unmount/re-render so this view doesn't leak a
-    // chart bound to a canvas that no longer exists.
+    // Chart.js instances -- created after _render()'s innerHTML assignment
+    // (canvases don't exist until then), destroyed on unmount/re-render so
+    // this view doesn't leak a chart bound to a canvas that no longer exists.
     let _histChart = null;
+    let _labelsChart = null;
+    let _listensPerYearChart = null;
 
     function mount(container, db, params) {
         _db = db;
@@ -23,6 +24,9 @@ const ViewStats = (() => {
     function unmount() {
         _db = null;
         if (_histChart) { _histChart.destroy(); _histChart = null; }
+        if (_labelsChart) { _labelsChart.destroy(); _labelsChart = null; }
+        if (_listensPerYearChart) { _listensPerYearChart.destroy(); _listensPerYearChart = null; }
+        ConcertStats.destroy();
     }
 
     // ── Cache access ─────────────────────────────────────────────────────────
@@ -34,122 +38,14 @@ const ViewStats = (() => {
         return res ? JSON.parse(res.values[0][0]) : null;
     }
 
-    // ── Drill-down rendering ─────────────────────────────────────────────────
-    // Drill-down rows/cards are precomputed too (see mdb.py's _drill_artists/
-    // _drill_albums) — opening a chevron only ever toggles CSS, no query runs.
-    function _drillPanel(rows, kind, id) {
-        if (!rows || !rows.length) return '';
-        const cards = rows.map(([rid, name, img, n, slug]) => {
-            const href = kind === 'artist' ? artistHref(rid, slug) : releaseHref(rid, slug);
-            const thumb = img || getFallbackImageUrl();
-            return `<a href="${href}" class="lang-expand-card">
-                <div class="lang-expand-thumb${kind === 'artist' ? ' rounded' : ''}" style="background-image:url('${cssUrl(thumb)}')"></div>
-                <div class="lang-expand-name">${escapeHtml(name)}</div>
-                <div class="lang-expand-count">${formatNumber(n)} plays</div>
-            </a>`;
-        }).join('');
-        return `<div class="lang-expand" id="${id}">${cards}</div>`;
-    }
-
-    let _expandSeq = 0;
-
-    // Wraps a row's inner cells with a chevron + (optionally) a hidden
-    // drill-down panel of top-4 artist/album cards. `drillRows` empty ⇒ a
-    // dimmed, non-interactive chevron (for visual consistency) with no click
-    // wiring. Uses event delegation (see _wireDrillDowns) rather than inline
-    // onclick, matching the artist.js Pulse accordion.
-    function _rowWithDrill(rowInnerHtml, drillRows, kind) {
-        const id = `lde${++_expandSeq}`;
-        const panelHtml = _drillPanel(drillRows, kind, id);
-        const clickable = panelHtml ? ' lang-row-clickable' : '';
-        const chevronClass = panelHtml ? 'lang-chevron' : 'lang-chevron disabled';
-        const dataAttr = panelHtml ? ` data-drill-id="${id}"` : '';
-        return `<div class="lang-row${clickable}"${dataAttr}>
-                ${rowInnerHtml}
-                <span class="${chevronClass}">▶</span>
-            </div>
-            ${panelHtml}`;
-    }
-
-    // Event delegation for every drill-down row on the page — attached once
-    // per _render() call on the container, rather than one listener per row.
-    function _wireDrillDowns(container) {
-        container.addEventListener('click', e => {
-            const row = e.target.closest('.lang-row-clickable');
-            if (!row || !container.contains(row)) return;
-            const panel = document.getElementById(row.dataset.drillId);
-            const chevron = row.querySelector('.lang-chevron');
-            if (!panel || !chevron) return;
-            const isOpen = panel.classList.toggle('open');
-            chevron.classList.toggle('expanded', isOpen);
-        });
-    }
-
-    // ── Bar row renderers ─────────────────────────────────────────────────────
-    // Both take the cached items array of { label, n, drill } where `drill`
-    // is the eagerly-precomputed top-4 array (or [], for a zero-listen row).
-    // They differ only in bar styling; _rowWithDrill handles the shared
-    // chevron/panel markup.
-
-    const CATEGORY_COLORS = ['#87ae73', '#c9a227', '#67a1fd', '#c97ba5', '#9aa0a6', '#e0685f'];
-
-    // Many-category breakdowns (language, era, country, release type, labels):
-    // opacity-graded bars in one shared color. `formatLabel` optionally renders
-    // custom markup for the label cell (e.g. a flag icon) instead of escaped text.
-    function _breakdownRows(items, formatLabel) {
-        const total = items.reduce((s, it) => s + it.n, 0);
-        const max   = Math.max(...items.map(it => it.n), 1);
-        return items.map(({ label, n, drill }) => {
-            const pct     = total ? ((n / total) * 100).toFixed(1) : '0.0';
-            const opacity = (0.35 + 0.65 * (n / max)).toFixed(2);
-            const labelHtml = formatLabel ? formatLabel(label) : escapeHtml(String(label));
-            const rowHtml = `
-                <span class="lang-code">${labelHtml}</span>
-                <div class="lang-bar-track">
-                    <div class="lang-bar-fill" style="width:${pct}%;background:var(--primary);opacity:${opacity}"></div>
-                </div>
-                <span class="lang-count">${formatNumber(n)}</span>
-                <span class="lang-pct">${pct}%</span>`;
-            return _rowWithDrill(rowHtml, drill, drill?.length ? _drillKindFor(items) : null);
-        }).join('');
-    }
-
-    // Low-cardinality breakdowns (2-6 values: gender, artist type, explicit,
-    // popularity tier): one color per row, each bar sized to its own share.
-    function _coloredRows(items) {
-        const total = items.reduce((s, it) => s + it.n, 0);
-        return items.map(({ label, n, drill }, i) => {
-            const pct   = total ? ((n / total) * 100).toFixed(1) : '0.0';
-            const color = CATEGORY_COLORS[i % CATEGORY_COLORS.length];
-            const rowHtml = `
-                <span class="lang-code">
-                    <span class="lang-legend-dot" style="background:${color}"></span>
-                    ${escapeHtml(String(label))}
-                </span>
-                <div class="lang-bar-track">
-                    <div class="lang-bar-fill" style="width:${pct}%;background:${color}"></div>
-                </div>
-                <span class="lang-count">${formatNumber(n)}</span>
-                <span class="lang-pct">${pct}%</span>`;
-            return _rowWithDrill(rowHtml, drill, drill?.length ? _drillKindFor(items) : null);
-        }).join('');
-    }
-
-    // Renders [label, value] pairs as big-number stat-card tiles, for sections
-    // that are a handful of headline numbers rather than a distribution.
-    function _statCards(items) {
-        const cards = items.map(([label, value]) => `
-            <div class="stat-card">
-                <div class="stat-value">${escapeHtml(String(value))}</div>
-                <div class="stat-label">${escapeHtml(label)}</div>
-            </div>`).join('');
-        return `<div class="stats">${cards}</div>`;
-    }
-
     // ── Section copy ───────────────────────────────────────────────────────────
     // Single source of truth for each section's title + description text, so
     // renaming a section only means editing one entry here instead of hunting
-    // down the matching <h3> call sites separately.
+    // down the matching <h3> call sites separately. `noDrill: true` on a
+    // drill-capable section means "don't render a chevron at all" — set on
+    // sections where expanding a row would just echo the section itself
+    // (Release Type/Recency/Explicit already show every category as a full
+    // pie; drilling into one category doesn't surface anything new).
     const SECTIONS = {
         language: {
             title: 'Language Breakdown',
@@ -180,21 +76,19 @@ const ViewStats = (() => {
             title: 'Release Type',
             desc: 'Share of plays by release type (album, EP, single, etc.).',
             kind: 'release',
+            noDrill: true,
         },
         recency: {
             title: 'Release Recency',
             desc: 'Share of plays by how old the music was when you played it.',
             kind: 'release',
+            noDrill: true,
         },
         explicit: {
             title: 'Explicit Content',
             desc: 'Share of plays that are explicit vs. clean.',
             kind: 'artist',
-        },
-        popularity: {
-            title: 'Mainstream Meter',
-            desc: "Share of plays by artist popularity, per Spotify's score.",
-            kind: 'artist',
+            noDrill: true,
         },
         tasteMainstream: {
             title: 'Mainstream Score',
@@ -255,11 +149,13 @@ const ViewStats = (() => {
         </section>`;
     }
 
-    // Wraps rendered bar rows in a <section>.
-    function _section(key, rowsHtml) {
+    // Wraps rendered bar rows in a <section>. `noDrill` switches the wrapper
+    // between the has-drilldown (5-column, chevron reserved) and no-drill
+    // (4-column, no chevron at all) .bar-list variants.
+    function _section(key, rowsHtml, noDrill) {
         return `<section class="stat-section">
             ${_sectionHeader(key)}
-            <div class="lang-list has-drilldown">${rowsHtml}</div>
+            <div class="bar-list ${noDrill ? 'no-drill' : 'has-drilldown'}">${rowsHtml}</div>
         </section>`;
     }
 
@@ -271,9 +167,12 @@ const ViewStats = (() => {
     function _drillSection(key, style, formatLabel) {
         const items = _cache(key);
         if (!items || !items.length) return _emptySection(key, 'No data yet — run `mdb stats refresh`.');
+        const noDrill = !!SECTIONS[key].noDrill;
         items._kind = SECTIONS[key].kind;
-        const rowsHtml = style === 'colored' ? _coloredRows(items) : _breakdownRows(items, formatLabel);
-        return _section(key, rowsHtml);
+        const rowsHtml = style === 'colored'
+            ? _coloredRows(items, _drillKindFor, noDrill)
+            : _breakdownRows(items, formatLabel, _drillKindFor, noDrill);
+        return _section(key, rowsHtml, noDrill);
     }
 
     function _languageSection() { return _drillSection('language', 'breakdown'); }
@@ -301,21 +200,6 @@ const ViewStats = (() => {
         const data = _cache('tasteMainstream');
         if (!data || !data.n_listens) return _emptySection('tasteMainstream', 'No data yet — run `mdb stats refresh`.');
 
-        const years = data.by_year.filter(y => y.n_listens >= 20);
-        const max = Math.max(...years.map(y => y.mean), 1);
-        const rows = years.map(y => {
-            const pct = (y.mean / max) * 100;
-            return `
-                <div class="lang-row lang-row-static">
-                    <span class="lang-code">${y.year}</span>
-                    <div class="lang-bar-track">
-                        <div class="lang-bar-fill" style="width:${pct}%;background:var(--primary)"></div>
-                    </div>
-                    <span class="lang-count">${y.mean}</span>
-                    <span class="lang-pct">${formatNumber(y.n_listens)} plays</span>
-                </div>`;
-        }).join('');
-
         const spotlights = [
             _mainstreamSpotlightCardHtml('Most mainstream', 'trending-up', data.most_mainstream),
             _mainstreamSpotlightCardHtml('Most obscure', 'compass', data.most_obscure),
@@ -326,8 +210,74 @@ const ViewStats = (() => {
             ${_statCards([['Mean', data.mean], ['Median', data.median]])}
             <div class="mainstream-hist-wrap"><canvas id="mainstreamHistChart"></canvas></div>
             ${spotlights ? `<div class="mainstream-spotlight-grid">${spotlights}</div>` : ''}
-            ${rows ? `<div class="lang-list has-drilldown" style="margin-top:1rem">${rows}</div>` : ''}
         </section>`;
+    }
+
+    // ── Listens Per Year (split out of Mainstream Score -- that section's
+    // by-year list was the single largest element on the page, and its bar
+    // length encoded mean popularity, which barely moves year to year
+    // (everything clusters ~60) and told you little. Total listens is the
+    // actually-interesting number, and as a standalone chart it can sit
+    // side by side with Concerts Per Year (same X axis: year) instead of
+    // burying a 16-row list inside an already-large section. ─────────────
+    function _listensPerYearSection() {
+        const data = _cache('tasteMainstream');
+        const years = data?.by_year?.filter(y => y.n_listens >= 20);
+        if (!years || !years.length) return '';
+        return `<section class="stat-section">
+            <h3>Listens Per Year</h3>
+            <div class="mainstream-hist-wrap"><canvas id="listensPerYearChart"></canvas></div>
+        </section>`;
+    }
+
+    function _renderListensPerYearChart() {
+        const data = _cache('tasteMainstream');
+        const years = data?.by_year?.filter(y => y.n_listens >= 20);
+        const canvas = document.getElementById('listensPerYearChart');
+        if (!years || !years.length || !canvas) return;
+
+        if (_listensPerYearChart) { _listensPerYearChart.destroy(); _listensPerYearChart = null; }
+
+        const primaryColor  = getCSSColor('--primary');
+        const textSecondary = getCSSColor('--text-secondary');
+        const borderColor   = getCSSColor('--border');
+        const bgSecondary   = getCSSColor('--bg-secondary');
+        const textColor     = getCSSColor('--text');
+
+        _listensPerYearChart = new Chart(canvas.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: years.map(y => y.year),
+                datasets: [{
+                    data: years.map(y => y.n_listens),
+                    backgroundColor: primaryColor,
+                    borderRadius: 4,
+                    maxBarThickness: 40,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: bgSecondary,
+                        titleColor: textColor,
+                        bodyColor: textColor,
+                        borderColor,
+                        borderWidth: 1,
+                        callbacks: {
+                            label: item => `${formatNumber(item.raw)} listens`,
+                            afterLabel: item => `avg. popularity ${years[item.dataIndex].mean}`,
+                        },
+                    },
+                },
+                scales: {
+                    y: { beginAtZero: true, ticks: { color: textSecondary, precision: 0 }, grid: { color: borderColor } },
+                    x: { ticks: { color: textSecondary }, grid: { display: false } },
+                },
+            },
+        });
     }
 
     function _renderMainstreamHistogram() {
@@ -393,10 +343,84 @@ const ViewStats = (() => {
         });
     }
 
-    function _labelSection() {
+    // Recast as a horizontal bar chart rather than a .bar-list -- the section
+    // is naturally chart-shaped (top-N categories with counts, no drill data
+    // to preserve), and reusing this shape breaks up the run of consecutive
+    // bar-list sections elsewhere on the page. Horizontal (indexAxis: 'y')
+    // rather than vertical bars because label names (record labels) can run
+    // long ("Sub Pop Records") and read better unrotated on a y-axis.
+    function _labelsChartSection() {
         const items = _cache('labels');
         if (!items || !items.length) return _emptySection('labels', 'No data yet — run `mdb stats refresh`.');
-        return _section('labels', _breakdownRows(items));
+        return `<section class="stat-section">
+            ${_sectionHeader('labels')}
+            <div class="mainstream-hist-wrap tall"><canvas id="labelsChart"></canvas></div>
+        </section>`;
+    }
+
+    function _renderLabelsChart() {
+        const items = _cache('labels');
+        const canvas = document.getElementById('labelsChart');
+        if (!items || !items.length || !canvas) return;
+
+        if (_labelsChart) { _labelsChart.destroy(); _labelsChart = null; }
+
+        const primaryColor  = getCSSColor('--primary');
+        const textSecondary = getCSSColor('--text-secondary');
+        const borderColor   = getCSSColor('--border');
+        const bgSecondary   = getCSSColor('--bg-secondary');
+        const textColor     = getCSSColor('--text');
+
+        _labelsChart = new Chart(canvas.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: items.map(it => it.label),
+                datasets: [{
+                    data: items.map(it => it.n),
+                    backgroundColor: primaryColor,
+                    borderRadius: 4,
+                    maxBarThickness: 24,
+                }],
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: bgSecondary,
+                        titleColor: textColor,
+                        bodyColor: textColor,
+                        borderColor,
+                        borderWidth: 1,
+                        callbacks: { label: item => `${formatNumber(item.raw)} plays` },
+                    },
+                },
+                scales: {
+                    x: { beginAtZero: true, ticks: { color: textSecondary, precision: 0 }, grid: { color: borderColor } },
+                    y: {
+                        ticks: {
+                            color: textSecondary,
+                            // Truncate long label names (e.g. "Sub Pop
+                            // Records") on the render axis only -- Chart.js
+                            // has no built-in wrap/ellipsis for category
+                            // ticks, and without this a long name reserves
+                            // however much width it needs, squeezing the
+                            // actual bar area to a sliver on a narrow
+                            // (~350px) phone canvas. Tooltips still show the
+                            // full name since they read from the untouched
+                            // data label, not this tick render.
+                            callback(value) {
+                                const label = this.getLabelForValue(value);
+                                return label.length > 18 ? label.slice(0, 17) + '…' : label;
+                            },
+                        },
+                        grid: { display: false },
+                    },
+                },
+            },
+        });
     }
 
     function _completionSection() {
@@ -408,52 +432,49 @@ const ViewStats = (() => {
             const pct     = total ? ((heard / total) * 100).toFixed(0) : '0';
             const opacity = (0.35 + 0.65 * (listens / max)).toFixed(2);
             const href    = releaseHref(id, slug);
-            // .lang-list is a fixed 5-column grid; every row (display:contents)
-            // must supply exactly 5 children or subsequent rows' columns drift.
-            // This section has no chevron, so the 5th cell is an empty spacer.
-            return `<div class="lang-row lang-row-static">
-                <a class="lang-code lang-code-link" href="${href}">${escapeHtml(title)}</a>
-                <div class="lang-bar-track">
-                    <div class="lang-bar-fill" style="width:${pct}%;background:var(--primary);opacity:${opacity}"></div>
+            return `<div class="bar-row bar-row-static">
+                <a class="bar-code bar-code-link" href="${href}">${escapeHtml(title)}</a>
+                <div class="bar-track">
+                    <div class="bar-fill" style="width:${pct}%;background:var(--primary);opacity:${opacity}"></div>
                 </div>
-                <span class="lang-count">${heard}/${total}</span>
-                <span class="lang-pct">${pct}%</span>
-                <span></span>
+                <span class="bar-count">${heard}/${total}</span>
+                <span class="bar-pct">${pct}%</span>
             </div>`;
         }).join('');
-        return _section('completion', rowsHtml);
+        return _section('completion', rowsHtml, true);
     }
 
     // ── Canonical Lists (RS500, etc.) ───────────────────────────────────────
-    // One donut card per list, Letterboxd list-progress-graph style. Each
-    // links straight to its own ?view=list page (views/list.js) rather than
-    // a modal — a 260-entry list doesn't fit a modal well, and a body-level
-    // modal has no way to close itself when the SPA router navigates away
-    // from under it (a real bug this replaced: clicking an album inside the
-    // old modal left it stuck open over the newly-rendered release page).
+    // Row-based (not a donut grid) so this scales past a handful of lists --
+    // sorted alphabetically by name (not completion %) so lists from the same
+    // publisher (multiple RS/Pitchfork/Complex lists) stay grouped together
+    // rather than scattering across the section. Uses .bar-columns/.bar-row-flow
+    // (CSS multi-column, not a JS array split into two .bar-list halves) so
+    // the single alphabetized order flows continuously column-to-column and
+    // collapses to one column on mobile with no leftover gap.
     function _canonicalListsSection() {
         const lists = _cache('canonicalLists');
         if (!lists || !lists.length) return '';
 
-        const cards = lists.map(lst => {
+        const sorted = [...lists].sort((a, b) =>
+            (a.short_name || a.name).localeCompare(b.short_name || b.name));
+
+        const rows = sorted.map(lst => {
             const pct = lst.total ? Math.round((lst.heard / lst.total) * 100) : 0;
             const label = lst.short_name || lst.name;
-            return `
-                <a class="canon-list-graph-wrap" href="?view=list&id=${encodeURIComponent(lst.id)}"
-                   aria-label="View all ${escapeHtml(label)} albums" title="${escapeHtml(lst.name)}">
-                    <div class="canon-list-graph" style="--p:${pct}">
-                        <div class="canon-list-graph-inner">
-                            <div class="canon-list-title">${escapeHtml(label)}</div>
-                            <div class="canon-list-pct">${pct}%</div>
-                            <div class="canon-list-count">${lst.heard} of ${lst.total}</div>
-                        </div>
-                    </div>
-                </a>`;
+            return `<a class="bar-row-flow" href="?view=list&id=${encodeURIComponent(lst.id)}" title="${escapeHtml(lst.name)}">
+                <span class="bar-code">${escapeHtml(label)}</span>
+                <div class="bar-track">
+                    <div class="bar-fill" style="width:${pct}%;background:var(--primary)"></div>
+                </div>
+                <span class="bar-count">${lst.heard}/${lst.total}</span>
+                <span class="bar-pct">${pct}%</span>
+            </a>`;
         }).join('');
 
         return `<section class="stat-section">
             ${_sectionHeader('canonicalLists')}
-            <div class="canon-list-grid">${cards}</div>
+            <div class="bar-columns">${rows}</div>
         </section>`;
     }
 
@@ -465,15 +486,15 @@ const ViewStats = (() => {
             const href  = release_id ? releaseHref(release_id, release_slug) : '#';
             const thumb = art_url || getFallbackImageUrl();
             const sub   = artist ? `${escapeHtml(artist)} · ${formatNumber(n)} plays` : `${formatNumber(n)} plays`;
-            return `<a href="${href}" class="lang-expand-card lang-expand-card-wide">
-                <div class="lang-expand-thumb" style="background-image:url('${cssUrl(thumb)}')"></div>
-                <div class="lang-expand-name">${escapeHtml(title)}</div>
-                <div class="lang-expand-count">${sub}</div>
+            return `<a href="${href}" class="bar-expand-card bar-expand-card-wide">
+                <div class="bar-expand-thumb" style="background-image:url('${cssUrl(thumb)}')"></div>
+                <div class="bar-expand-name">${escapeHtml(title)}</div>
+                <div class="bar-expand-count">${sub}</div>
             </a>`;
         }).join('');
         return `<section class="stat-section">
             ${_sectionHeader('relistened')}
-            <div class="lang-expand lang-expand-static">${cards}</div>
+            <div class="bar-expand bar-expand-static">${cards}</div>
         </section>`;
     }
 
@@ -488,20 +509,53 @@ const ViewStats = (() => {
     }
 
     const CERT_LABELS = { gold: 'Gold — 250+ plays', platinum: 'Platinum — 500+ plays', diamond: 'Diamond — 1,000+ plays' };
+    // Capped by default so this section's uncapped, ever-growing artist
+    // count (no LIMIT in _stats_certified -- see mdb.py) doesn't structurally
+    // dominate the page's visual weight. Sorted diamond>platinum>gold, then
+    // by play count within a tier, so the cap always surfaces the most
+    // impressive/most-played certifications first, not an arbitrary DB order.
+    const CERT_VISIBLE_DEFAULT = 30;
+
+    function _certPillHtml({ id, name, cert, slug }) {
+        return `<a href="${artistHref(id, slug)}" class="badge-cert badge-cert-${cert}"
+               title="${escapeHtml(CERT_LABELS[cert] || cert)}" style="text-decoration:none;width:auto;margin:0.15rem;display:inline-flex;gap:0.35rem">
+                    ${escapeHtml(name)}
+                </a>`;
+    }
 
     function _certSpotlightSection() {
         const rows = _cache('cert');
         if (!rows || !rows.length) return _emptySection('cert', 'No data yet — run `mdb certs refresh`.');
 
-        const pills = rows.map(({ id, name, cert, slug }) => `
-                <a href="${artistHref(id, slug)}" class="badge-cert badge-cert-${cert}"
-                   title="${escapeHtml(CERT_LABELS[cert] || cert)}" style="text-decoration:none;width:auto;margin:0.15rem;display:inline-flex;gap:0.35rem">
-                    ${escapeHtml(name)}
-                </a>`).join('');
+        const visible = rows.slice(0, CERT_VISIBLE_DEFAULT);
+        const rest = rows.slice(CERT_VISIBLE_DEFAULT);
+        const visiblePills = visible.map(_certPillHtml).join('');
+        const restPills = rest.map(_certPillHtml).join('');
+
         return `<section class="stat-section">
             ${_sectionHeader('cert')}
-            <div style="display:flex;flex-wrap:wrap;margin-top:0.75rem">${pills}</div>
+            <div style="display:flex;flex-wrap:wrap;margin-top:0.75rem">${visiblePills}</div>
+            ${rest.length ? `
+                <div style="display:none;flex-wrap:wrap" data-cert-rest>${restPills}</div>
+                <button type="button" class="home-see-all" style="background:none;border:none;cursor:pointer;padding:0;margin-top:0.5rem"
+                        data-cert-toggle>Show all ${rows.length}</button>
+            ` : ''}
         </section>`;
+    }
+
+    // One toggle per page (Certified Artists is the only user of
+    // data-cert-toggle), but delegated like _wireDrillDowns rather than
+    // bound inline -- consistent with how every other interactive element
+    // on this page is wired after a fresh innerHTML render.
+    function _wireCertToggle(container) {
+        container.addEventListener('click', e => {
+            const btn = e.target.closest('[data-cert-toggle]');
+            if (!btn || !container.contains(btn)) return;
+            const rest = btn.previousElementSibling;
+            if (!rest || !rest.hasAttribute('data-cert-rest')) return;
+            rest.style.display = 'flex';
+            btn.remove();
+        });
     }
 
     // ── Stats for Nerds (moved here from views/home.js so its dataset-wide
@@ -513,14 +567,14 @@ const ViewStats = (() => {
         if (!n || !n.every_year_artists.length) return '';
 
         const cards = n.every_year_artists.map(a => `
-                <a href="${artistHref(a.id, a.slug)}" class="lang-expand-card">
-                    <div class="lang-expand-thumb rounded" style="background-image:url('${cssUrl(a.img || getFallbackImageUrl())}')"></div>
-                    <div class="lang-expand-name">${escapeHtml(a.name)}</div>
+                <a href="${artistHref(a.id, a.slug)}" class="bar-expand-card">
+                    <div class="bar-expand-thumb rounded" style="background-image:url('${cssUrl(a.img || getFallbackImageUrl())}')"></div>
+                    <div class="bar-expand-name">${escapeHtml(a.name)}</div>
                 </a>`).join('');
 
         return `<section class="stat-section">
             ${_sectionHeader('everyYear')}
-            <div class="lang-expand lang-expand-static">${cards}</div>
+            <div class="bar-expand bar-expand-static">${cards}</div>
         </section>`;
     }
 
@@ -546,63 +600,77 @@ const ViewStats = (() => {
         </section>`;
     }
 
+    // ── Layout ───────────────────────────────────────────────────────────────
+    // The page is a flat, ordered list of *groups* (clusters of related
+    // sections with breathing room between clusters), each holding one or
+    // more width-tagged *entries*. To reorder sections, move an entry (or a
+    // whole group) up/down in this array. To resize one, change its `width`
+    // ('full' | 'half' | 'third') — no grid-template-columns math to update
+    // elsewhere, since .insights-flex/.w-* (styles.css) just flex-wrap
+    // whatever's given. Widths within one group should sum to (or evenly
+    // divide) 100% for a clean row — e.g. two halves, or three thirds; a
+    // half next to a third leaves a gap and wraps the third down.
+    const LAYOUT = [
+        [{ render: _canonicalListsSection, width: 'full' }],
+        [
+            { render: _listensPerYearSection, width: 'half' },
+            { render: () => ConcertStats.renderPerYear(_cache), width: 'half' },
+        ],
+        [
+            { render: () => ConcertStats.renderHeadline(_cache), width: 'full' },
+            { render: () => ConcertStats.renderVenues(_cache), width: 'half' },
+            { render: () => ConcertStats.renderTopArtists(_cache), width: 'half' },
+            { render: () => ConcertStats.renderSpotlights(_cache), width: 'half' },
+            { render: () => ConcertStats.renderCoverage(_cache), width: 'half' },
+        ],
+        [
+            { render: _genderSection, width: 'third' },
+            { render: _artistTypeSection, width: 'third' },
+            { render: _explicitSection, width: 'third' },
+        ],
+        [{ render: _tasteMainstreamSection, width: 'full' }],
+        [
+            { render: _decadeSection, width: 'half' },
+            { render: _countrySection, width: 'half' },
+        ],
+        [
+            { render: _languageSection, width: 'third' },
+            { render: _releaseTypeSection, width: 'third' },
+            { render: _recencySection, width: 'third' },
+        ],
+        [{ render: _labelsChartSection, width: 'full' }],
+        [
+            { render: _vinylOverlapCard, width: 'half' },
+            { render: _completionSection, width: 'half' },
+        ],
+        [{ render: _relistenedSection, width: 'full' }],
+        [{ render: _certSpotlightSection, width: 'full' }],
+        [{ render: _everyYearSection, width: 'full' }],
+        [{ render: _nerdSection, width: 'full' }],
+    ];
+
+    function _renderGroup(entries) {
+        const items = entries
+            .map(({ render, width }) => ({ html: render(), width }))
+            .filter(e => e.html);
+        if (!items.length) return '';
+        const rowHtml = items.map(e => `<div class="w-${e.width}">${e.html}</div>`).join('');
+        return `<div class="insights-group"><div class="insights-flex">${rowHtml}</div></div>`;
+    }
+
     // ── Main render ────────────────────────────────────────────────────────────
     function _render() {
         const el = document.getElementById('statsContent');
         if (!el) return;
 
-        el.innerHTML = `
-            <div class="insights-group">
-                ${_canonicalListsSection()}
-            </div>
-
-            <div class="insights-group">
-                <div class="insights-grid insights-grid--thirds">
-                    ${_genderSection()}
-                    ${_artistTypeSection()}
-                </div>
-                ${_tasteMainstreamSection()}
-                <div class="insights-grid insights-grid--halves">
-                    ${_decadeSection()}
-                    ${_countrySection()}
-                </div>
-            </div>
-
-            <div class="insights-group">
-                <div class="insights-grid insights-grid--halves">
-                    ${_languageSection()}
-                    ${_recencySection()}
-                </div>
-                <div class="insights-grid insights-grid--thirds">
-                    ${_releaseTypeSection()}
-                    ${_explicitSection()}
-                    ${_vinylOverlapCard()}
-                </div>
-                <div class="insights-grid insights-grid--halves">
-                    ${_labelSection()}
-                    ${_completionSection()}
-                </div>
-            </div>
-
-            <div class="insights-group">
-                ${_relistenedSection()}
-            </div>
-
-            <div class="insights-group">
-                ${_certSpotlightSection()}
-            </div>
-
-            <div class="insights-group">
-                ${_everyYearSection()}
-            </div>
-
-            <div class="insights-group">
-                ${_nerdSection()}
-            </div>
-        `;
+        el.innerHTML = LAYOUT.map(_renderGroup).join('');
 
         _wireDrillDowns(el);
+        _wireCertToggle(el);
         _renderMainstreamHistogram();
+        _renderLabelsChart();
+        _renderListensPerYearChart();
+        ConcertStats.afterRender(_cache);
         lucide.createIcons();
     }
 
