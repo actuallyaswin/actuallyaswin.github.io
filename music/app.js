@@ -18,7 +18,6 @@ const VIEWS = {
     'stats':           () => ViewStats,
     'list':            () => ViewList,
     'lists':           () => ViewLists,
-    'soundtracks':     () => ViewSoundtracks,
     'browse':          () => ViewBrowse,
     'concerts':        () => ViewConcerts,
 };

@@ -29,6 +29,13 @@ const ViewBrowse = (() => {
     // form narrows to one console; the bare 'video_game' value matches every
     // video-game soundtrack regardless of platform.
     let soundtrackFilter = 'all';
+    // Video-game soundtracks only -- 'none' | 'platform' | 'series'. Groups
+    // the grid into collapsible sections instead of the flat infinite-scroll
+    // list (ported from the standalone Soundtracks view it replaced).
+    let vgGroupBy = 'none';
+    // Exact series match, set via ?series= deep link (release page's Series
+    // pill) -- narrows rows regardless of vgGroupBy.
+    let seriesFilter = null;
     // 'all' | 'heard' | 'unheard'
     let status = 'all';
     // 'all' | 'owned' | 'unowned' — only meaningful for entityType 'albums'
@@ -160,17 +167,20 @@ const ViewBrowse = (() => {
                         WHERE t.release_id = r.id AND t.hidden = 0) as first_listen_ts,
                    (SELECT MAX(l.timestamp) FROM tracks t JOIN listens l ON l.track_id = t.id
                         WHERE t.release_id = r.id AND t.hidden = 0) as last_listen_ts,
-                   ${OWNED_MEDIUM_SQL} as owned_medium
+                   ${OWNED_MEDIUM_SQL} as owned_medium,
+                   sm.platform, sm.series
             FROM releases r
+            LEFT JOIN release_soundtrack_meta sm ON sm.release_id = r.id AND sm.source_type = 'video_game'
             WHERE r.hidden = 0 ${yearClause} ${genreClause} ${typeClause} ${soundtrackClause}
         `)[0];
 
         _rows = result ? result.values.map(([id, title, slug, releaseYear, art, artistName, artistId, artistSlug,
                                               totalTracks, tracksHeard, totalListens, firstListenTs, lastListenTs,
-                                              ownedMedium]) => ({
+                                              ownedMedium, vgPlatform, vgSeries]) => ({
             id, title, slug, releaseYear, art, artistName, artistId, artistSlug,
             totalTracks: totalTracks || 0, tracksHeard: tracksHeard || 0,
             totalListens: totalListens || 0, firstListenTs, lastListenTs, ownedMedium,
+            vgPlatform, vgSeries,
         })) : [];
     }
 
@@ -231,6 +241,51 @@ const ViewBrowse = (() => {
         return !row.ownedMedium;
     }
 
+    // Video-game soundtrack grouping/series-filtering — ported from the
+    // standalone Soundtracks view this replaced. Only meaningful once
+    // soundtrackFilter has narrowed to video games; grouping by platform/
+    // series makes no sense for film/TV/non-soundtrack albums.
+    function _isVideoGameScope() {
+        return soundtrackFilter === 'video_game' || soundtrackFilter.startsWith('video_game:');
+    }
+
+    function _matchesSeries(row) {
+        if (!seriesFilter) return true;
+        return row.vgSeries === seriesFilter;
+    }
+
+    function _vgGroupKey(row) {
+        return vgGroupBy === 'series' ? (row.vgSeries || null) : (row.vgPlatform || null);
+    }
+
+    function _vgGroupLabel(key) {
+        if (key == null) return vgGroupBy === 'series' ? 'Unknown series' : 'Unknown platform';
+        return vgGroupBy === 'series' ? key : platformLabel(key);
+    }
+
+    // Which groups are expanded — collapsed by default (16-20+ groups would
+    // otherwise dump 170+ cards on the page at once). Persisted per tab via
+    // sessionStorage, same pattern as genres.js's tree-expand state. Keyed by
+    // `${vgGroupBy}:${key}` rather than bare key so switching Platform/Series
+    // grouping doesn't cross-contaminate open state between the two modes.
+    let _openGroups = new Set();
+    const OPEN_GROUPS_KEY = 'browseVgstOpenGroups';
+
+    function _loadOpenGroups() {
+        try {
+            const raw = sessionStorage.getItem(OPEN_GROUPS_KEY);
+            _openGroups = raw ? new Set(JSON.parse(raw)) : new Set();
+        } catch (_) {
+            _openGroups = new Set();
+        }
+    }
+
+    function _saveOpenGroups() {
+        try {
+            sessionStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify([..._openGroups]));
+        } catch (_) {}
+    }
+
     // Deterministic-per-load shuffle rather than Math.random() directly —
     // re-sorting on every _render() call (e.g. after a status-filter toggle
     // that doesn't touch sort) would otherwise reshuffle the grid out from
@@ -242,7 +297,7 @@ const ViewBrowse = (() => {
     }
 
     function _sortedRows() {
-        const rows = _rows.filter(r => _matchesStatus(r) && _matchesOwned(r));
+        const rows = _rows.filter(r => _matchesStatus(r) && _matchesOwned(r) && _matchesSeries(r));
         switch (sortBy) {
             case 'recent':
                 return rows.sort((a, b) => (b.lastListenTs || 0) - (a.lastListenTs || 0));
@@ -264,8 +319,14 @@ const ViewBrowse = (() => {
 
     function _cardHtml(row) {
         const href = entityType === 'albums' ? releaseHref(row.id, row.slug) : artistHref(row.id, row.slug);
+        // In video-game soundtrack scope, show whichever of platform/series
+        // isn't already the active grouping dimension — same "opposite tag"
+        // convention the standalone Soundtracks view used.
+        const vgTag = _isVideoGameScope()
+            ? (vgGroupBy === 'series' ? (row.vgPlatform ? platformLabel(row.vgPlatform) : '') : (row.vgSeries || ''))
+            : '';
         const sub = entityType === 'albums'
-            ? [row.artistName, row.releaseYear].filter(Boolean).join(' · ')
+            ? [row.artistName, row.releaseYear, vgTag || null].filter(Boolean).join(' · ')
             : formatNumber(row.totalListens) + ' plays';
         // Native title tooltip -- a literal \n renders as a real line break
         // here (unlike an HTML <br/>, which title attributes show as literal
@@ -320,6 +381,7 @@ const ViewBrowse = (() => {
         }
         if (typeFilter !== 'all') parts.push(TYPE_OPTIONS.find(o => o.value === typeFilter)?.label || typeFilter);
         if (soundtrackFilter !== 'all') parts.push(_soundtrackFilterLabel());
+        if (seriesFilter) parts.push(seriesFilter);
         if (status !== 'all') parts.push(status === 'heard' ? 'heard' : 'not yet heard');
         if (entityType === 'albums' && ownedFilter !== 'all') parts.push(ownedFilter === 'owned' ? 'owned' : 'not owned');
         return parts.join(' · ');
@@ -357,12 +419,28 @@ const ViewBrowse = (() => {
     let _sentinelObserver = null;
 
     function _render() {
-        const gridEl = document.getElementById('browseGrid');
         const subtitleEl = document.getElementById('browseSubtitle');
-        if (!gridEl) return;
-
+        if (!subtitleEl) return;
         const rows = _sortedRows();
         subtitleEl.textContent = _summarySentence(rows);
+
+        if (_isVideoGameScope() && vgGroupBy !== 'none') {
+            _renderGrouped(rows);
+        } else {
+            _renderFlat(rows);
+        }
+
+        // Sidebar summarizes the whole filtered set, not just what's paged in.
+        _renderSidebar(rows);
+    }
+
+    function _renderFlat(rows) {
+        const gridEl = document.getElementById('browseGrid');
+        const groupedEl = document.getElementById('browseGroupedGrid');
+        if (!gridEl) return;
+        gridEl.hidden = false;
+        if (groupedEl) groupedEl.hidden = true;
+
         gridEl.className = viewMode === 'list' ? 'disc-grid browse-grid-list'
             : viewMode === 'poster-sm' ? 'browse-grid-posters browse-grid-posters-sm'
             : 'browse-grid-posters';
@@ -385,9 +463,73 @@ const ViewBrowse = (() => {
             }, { rootMargin: '600px' });
             _sentinelObserver.observe(sentinel);
         }
+    }
 
-        // Sidebar summarizes the whole filtered set, not just what's paged in.
-        _renderSidebar(rows);
+    // A one-item "N64 (1)" row wastes as much vertical space as a 6-item row
+    // while only filling a sliver of the width — with ~176 video-game
+    // soundtracks spread across dozens of platforms/series, most groups are
+    // this small. Folding anything under the threshold into a single
+    // "Other" bucket keeps the grid dense; each card still shows its own tag
+    // in the sub-line (see _cardHtml), so nothing is actually hidden, just
+    // not given its own mostly-empty row.
+    const MIN_GROUP_SIZE = 3;
+
+    // Grouped rendering (Platform/Series) for video-game soundtracks —
+    // collapsible sections instead of the flat infinite-scroll grid, since
+    // grouping doesn't paginate the same way. ~176 rows total, so rendering
+    // every group unpaginated is cheap.
+    function _renderGrouped(rows) {
+        const gridEl = document.getElementById('browseGrid');
+        const groupedEl = document.getElementById('browseGroupedGrid');
+        if (!groupedEl) return;
+        if (gridEl) gridEl.hidden = true;
+        groupedEl.hidden = false;
+        const sentinel = document.getElementById('browseSentinel');
+        if (sentinel) sentinel.hidden = true;
+        if (_sentinelObserver) { _sentinelObserver.disconnect(); _sentinelObserver = null; }
+
+        const buckets = new Map();
+        for (const row of rows) {
+            const key = _vgGroupKey(row);
+            if (!buckets.has(key)) buckets.set(key, []);
+            buckets.get(key).push(row);
+        }
+
+        const OTHER = Symbol('other');
+        const named = [];
+        let other = [];
+        for (const [key, group] of buckets) {
+            if (key != null && group.length >= MIN_GROUP_SIZE) named.push([key, group]);
+            else other = other.concat(group);
+        }
+        // Biggest groups first — the point of grouping is to spotlight the
+        // series/platforms with real depth, not to alphabetize dead space.
+        named.sort((a, b) => b[1].length - a[1].length || _vgGroupLabel(a[0]).localeCompare(_vgGroupLabel(b[0])));
+        if (other.length) named.push([OTHER, other]);
+
+        let html = '';
+        for (const [key, group] of named) {
+            const storageKey = `${vgGroupBy}:${key === OTHER ? '__other__' : key}`;
+            // A series deep link (release page's Series pill) narrows to
+            // exactly one series — force it open, since collapsed-by-default
+            // would otherwise hide the very thing the link was for.
+            const isOpen = seriesFilter ? true : _openGroups.has(storageKey);
+            const iconMarkup = key !== OTHER && vgGroupBy === 'platform' ? platformIconMarkup(key) : null;
+            const countHtml = `<span class="vgst-group-count">(${group.length})</span>`;
+            let headerInner;
+            if (iconMarkup) {
+                headerInner = `<span class="vgst-group-icon">${iconMarkup}</span>${escapeHtml(_vgGroupLabel(key))} ${countHtml}`;
+            } else {
+                const label = key === OTHER
+                    ? `Other ${vgGroupBy === 'series' ? 'series' : 'platforms'}`
+                    : _vgGroupLabel(key);
+                headerInner = `${escapeHtml(label)} ${countHtml}`;
+            }
+            const chevron = `<span class="bar-chevron${isOpen ? ' expanded' : ''}">▶</span>`;
+            html += `<h2 class="list-year-header vgst-group-header vgst-group-header-clickable" data-vgst-key="${escapeHtml(storageKey)}">${headerInner}${chevron}</h2>`;
+            html += `<ul class="disc-grid"${isOpen ? '' : ' hidden'}>${group.map(row => `<li>${_cardHtml(row)}</li>`).join('')}</ul>`;
+        }
+        groupedEl.innerHTML = html || '<p class="vgst-empty">No soundtracks match.</p>';
     }
 
     // Any control that narrows/reorders the result set (filters, sort, type,
@@ -579,9 +721,12 @@ const ViewBrowse = (() => {
                 _reloadAndRender();
             } else if (_sheetSubviewKey === 'soundtrack') {
                 soundtrackFilter = value;
+                vgGroupBy = 'none';
+                seriesFilter = null;
                 refreshDropdownTrigger(_container, 'soundtrack', () => _soundtrackOptions, () => soundtrackFilter);
                 _syncUrl();
                 _reloadAndRender();
+                _refreshVgGroupControls(_container);
             }
             _sheetSubviewKey = null;
             _renderFilterSheet();
@@ -669,6 +814,50 @@ const ViewBrowse = (() => {
             </div>`;
     }
 
+    function _vgGroupControlsHtml() {
+        return `
+            <div class="page-controls" style="margin-top:0.5rem">
+                <div class="control-block">
+                    <span class="control-block-label">Group By</span>
+                    <div class="sort-controls">
+                        <button type="button" class="sort-btn${vgGroupBy === 'none' ? ' active' : ''}" data-vg-group="none">None</button>
+                        <button type="button" class="sort-btn${vgGroupBy === 'platform' ? ' active' : ''}" data-vg-group="platform">Platform</button>
+                        <button type="button" class="sort-btn${vgGroupBy === 'series' ? ' active' : ''}" data-vg-group="series">Series</button>
+                    </div>
+                </div>
+                ${seriesFilter ? `
+                <div class="control-block">
+                    <span class="control-block-label">Series</span>
+                    <div class="sort-controls">
+                        <a href="?view=browse&type=albums&soundtrack=video_game" class="sort-btn">${escapeHtml(seriesFilter)} <i data-lucide="x"></i></a>
+                    </div>
+                </div>` : ''}
+            </div>`;
+    }
+
+    // Soundtrack filter lives in a fixed shell slot (#browseVgGroupControls)
+    // that _renderShell() only populates once, at _remount() time -- but the
+    // soundtrack dropdown/sheet change the filter without a full remount
+    // (see _reloadAndRender()), so whether this block should even be visible
+    // can go stale. Re-render + re-wire it explicitly wherever
+    // soundtrackFilter changes, same pattern as the decade carousel.
+    function _refreshVgGroupControls(container) {
+        const el = document.getElementById('browseVgGroupControls');
+        if (!el) return;
+        el.innerHTML = _isVideoGameScope() ? _vgGroupControlsHtml() : '';
+        _wireVgGroupControls(container);
+        lucide.createIcons({ el });
+    }
+
+    function _wireVgGroupControls(container) {
+        container.querySelectorAll('[data-vg-group]').forEach(btn => btn.addEventListener('click', () => {
+            vgGroupBy = btn.dataset.vgGroup;
+            container.querySelectorAll('[data-vg-group]').forEach(b => b.classList.toggle('active', b.dataset.vgGroup === vgGroupBy));
+            _syncUrl();
+            _render();
+        }));
+    }
+
     function _renderShell() {
         return `
             <header class="browse-header">
@@ -714,9 +903,12 @@ const ViewBrowse = (() => {
 
             <div id="browseDecadeCarousel">${_decadeCarouselHtml()}</div>
 
+            <div id="browseVgGroupControls">${_isVideoGameScope() ? _vgGroupControlsHtml() : ''}</div>
+
             <div class="list-with-sidebar browse-list-with-sidebar">
                 <section>
                     <ul id="browseGrid"></ul>
+                    <div id="browseGroupedGrid" hidden></div>
                     <div id="browseSentinel" style="height:1px" hidden></div>
                 </section>
                 <aside class="view-sidebar" id="browseSidebar"></aside>
@@ -802,6 +994,8 @@ const ViewBrowse = (() => {
         // (albums/artists) toggle above.
         if (typeFilter !== 'all') p.set('rtype', typeFilter);
         if (soundtrackFilter !== 'all') p.set('soundtrack', soundtrackFilter);
+        if (vgGroupBy !== 'none') p.set('group', vgGroupBy);
+        if (seriesFilter) p.set('series', seriesFilter);
         if (status !== 'all') p.set('status', status);
         if (entityType === 'albums' && ownedFilter !== 'all') p.set('owned', ownedFilter);
         if (viewMode !== 'poster-lg') p.set('display', viewMode);
@@ -824,6 +1018,25 @@ const ViewBrowse = (() => {
             _render();
         }));
         _wireCarousel(container);
+        _wireVgGroupControls(container);
+
+        // Event delegation on the stable grouped-grid container — its own
+        // innerHTML is fully replaced on every _renderGrouped(), so a
+        // listener attached directly to a header/panel wouldn't survive a
+        // re-render.
+        document.getElementById('browseGroupedGrid')?.addEventListener('click', e => {
+            const header = e.target.closest('.vgst-group-header-clickable');
+            if (!header) return;
+            const panel = header.nextElementSibling;
+            const chevron = header.querySelector('.bar-chevron');
+            if (!panel || !chevron) return;
+            const key = header.dataset.vgstKey;
+            const nowOpen = panel.hidden;
+            panel.hidden = !nowOpen;
+            chevron.classList.toggle('expanded', nowOpen);
+            if (nowOpen) _openGroups.add(key); else _openGroups.delete(key);
+            _saveOpenGroups();
+        });
 
         document.getElementById('browseFiltersBtn')?.addEventListener('click', _openFilterSheet);
         document.getElementById('browseFilterBackdrop')?.addEventListener('click', _closeFilterSheet);
@@ -876,9 +1089,15 @@ const ViewBrowse = (() => {
         typeFilter = ['all', 'album', 'ep', 'single'].includes(params.rtype) ? params.rtype : 'all';
         soundtrackFilter = /^(all|film|tv_series|video_game)(:[a-z0-9]+)?$/.test(params.soundtrack || '')
             ? params.soundtrack : 'all';
+        vgGroupBy = ['none', 'platform', 'series'].includes(params.group) ? params.group : 'none';
+        // A series deep link (release page's Series pill) implies video-game
+        // scope even if ?soundtrack= wasn't also given.
+        seriesFilter = params.series || null;
+        if (seriesFilter && soundtrackFilter === 'all') soundtrackFilter = 'video_game';
         status = ['all', 'heard', 'unheard'].includes(params.status) ? params.status : 'all';
         ownedFilter = ['all', 'owned', 'unowned'].includes(params.owned) ? params.owned : 'all';
         viewMode = ['list', 'poster-sm', 'poster-lg'].includes(params.display) ? params.display : 'poster-lg';
+        _loadOpenGroups();
         setPageTitle('Browse');
         _ac = new AbortController();
         // Bound once here rather than in _setupControls (which reruns on
@@ -919,7 +1138,14 @@ const ViewBrowse = (() => {
             },
             soundtrack: {
                 label: 'Soundtrack', options: () => _soundtrackOptions, getValue: () => soundtrackFilter,
-                onPick: value => { soundtrackFilter = value; _syncUrl(); _reloadAndRender(); },
+                onPick: value => {
+                    soundtrackFilter = value;
+                    vgGroupBy = 'none';
+                    seriesFilter = null;
+                    _syncUrl();
+                    _reloadAndRender();
+                    _refreshVgGroupControls(_container);
+                },
             },
         }, _ac.signal);
         _remount(container);

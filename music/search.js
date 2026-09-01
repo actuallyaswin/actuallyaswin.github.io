@@ -39,7 +39,7 @@ function _searchQuery(q) {
             { label: 'Concerts',        view: 'concerts',        icon: 'ticket' },
             { label: 'Stats',           view: 'stats',           icon: 'bar-chart-2' },
             { label: 'Genres',          view: 'genres',          icon: 'tags' },
-            { label: 'Soundtracks',     view: 'soundtracks',     icon: 'gamepad-2' },
+            { label: 'Video Game Soundtracks', view: 'browse', params: '&type=albums&soundtrack=video_game&group=platform', icon: 'gamepad-2' },
             { label: 'Compare Artists', view: 'compare',         icon: 'git-compare' },
             { label: 'Top Albums',      view: 'top', params: '&type=albums',  icon: 'disc-3' },
             { label: 'Top Artists',     view: 'top', params: '&type=artists', icon: 'mic-2' },

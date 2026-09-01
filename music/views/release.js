@@ -410,13 +410,13 @@ const ViewRelease = (() => {
             // "Series" row at all when the game has no real series — a
             // generic "Video Game" tag would just restate the Type row.
             if (vgSeries) {
-                const seriesTag = `<a href="?view=soundtracks&group=series&series=${encodeURIComponent(vgSeries)}" class="stat-genre-tag is-primary">${escapeHtml(vgSeries)}</a>`;
+                const seriesTag = `<a href="?view=browse&type=albums&soundtrack=video_game&series=${encodeURIComponent(vgSeries)}" class="stat-genre-tag is-primary">${escapeHtml(vgSeries)}</a>`;
                 rows.push(['Series', seriesTag]);
             }
             if (vgPlatform) {
                 const platformIcon = platformIconMarkup(vgPlatform);
                 const iconHtml = platformIcon ? `<span class="vgst-group-icon">${platformIcon}</span>` : '';
-                const platformTag = `<a href="?view=soundtracks&group=platform&platform=${encodeURIComponent(vgPlatform)}" class="stat-genre-tag stat-genre-tag-icon">${iconHtml}${escapeHtml(platformLabel(vgPlatform))}</a>`;
+                const platformTag = `<a href="?view=browse&type=albums&soundtrack=${encodeURIComponent('video_game:' + vgPlatform)}" class="stat-genre-tag stat-genre-tag-icon">${iconHtml}${escapeHtml(platformLabel(vgPlatform))}</a>`;
                 rows.push(['Platform', platformTag]);
             }
             if (vgRegion)         rows.push(['Region',     escapeHtml(_regionName(vgRegion))]);
