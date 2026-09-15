@@ -105,7 +105,7 @@ def main():
         client.exec_many([f'DROP TABLE IF EXISTS "{t}"' for t in existing], 'drop')
 
     schema_rows = local.execute(
-        "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name != 'sqlite_sequence' "
+        "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
         "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'trigger' THEN 2 ELSE 3 END"
     ).fetchall()
     print(f'Creating {len(schema_rows)} schema objects...')
