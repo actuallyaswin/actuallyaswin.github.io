@@ -460,6 +460,15 @@ header h1 {
     cursor: not-allowed;
 }
 
+/* Compact variant for Top's "Listened In" toolbar control (views/top.js) --
+   .year-nav-arrow's own sizing was built for year.js's big hero-style year
+   nav; at that size next to a compact toolbar-dropdown-trigger, the arrows
+   read as oversized, disconnected blobs rather than part of one control. */
+.year-nav-arrow-sm {
+    font-size: 1rem;
+    padding: 0.45rem 0.5rem;
+}
+
 .year-select-hero {
     background: transparent;
     color: var(--text);
@@ -1272,6 +1281,15 @@ a.stat-card:hover .stat-label::after {
     margin: 0;
 }
 
+/* Tightens the gap to match .rec-shelf-header's own h2-to-rec-desc spacing
+   (0.2rem) when a section-header is followed by a rec-desc caption -- the
+   Home Discover teaser is the only .section-header with one, but this stays
+   general rather than a one-off class so any future section-header + caption
+   pairing gets the same rhythm for free. */
+.section-header:has(+ .rec-desc) {
+    margin-bottom: 0.2rem;
+}
+
 .year-section {
     margin-top: 2.5rem;
 }
@@ -1385,14 +1403,7 @@ a.stat-card:hover .stat-label::after {
 .home-see-all:hover { text-decoration: underline; }
 
 /* Recommendations card streaming link (Option B, SHOW_STREAMING_LINKS) */
-.disc-card-link {
-    position: absolute;
-    inset: 0;
-    z-index: 0;
-}
 .disc-card-streaming {
-    position: relative;
-    z-index: 1;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1402,6 +1413,7 @@ a.stat-card:hover .stat-label::after {
     opacity: 0;
     transition: opacity 0.15s;
     text-decoration: none;
+    cursor: pointer;
 }
 .disc-card:hover .disc-card-streaming { opacity: 1; }
 .disc-card-streaming-icon {
@@ -1692,6 +1704,72 @@ a.stat-card:hover .stat-label::after {
     align-items: flex-end;
     gap: 0.75rem 1.5rem;
     margin-bottom: 1.5rem;
+}
+
+/* Top's own toolbar (views/top.js) -- two visually distinct groups instead
+   of one flat row of look-alike controls: primary (Type/Sort/Display, pill
+   buttons, always fully visible) sits bare above a recessed filters panel
+   (Count/Released/Listened In/Genre/Format, dropdown triggers), so the two
+   different control idioms read as two different jobs instead of nine
+   equal-weight boxes in a row. Same gap rhythm in both (0.5rem 1rem) --
+   .controls-panel-filters-row below intentionally matches this rather than
+   drifting to its own spacing just because it's recessed. */
+.controls-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.5rem 1rem;
+}
+
+.controls-panel-primary {
+    margin-bottom: 1rem;
+}
+
+/* var(--bg), not --bg-secondary -- .toolbar-dropdown-trigger's own
+   background IS --bg-secondary, so matching the panel to it would make
+   every dropdown button blend invisibly into the panel with no visible
+   edge. --bg is the same contrast relationship .sort-controls already
+   uses elsewhere for a pill wrapping a --bg-secondary trigger.
+   flex-direction: column (two .controls-panel-filters-row + a horizontal
+   rule between them), not a single wrapping row -- a *vertical* divider
+   between flex items risks ending up orphaned at the end of a wrapped line
+   with nothing following it once the row is narrow enough to wrap above
+   the row's own items but not narrow enough to trigger a mobile
+   media-query override. A horizontal rule between two fixed rows has no
+   such failure mode regardless of viewport width. */
+.controls-panel-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 0.6rem 0.85rem;
+    margin-bottom: 1.5rem;
+}
+
+.controls-panel-filters-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.5rem 1rem;
+}
+
+/* Separates the two time filters (Released, Listened In) from the
+   categorical ones (Count, Genre, Format) -- two different time axes
+   otherwise read as just more dropdowns in the row. */
+.controls-panel-divider {
+    height: 1px;
+    background: var(--border);
+}
+
+/* No background of its own (unlike .sort-controls) -- the arrows are bare
+   icon buttons flanking the dropdown trigger, sitting directly on the
+   filters panel's own background, which already ties them together by
+   proximity without needing a third nested contrast layer. */
+.listen-year-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
 }
 
 .control-block {
@@ -2482,6 +2560,14 @@ a.stat-card:hover .stat-label::after {
 .release-cert-dot-gold     { background: var(--cert-gold); }
 .release-cert-dot-platinum { background: var(--cert-platinum); }
 .release-cert-dot-diamond  { background: var(--cert-diamond); }
+
+/* .disc-card-streaming defaults to opacity:0, faded in only via
+   ".disc-card:hover" -- .release-card has no such ancestor/convention, so
+   show it plainly instead of leaving it permanently invisible. */
+.release-card-streaming {
+    opacity: 1;
+    flex-shrink: 0;
+}
 
 /* Pulse Section */
 .pulse-section h2 {

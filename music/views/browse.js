@@ -168,7 +168,7 @@ const ViewBrowse = (() => {
                    (SELECT MAX(l.timestamp) FROM tracks t JOIN listens l ON l.track_id = t.id
                         WHERE t.release_id = r.id AND t.hidden = 0) as last_listen_ts,
                    ${OWNED_MEDIUM_SQL} as owned_medium,
-                   sm.platform, sm.series
+                   sm.platform, sm.series, r.spotify_id
             FROM releases r
             LEFT JOIN release_soundtrack_meta sm ON sm.release_id = r.id AND sm.source_type = 'video_game'
             WHERE r.hidden = 0 ${yearClause} ${genreClause} ${typeClause} ${soundtrackClause}
@@ -176,11 +176,11 @@ const ViewBrowse = (() => {
 
         _rows = result ? result.values.map(([id, title, slug, releaseYear, art, artistName, artistId, artistSlug,
                                               totalTracks, tracksHeard, totalListens, firstListenTs, lastListenTs,
-                                              ownedMedium, vgPlatform, vgSeries]) => ({
+                                              ownedMedium, vgPlatform, vgSeries, spotifyId]) => ({
             id, title, slug, releaseYear, art, artistName, artistId, artistSlug,
             totalTracks: totalTracks || 0, tracksHeard: tracksHeard || 0,
             totalListens: totalListens || 0, firstListenTs, lastListenTs, ownedMedium,
-            vgPlatform, vgSeries,
+            vgPlatform, vgSeries, spotifyId,
         })) : [];
     }
 
@@ -355,6 +355,17 @@ const ViewBrowse = (() => {
                 </div>
             </a>`;
         }
+        // Same disc-card-streaming markup/activation as views/shelf-helpers.js's
+        // shelfCard() (Discover, Home) -- a role="link" span, not a nested <a>,
+        // since <a> can't validly contain another <a>; shelfStreamingOnActivate
+        // (wired in _setupControls()) handles click/keydown and must
+        // stopPropagation so the click doesn't also fall through to this
+        // card's own <a href> navigation.
+        const streaming = entityType === 'albums' && SHOW_STREAMING_LINKS && row.spotifyId
+            ? `<span class="disc-card-streaming" role="link" tabindex="0" data-spotify-id="${escapeHtml(row.spotifyId)}" title="Open on Spotify">
+                  <span class="disc-card-streaming-icon"></span>
+               </span>`
+            : '';
         return `<a href="${href}" class="disc-card${row.totalListens === 0 ? ' unplayed' : ''}" title="${escapeHtml(tooltip)}">
             <div class="disc-card-img" style="background-image:url('${cssUrl(row.art || getFallbackImageUrl())}')">
                 ${entityType === 'albums' ? ownedBadgeHtml(row.ownedMedium) : ''}
@@ -365,6 +376,7 @@ const ViewBrowse = (() => {
                     <div class="disc-card-sub">${escapeHtml(sub)}</div>
                 </div>
                 ${donut}
+                ${streaming}
             </div>
         </a>`;
     }
@@ -874,7 +886,7 @@ const ViewBrowse = (() => {
                     <div class="sort-controls">
                         <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
                         <button class="sort-btn${viewMode === 'poster-sm' ? ' active' : ''}" data-view="poster-sm" title="Small posters"><i data-lucide="grid-3x3"></i></button>
-                        <button class="sort-btn${viewMode === 'poster-lg' ? ' active' : ''}" data-view="poster-lg" title="Large posters"><i data-lucide="layout-grid"></i></button>
+                        <button class="sort-btn${viewMode === 'poster-lg' ? ' active' : ''}" data-view="poster-lg" title="Large posters"><i data-lucide="square"></i></button>
                     </div>
                 </div>
                 <button type="button" class="browse-filters-btn" id="browseFiltersBtn">
@@ -897,7 +909,7 @@ const ViewBrowse = (() => {
                 <div class="sort-controls">
                     <button class="sort-btn${viewMode === 'list' ? ' active' : ''}" data-view="list" title="List"><i data-lucide="layout-list"></i></button>
                     <button class="sort-btn${viewMode === 'poster-sm' ? ' active' : ''}" data-view="poster-sm" title="Small posters"><i data-lucide="grid-3x3"></i></button>
-                    <button class="sort-btn${viewMode === 'poster-lg' ? ' active' : ''}" data-view="poster-lg" title="Large posters"><i data-lucide="layout-grid"></i></button>
+                    <button class="sort-btn${viewMode === 'poster-lg' ? ' active' : ''}" data-view="poster-lg" title="Large posters"><i data-lucide="square"></i></button>
                 </div>
             </div>
 
@@ -1148,6 +1160,11 @@ const ViewBrowse = (() => {
                 },
             },
         }, _ac.signal);
+        // Delegated on `container` (not the grid element) since grid content
+        // gets replaced wholesale on every filter change -- a listener bound
+        // directly to it would be orphaned by the next re-render.
+        container.addEventListener('click', shelfStreamingOnActivate, { signal: _ac.signal });
+        container.addEventListener('keydown', shelfStreamingOnActivate, { signal: _ac.signal });
         _remount(container);
     }
 

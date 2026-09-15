@@ -114,9 +114,10 @@ const ViewHome = (() => {
 
             <section id="homeRecsSection" hidden>
                 <div class="section-header">
-                    <h2>Recommendations</h2>
+                    <h2>Discover</h2>
                     <a href="?view=discover" class="home-see-all">See all →</a>
                 </div>
+                <p class="rec-desc">A mix of deep cuts, comebacks, and albums due for a revisit.</p>
                 <ul class="disc-grid" id="homeRecsGrid"></ul>
             </section>
 
@@ -354,41 +355,19 @@ const ViewHome = (() => {
         const grid    = document.getElementById('homeRecsGrid');
         if (!section || !grid) return;
 
-        const now   = Math.floor(Date.now() / 1000);
-        const seed  = _db.exec('SELECT COUNT(*) FROM listens')[0].values[0][0];
-        const since = now - 90 * 86400;
+        // Same computeRecommendationShelves() Discover itself uses (memoized,
+        // so visiting both pages in one session only runs the ~13 queries
+        // once). pickTeaserCards() samples from deep-cut/completion shelves
+        // specifically (see TEASER_SHELF_ORDER) -- it skips 'Favorites This
+        // Year'/'Rising', which are both "top albums by recent play count"
+        // and would otherwise duplicate Top Releases This Month above.
+        const shelves = computeRecommendationShelves(_db);
+        const picked = pickTeaserCards(shelves, SHELF_DESKTOP);
+        if (!picked.length) return;
 
-        const result = _db.exec(`
-            SELECT r.id, r.title, COALESCE(r.album_art_thumb_url, r.album_art_url), a.name, r.release_year,
-                   COUNT(l.id) plays, r.slug
-            FROM listens l
-            JOIN tracks t ON l.track_id = t.id
-            JOIN releases r ON r.id = t.release_id
-            LEFT JOIN artists a ON a.id = r.primary_artist_id
-            WHERE l.timestamp >= ${since}
-              AND r.hidden = 0 AND t.hidden = 0 AND t.variant_section IS NULL
-            GROUP BY r.id ORDER BY plays DESC LIMIT 30
-        `)[0];
-        if (!result || !result.values.length) return;
-
-        const pool   = [...result.values].sort((a, b) => (a[0] < b[0] ? -1 : 1));
-        const start  = seed % pool.length;
-        const picked = [];
-        for (let i = 0; i < Math.min(SHELF_DESKTOP, pool.length); i++)
-            picked.push(pool[(start + i) % pool.length]);
-
-        grid.innerHTML = picked.map(([id, title, art, artist, year, plays, slug]) => {
-            const img = art
-                ? `<div class="disc-card-img" style="background-image:url('${cssUrl(art)}')"></div>`
-                : `<div class="disc-card-img" style="background:var(--bg-tertiary)"></div>`;
-            const sub = [artist, year].filter(Boolean).join(' · ');
-            return `<li><a class="disc-card" href="${releaseHref(id, slug)}">
-                ${img}
-                <div class="disc-card-meta"><div class="disc-card-info">
-                    <div class="disc-card-title">${escapeHtml(title || '')}</div>
-                    <div class="disc-card-sub">${escapeHtml(sub)}</div>
-                </div></div></a></li>`;
-        }).join('');
+        grid.innerHTML = picked.map(c => `<li>${shelfCard(c)}</li>`).join('');
+        grid.addEventListener('click', shelfStreamingOnActivate, { signal: _abortController.signal });
+        grid.addEventListener('keydown', shelfStreamingOnActivate, { signal: _abortController.signal });
 
         section.removeAttribute('hidden');
     }

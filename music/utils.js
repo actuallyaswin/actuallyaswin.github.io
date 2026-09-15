@@ -439,7 +439,7 @@ function setupDropdowns(container, specs, signal) {
 }
 
 function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes,
-                          rounded = false, cert = null, viaArtist = null }) {
+                          rounded = false, cert = null, viaArtist = null, spotifyId = null }) {
     const card = document.createElement('a');
     card.className = 'release-card';
     card.href = href;
@@ -470,6 +470,18 @@ function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes
 
     const viaHtml = viaArtist ? `<span class="release-via-artist">${escapeHtml(viaArtist)}</span>` : '';
 
+    // Reuses the same .disc-card-streaming markup/data attribute as
+    // views/shelf-helpers.js's shelfCard() and views/browse.js's disc-card
+    // -- shelfStreamingOnActivate (wired per-caller) already matches on
+    // [data-spotify-id] alone, so no new activation logic needed here.
+    // .release-card-streaming overrides the opacity:0/hover-fade -- this
+    // card has no such convention and there's room to show it plainly.
+    const streamingHtml = SHOW_STREAMING_LINKS && spotifyId
+        ? `<span class="disc-card-streaming release-card-streaming" role="link" tabindex="0" data-spotify-id="${escapeHtml(spotifyId)}" title="Open on Spotify">
+              <span class="disc-card-streaming-icon"></span>
+           </span>`
+        : '';
+
     card.innerHTML = `
         <div class="release-card-thumb${rounded ? ' rounded' : ''}" style="background-image: url('${cssUrl(imgSrc)}')">${certDot}</div>
         <div class="release-card-body">
@@ -477,6 +489,7 @@ function createWideCard({ href, imageUrl, name, meta, totalListens, totalMinutes
             ${statsHtml}
             ${metaHtml || viaHtml ? `<div class="release-meta">${metaHtml}${viaHtml}</div>` : ''}
         </div>
+        ${streamingHtml}
     `;
     return card;
 }

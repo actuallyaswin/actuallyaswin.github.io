@@ -3,8 +3,6 @@ const ViewTop = (() => {
     // 'artists' | 'albums' | 'tracks'
     let entityType = 'artists';
     let sortBy = 'listens';
-    // artists only (existing Week/Month/Year/All)
-    let range = 'all';
     // List/Tiles item count (existing 10/20/50/100)
     let countLimit = 10;
     // 'list' | 'tiles'
@@ -50,42 +48,11 @@ const ViewTop = (() => {
         { value: 'ep',     label: 'EP' },
         { value: 'single', label: 'Single' },
     ];
-    const RANGE_OPTIONS = [
-        { value: 'this-week', label: 'This Week' }, { value: 'this-month', label: 'This Month' },
-        { value: 'this-year', label: 'This Year' }, { value: 'week', label: 'Last Week' },
-        { value: 'month', label: 'Last Month' }, { value: 'year', label: 'Last Year' },
-        { value: 'all', label: 'All-Time' },
-    ];
-
     const CERT_LABELS = {
         gold:     'Gold — 250+ plays',
         platinum: 'Platinum — 500+ plays',
         diamond:  'Diamond — 1,000+ plays',
     };
-
-    function _rangeStartTs() {
-        if (range === 'all') return null;
-        const now = Math.floor(Date.now() / 1000);
-        if (range === 'week')  return now - 7   * 86400;
-        if (range === 'month') return now - 30  * 86400;
-        if (range === 'year')  return now - 365 * 86400;
-        // Calendar-boundary ranges — start of the current week/month/year in
-        // local time, not a rolling N-day window like their 'last-' siblings.
-        const d = new Date();
-        if (range === 'this-week') {
-            const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
-            return Math.floor(start.getTime() / 1000);
-        }
-        if (range === 'this-month') {
-            const start = new Date(d.getFullYear(), d.getMonth(), 1);
-            return Math.floor(start.getTime() / 1000);
-        }
-        if (range === 'this-year') {
-            const start = new Date(d.getFullYear(), 0, 1);
-            return Math.floor(start.getTime() / 1000);
-        }
-        return null;
-    }
 
     // Genre filter — shared by all three entity types. `releaseIdExpr` is the
     // SQL expression for "this row's release_id" (differs per entity).
@@ -105,7 +72,7 @@ const ViewTop = (() => {
         return `AND l.year = ${ly}`;
     }
 
-    // Each entry: { title, sortOptions, hasRange, hasYearFilter, query(),
+    // Each entry: { title, sortOptions, hasYearFilter, query(),
     // cardHref(id), buildCardFields(row) }
     const ENTITY_CONFIG = {
         artists: {
@@ -116,15 +83,9 @@ const ViewTop = (() => {
                 { key: 'discoveries', icon: 'sparkles',    label: 'Discoveries', title: 'Latest discoveries — artists with newest average listen date' },
                 { key: 'oldies',      icon: 'history',     label: 'Oldies',      title: 'Golden oldies — artists with oldest average listen date' },
             ],
-            hasRange: true,
             hasYearFilter: false,
             hasGenreFilter: true,
             query() {
-                const isTemporalSort = sortBy === 'discoveries' || sortBy === 'oldies';
-                const startTs = isTemporalSort ? null : _rangeStartTs();
-                const tsFilter = startTs ? `AND l.timestamp >= ${startTs}` : '';
-                document.getElementById('rangeControlBlock')?.classList.toggle('controls-dimmed', isTemporalSort);
-
                 let orderClause;
                 if (sortBy === 'minutes')     orderClause = 'total_minutes DESC';
                 else if (sortBy === 'discoveries') orderClause = 'avg_ts DESC';
@@ -145,7 +106,7 @@ const ViewTop = (() => {
                     FROM artists a
                     LEFT JOIN track_artists ta ON a.id = ta.artist_id AND ta.role IN (${PRIMARY_ROLES_SQL})
                     LEFT JOIN tracks t ON ta.track_id = t.id ${genreClause}
-                    LEFT JOIN listens l ON t.id = l.track_id ${tsFilter}
+                    LEFT JOIN listens l ON t.id = l.track_id
                     WHERE a.hidden = 0 ${_listenYearSql()}
                     GROUP BY a.id
                     HAVING total_listens > 0
@@ -167,7 +128,6 @@ const ViewTop = (() => {
                 { key: 'discoveries', icon: 'sparkles',    label: 'Discoveries', title: 'Latest discoveries — albums with newest average listen date' },
                 { key: 'oldies',      icon: 'history',     label: 'Oldies',      title: 'Golden oldies — albums with oldest average listen date' },
             ],
-            hasRange: false,
             hasYearFilter: true,
             hasGenreFilter: true,
             hasFormatFilter: true,
@@ -191,7 +151,7 @@ const ViewTop = (() => {
                         COUNT(CASE WHEN t.hidden = 0 THEN l.id END) as total_listens,
                         CAST(SUM(CASE WHEN t.hidden = 0 AND l.id IS NOT NULL THEN COALESCE(t.duration_ms, 0) ELSE 0 END) / 60000.0 AS INTEGER) as total_minutes,
                         r.stat_avg_listen_ts as avg_ts,
-                        r.slug
+                        r.slug, r.spotify_id
                     FROM releases r
                     LEFT JOIN artists a ON a.id = r.primary_artist_id
                     LEFT JOIN tracks t ON t.release_id = r.id
@@ -205,11 +165,11 @@ const ViewTop = (() => {
             },
             cardHref: f => releaseHref(f.id, f.slug),
             buildCardFields(row) {
-                const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes, avgTs, slug] = row;
+                const [id, title, year, type, albumArtUrl, artistName, artistId, tracksListened, totalListens, totalMinutes, avgTs, slug, spotifyId] = row;
                 return {
                     id, title, name: title, imageUrl: albumArtUrl, artistName: artistName || 'Various Artists',
                     meta: `${escapeHtml(artistName || 'Various Artists')} · ${year || 'Unknown'}`,
-                    totalListens, totalMinutes, avgTs, label: title, slug,
+                    totalListens, totalMinutes, avgTs, label: title, slug, spotifyId,
                 };
             },
         },
@@ -221,7 +181,6 @@ const ViewTop = (() => {
                 { key: 'discoveries', icon: 'sparkles',    label: 'Discoveries', title: 'Latest discoveries — tracks with newest average listen date' },
                 { key: 'oldies',      icon: 'history',     label: 'Oldies',      title: 'Golden oldies — tracks with oldest average listen date' },
             ],
-            hasRange: false,
             hasYearFilter: true,
             hasGenreFilter: true,
             query() {
@@ -273,10 +232,6 @@ const ViewTop = (() => {
     // class of bug browse.js hit with its own dropdowns).
     function _dropdownSpecs() {
         return {
-            range: {
-                label: 'Range', options: RANGE_OPTIONS, getValue: () => range,
-                onPick: value => { range = value; _syncUrl(); _load(); },
-            },
             count: {
                 label: 'Count', options: COUNT_OPTIONS, getValue: () => countLimit,
                 onPick: value => { countLimit = parseInt(value, 10); _syncUrl(); _applyCount(); },
@@ -309,7 +264,6 @@ const ViewTop = (() => {
         const cfg = ENTITY_CONFIG[entityType];
         if (cfg && params.sort && cfg.sortOptions.some(o => o.key === params.sort)) sortBy = params.sort;
         else sortBy = 'listens';
-        if (params.range && ['this-week','this-month','this-year','week','month','year','all'].includes(params.range)) range = params.range;
         if (params.count && [10,20,50,100].includes(+params.count)) countLimit = +params.count;
         if (params.display && ['list','tiles'].includes(params.display)) viewMode = params.display;
         if (params.year) releaseYear = params.year;
@@ -327,6 +281,13 @@ const ViewTop = (() => {
         container.innerHTML = _renderShell();
         _ac = new AbortController();
         setupDropdowns(container, _dropdownSpecs(), _ac.signal);
+        // Delegated on `container` (not #topListGrid) since the list gets
+        // replaced wholesale on every filter/sort change -- a listener bound
+        // directly to it would be orphaned by the next re-render. Reuses
+        // shelf-helpers.js's shelfStreamingOnActivate, which matches on
+        // [data-spotify-id] alone regardless of which card type it's on.
+        container.addEventListener('click', shelfStreamingOnActivate, { signal: _ac.signal });
+        container.addEventListener('keydown', shelfStreamingOnActivate, { signal: _ac.signal });
         _setupControls();
         _load();
     }
@@ -338,24 +299,43 @@ const ViewTop = (() => {
         _ac = null;
     }
 
+    // Two visually distinct groups instead of one flat row of nine
+    // look-alike controls: "primary" (what you're looking at, how it's
+    // sorted/shown — pill buttons, always all visible) vs "filters"
+    // (dropdowns, recessed into their own panel). Released/Listened In sit
+    // on their own row at the top of the filters panel, separated from the
+    // categorical filters (Count/Genre/Format) by a horizontal rule — two
+    // different time axes (release date vs. when you heard it), grouped so
+    // that's visible at a glance instead of just two more dropdowns in the
+    // row. A horizontal rule between two fixed rows, not a vertical divider
+    // between flex items, so it can never end up orphaned at the end of a
+    // wrapped line with nothing following it.
     function _renderShell() {
         const primaryControls = `
             ${_entityToggleHtml()}
             ${_sortControlsHtml()}
-            ${ENTITY_CONFIG[entityType]?.hasRange ? _rangeControlsHtml() : ''}
-            ${_countControlsHtml()}
+            ${_displayControlsHtml()}
+        `;
+        const timeFilters = `
             ${ENTITY_CONFIG[entityType]?.hasYearFilter ? _yearFilterHtml() : ''}
             ${_listenYearFilterHtml()}
+        `;
+        const categoryFilters = `
+            ${_countControlsHtml()}
             ${ENTITY_CONFIG[entityType]?.hasGenreFilter ? _genreFilterHtml() : ''}
             ${ENTITY_CONFIG[entityType]?.hasFormatFilter ? _formatFilterHtml() : ''}
-            ${_displayControlsHtml()}
         `;
         return `
             <header>
                 <h1>${ENTITY_CONFIG[entityType]?.title || 'Top'}</h1>
                 <p class="subtitle" id="topSubtitle"></p>
             </header>
-            <div class="page-controls">${primaryControls}</div>
+            <div class="controls-panel controls-panel-primary">${primaryControls}</div>
+            <div class="controls-panel-filters">
+                <div class="controls-panel-filters-row">${timeFilters}</div>
+                <div class="controls-panel-divider"></div>
+                <div class="controls-panel-filters-row">${categoryFilters}</div>
+            </div>
             <div id="topContainer" class="image-grid">
                 ${renderLoading()}
             </div>
@@ -395,50 +375,46 @@ const ViewTop = (() => {
             </div>`;
     }
 
-    function _rangeControlsHtml() {
-        return `
-            <div class="control-block" id="rangeControlBlock">
-                <span class="control-block-label">Range</span>
-                <div class="sort-controls">
-                    ${dropdownHtml('range', 'Range', RANGE_OPTIONS, () => range)}
-                </div>
-            </div>`;
-    }
-
+    // Count/Released/Genre/Format render their dropdown directly, with no
+    // wrapping .sort-controls pill and no external caption -- the dropdown
+    // trigger already shows its own label ("Released ▾ All years"), so a
+    // .control-block-label above it just repeated the same word, and
+    // .sort-controls' own background box around a single trigger (which
+    // already has its own background) was a pill nested inside a pill.
+    // Listened In uses its own .listen-year-controls (below) instead: it's
+    // genuinely three elements (arrow, dropdown, arrow), but .sort-controls'
+    // background is the same var(--bg) as the filters panel itself, so
+    // wrapping it there would just be an invisible no-op box -- the bare
+    // arrows sit directly on the panel and read as a unit by proximity.
     function _countControlsHtml() {
         return `
             <div class="control-block">
-                <span class="control-block-label">#</span>
-                <div class="sort-controls">
-                    ${dropdownHtml('count', 'Count', COUNT_OPTIONS, () => countLimit)}
-                </div>
+                ${dropdownHtml('count', 'Count', COUNT_OPTIONS, () => countLimit)}
             </div>`;
     }
 
     function _yearFilterHtml() {
         return `
             <div class="control-block">
-                <span class="control-block-label">Released</span>
-                <div class="sort-controls">
-                    ${dropdownHtml('year', 'Released', _yearOptions, () => releaseYear)}
-                </div>
+                ${dropdownHtml('year', 'Released', _yearOptions, () => releaseYear)}
             </div>`;
     }
 
     // Applies to every entity type (unlike Released, which is albums/tracks
-    // only) — ported from views/year.js's prev/next arrows + <select>, now a
-    // dropdown + arrow pair to match this page's own filter styling.
+    // only) — ported from views/year.js's prev/next arrows + <select>.
+    // .year-nav-arrow-sm overrides the (much larger) hero-style arrow sizing
+    // year.js originally used, so the pair reads as one compact unit with
+    // the dropdown between them instead of two oversized, disconnected blobs.
     function _listenYearFilterHtml() {
         const ly = parseInt(listenYear);
         const atMin = listenYear !== 'all' && !isNaN(ly) && ly <= _minListenYear;
         const atMax = listenYear !== 'all' && !isNaN(ly) && ly >= _maxListenYear;
         return `
             <div class="control-block">
-                <span class="control-block-label">Listened In</span>
-                <div class="sort-controls">
-                    <button class="year-nav-arrow" id="listenYearPrev" aria-label="Previous year" title="Previous year"${listenYear === 'all' || atMin ? ' disabled' : ''}>←</button>
+                <div class="listen-year-controls">
+                    <button class="year-nav-arrow year-nav-arrow-sm" id="listenYearPrev" aria-label="Previous year" title="Previous year"${listenYear === 'all' || atMin ? ' disabled' : ''}>←</button>
                     ${dropdownHtml('listenYear', 'Listened In', _listenYearOptions, () => listenYear)}
-                    <button class="year-nav-arrow" id="listenYearNext" aria-label="Next year" title="Next year"${listenYear === 'all' || atMax ? ' disabled' : ''}>→</button>
+                    <button class="year-nav-arrow year-nav-arrow-sm" id="listenYearNext" aria-label="Next year" title="Next year"${listenYear === 'all' || atMax ? ' disabled' : ''}>→</button>
                 </div>
             </div>`;
     }
@@ -446,30 +422,33 @@ const ViewTop = (() => {
     function _genreFilterHtml() {
         return `
             <div class="control-block">
-                <span class="control-block-label">Genre</span>
-                <div class="sort-controls">
-                    ${dropdownHtml('genre', 'Genre', _genreOptions, () => genreFilter)}
-                </div>
+                ${dropdownHtml('genre', 'Genre', _genreOptions, () => genreFilter)}
             </div>`;
     }
 
     function _formatFilterHtml() {
         return `
             <div class="control-block">
-                <span class="control-block-label">Format</span>
-                <div class="sort-controls">
-                    ${dropdownHtml('format', 'Format', FORMAT_OPTIONS, () => formatFilter)}
-                </div>
+                ${dropdownHtml('format', 'Format', FORMAT_OPTIONS, () => formatFilter)}
             </div>`;
     }
 
+    // Collage is a one-shot action (opens the Collage page), not a third
+    // display mode -- it never gets .active and shouldn't look like it
+    // could. Split into its own control-block/pill so it reads as "a
+    // separate action next to Display" rather than a third toggle option
+    // inside the List/Tiles segmented control.
     function _displayControlsHtml() {
         return `
             <div class="control-block">
                 <span class="control-block-label">Display</span>
                 <div class="sort-controls">
                     <button class="sort-btn${viewMode === 'list'    ? ' active' : ''}" data-view="list"    title="List"><i data-lucide="layout-list"></i>List</button>
-                    <button class="sort-btn${viewMode === 'tiles'   ? ' active' : ''}" data-view="tiles"   title="Tiles"><i data-lucide="layout-grid"></i>Tiles</button>
+                    <button class="sort-btn${viewMode === 'tiles'   ? ' active' : ''}" data-view="tiles"   title="Tiles"><i data-lucide="square"></i>Tiles</button>
+                </div>
+            </div>
+            <div class="control-block">
+                <div class="sort-controls">
                     <button class="sort-btn" id="makeCollageBtn" title="Make a collage"><i data-lucide="grid-3x3"></i>Collage</button>
                 </div>
             </div>`;
@@ -477,7 +456,6 @@ const ViewTop = (() => {
 
     function _syncUrl() {
         const p = new URLSearchParams({ view: 'top', type: entityType, sort: sortBy, count: countLimit, display: viewMode });
-        if (ENTITY_CONFIG[entityType]?.hasRange) p.set('range', range);
         if (ENTITY_CONFIG[entityType]?.hasYearFilter) p.set('year', releaseYear);
         if (listenYear !== 'all') p.set('ly', listenYear);
         if (ENTITY_CONFIG[entityType]?.hasGenreFilter) p.set('genre', genreFilter);
@@ -633,13 +611,25 @@ const ViewTop = (() => {
         section.style.display = '';
     }
 
+    // Tracks' List mode is a virtualized "neverending" list that ignores
+    // Count entirely (see _render()) -- everywhere else, Count actually
+    // hides cards, so say so instead of a bare total that doesn't match
+    // what's on screen.
+    function _updateSubtitle() {
+        const subtitleEl = document.getElementById('topSubtitle');
+        if (!subtitleEl) return;
+        const ignoresCount = entityType === 'tracks' && viewMode === 'list';
+        subtitleEl.textContent = (!ignoresCount && countLimit < cachedResults.length)
+            ? `Showing ${formatNumber(countLimit)} of ${formatNumber(cachedResults.length)} ${entityType}`
+            : `${formatNumber(cachedResults.length)} ${entityType}`;
+    }
+
     function _load() {
         const result = ENTITY_CONFIG[entityType].query();
         cachedResults = result ? result.values.map(ENTITY_CONFIG[entityType].buildCardFields) : [];
         // only set for the tracks virtualized list
         if (_scrollEl) _scrollEl.scrollTop = 0;
-        const subtitleEl = document.getElementById('topSubtitle');
-        if (subtitleEl) subtitleEl.textContent = `${formatNumber(cachedResults.length)} ${entityType}`;
+        _updateSubtitle();
         _render();
         _loadListenYearGenres();
     }
@@ -658,7 +648,7 @@ const ViewTop = (() => {
         if (cachedResults.length === 0) {
             container.className = 'image-grid';
             const icon = entityType === 'artists' ? 'mic-2' : entityType === 'tracks' ? 'music' : 'disc-3';
-            container.innerHTML = `<li>${renderEmptyState(`No ${entityType} found`, 'Try a different filter, range, or year.', icon)}</li>`;
+            container.innerHTML = `<li>${renderEmptyState(`No ${entityType} found`, 'Try a different filter or year.', icon)}</li>`;
             return;
         }
 
@@ -693,6 +683,7 @@ const ViewTop = (() => {
                     totalMinutes: f.totalMinutes,
                     rounded: entityType === 'artists',
                     cert: f.cert || null,
+                    spotifyId: entityType === 'albums' ? f.spotifyId : null,
                 });
                 const li = document.createElement('li');
                 if (i >= countLimit) li.style.display = 'none';
@@ -751,13 +742,15 @@ const ViewTop = (() => {
 
         // Each album card carries an artist name — worth a "Top Artists"
         // breakdown, same as Tracks. Artists list has no comparable
-        // secondary dimension, so it stays Summary-only.
+        // secondary dimension, so it stays Summary-only. Skipped when no
+        // artist has more than one album in the visible slice -- a list of
+        // "1 album" repeated N times conveys nothing (common at low Count).
         let secondary = '';
         if (entityType === 'albums') {
             const artistCount = {};
             visible.forEach(f => { if (f.artistName) artistCount[f.artistName] = (artistCount[f.artistName] || 0) + 1; });
             const topArtists = Object.entries(artistCount).sort(([,a],[,b]) => b-a).slice(0, 7);
-            if (topArtists.length) {
+            if (topArtists.some(([, count]) => count > 1)) {
                 secondary = `
                     <div class="sidebar-section">
                         <p class="sidebar-heading">Top Artists</p>
@@ -791,6 +784,7 @@ const ViewTop = (() => {
         Array.from(container.children).forEach((el, i) => {
             el.style.display = i < countLimit ? '' : 'none';
         });
+        _updateSubtitle();
         if (listGrid) _renderListSidebar();
     }
 
@@ -879,13 +873,9 @@ const ViewTop = (() => {
             ['Avg plays',      formatNumber(avgPlays)],
         ];
 
-        el.innerHTML = `
-            <div class="sidebar-section">
-                <p class="sidebar-heading">Summary</p>
-                <dl class="nerds-list" style="border:none;border-radius:0">
-                    ${summaryRows.map(([k,v]) => `<div class="nerds-row"><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
-                </dl>
-            </div>
+        // Skipped when no artist has more than one track in this slice — see
+        // the same guard in _renderListSidebar().
+        const topArtistsHtml = topArtists.some(([, count]) => count > 1) ? `
             <div class="sidebar-section">
                 <p class="sidebar-heading">Top Artists</p>
                 ${topArtists.map(([name, count], i) => `
@@ -894,7 +884,16 @@ const ViewTop = (() => {
                         <span class="sidebar-row-name">${escapeHtml(name)}</span>
                         <span class="sidebar-row-count">${count} tracks</span>
                     </div>`).join('')}
-            </div>`;
+            </div>` : '';
+
+        el.innerHTML = `
+            <div class="sidebar-section">
+                <p class="sidebar-heading">Summary</p>
+                <dl class="nerds-list" style="border:none;border-radius:0">
+                    ${summaryRows.map(([k,v]) => `<div class="nerds-row"><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
+                </dl>
+            </div>
+            ${topArtistsHtml}`;
     }
 
     return { mount, unmount };
