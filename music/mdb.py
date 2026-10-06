@@ -2711,7 +2711,7 @@ def cmd_enrich_artist_links(args):
             ))
         '''
         if not args.force:
-            params = [EL_ARTIST, EL_SVC_WIKIPEDIA] + params
+            params = params + [EL_ARTIST, EL_SVC_WIKIPEDIA]
 
         rows = conn.execute(f'''
             SELECT a.id, a.name, a.aoty_id,

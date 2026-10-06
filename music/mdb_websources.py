@@ -408,7 +408,7 @@ def _date_from_cell(cell_html: str) -> 'str | None':
 
 
 _MUSIC_DESCRIPTION_RE = re.compile(
-    r'\b(singers?|rappers?|musicians?|bands?|groups?|DJs?|composers?|'
+    r'\b(singers?|rappers?|musicians?|musical artists?|bands?|groups?|DJs?|composers?|'
     r'producers?|songwriters?|duos?|orchestras?|ensembles?|record label)\b',
     re.IGNORECASE)
 _NON_ARTIST_DESCRIPTION_RE = re.compile(
